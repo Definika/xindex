@@ -12,8 +12,9 @@ import {IXindexErrors} from "./IXindexErrors.sol";
 ///         - The components and their weights never change.
 ///         - A rebalance brings the units back toward the weights through an auction. Its executor names the new
 ///           units, and the index accepts them only if their weighted gain clears a bar that falls with time
-///           ({executeRebalance}). Competing executors are what make the trade fair, and the best trade an executor
-///           can offer is the one that puts the index on its weights at the market's prices.
+///           ({executeRebalance}). Competing executors are what make the trade fair. The trade that scores highest
+///           is close to the one that puts the index on its weights at the market's prices, not exactly it: the
+///           score runs under the logarithm, so a trade a little short of the weights can score a little more.
 ///         - Nothing here reads a price: not a rebalance, not an issue, a redeem or a claim.
 ///
 ///         Fees
@@ -164,14 +165,12 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     error ZeroShares();
     /// @notice `skipMask` is zero or sets a bit at or above {componentCount}.
     error InvalidSkipMask(uint256 skipMask);
-    /// @notice The caller has no claim on `token`.
+    /// @notice The caller has no claim on `token`, or asked for none of it.
     error NothingToClaim(address token);
+    /// @notice The caller asked for `amount` of `token`, more than the `recorded` claim it holds.
+    error ClaimTooLarge(address token, uint256 amount, uint256 recorded);
     /// @notice {issue} received less `token` than it pulled, as with a fee-on-transfer token.
     error TransferAmountMismatch(address token);
-    /// @notice {issue} found the index holding `balance` of `token`, below the `required` backing of the shares already
-    ///         issued plus open claims, as after an issuer burned the index's balance. A deposit would pay earlier
-    ///         holders (RX-8).
-    error Underbacked(address token, uint256 balance, uint256 required);
     /// @notice The index's rebalance interval has not passed since the last rebalance; it does at `earliest`.
     error RebalanceTooSoon(uint256 earliest);
     /// @notice A rebalance is pending until `deadline`, the end of its auction.
@@ -181,6 +180,9 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     error InvalidKeepMask(uint256 keepMask);
     /// @notice No rebalance is pending.
     error NoPendingRebalance();
+    /// @notice The cancel names proposal `expected`, and the index's latest is `actual`: the one the caller meant is
+    ///         gone and another was started since.
+    error StaleProposal(uint256 expected, uint256 actual);
     /// @notice The auction opens at `eta`.
     error RebalanceNotReady(uint256 eta);
     /// @notice The auction closed at `deadline`; start a new rebalance.
@@ -297,10 +299,19 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     ///         transfer; the claim stays recorded.
     function claim(address token, address to) external returns (uint256 amount);
 
+    /// @notice Pays `amount` of msg.sender's recorded claim on `token` to `to`, and leaves the rest recorded. For a
+    ///         claim the index can no longer pay whole, as after the token's issuer burned part of the index's
+    ///         balance: what is left can still be collected, first come, first served (CA-S01). Reverts
+    ///         NothingToClaim for an `amount` of zero and ClaimTooLarge for one above the claim.
+    function claim(address token, address to, uint256 amount) external;
+
     /// @notice Amount of `token` that `account` can collect with {claim}.
     function claimOf(address account, address token) external view returns (uint256);
 
-    /// @notice Sum of all open claims on `token`. Always covered by the index's balance.
+    /// @notice Sum of all open claims on `token`. The index's balance covers it on top of the shares' backing, since
+    ///         no amount the index computes ever touches it. Only the token's issuer can break that, by taking part
+    ///         of the index's balance: an issue is then refused (Underbacked), and redeems and claims are paid from
+    ///         what is left, first come, first served, with no part of it set aside for the claims (CA-M3).
     function totalClaims(address token) external view returns (uint256);
 
     /// @notice Number of components, fixed at initialization.
@@ -361,9 +372,16 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     /// @param tolerance How far under the quoted value a fill may bring in, 1e18 = 100%; under 1e18 (InvalidQuote).
     function startRebalance(uint256 keepMask, uint256[] calldata prices, uint256 tolerance) external;
 
-    /// @notice Factory owner or guardian. Cancels the pending rebalance. Anyone else must then wait REBALANCE_DELAY
-    ///         before starting a new one.
+    /// @notice Factory owner or guardian. Cancels the pending rebalance, whichever it is when the call lands. Anyone
+    ///         else must then wait REBALANCE_DELAY before starting a new one. A proposal whose auction has already
+    ///         expired is only cleared: the hold-off its expiry set stands, and none starts again (VR-04).
     function cancelRebalance() external;
+
+    /// @notice As {cancelRebalance}, and only if the index's latest proposal is still `proposalId`
+    ///         ({proposalCount}, and `RebalanceStarted`'s id): reverts StaleProposal otherwise. A Safe uses this one,
+    ///         since its transaction can land hours after its signers read the proposal, when the other role may
+    ///         already have replaced it with a start of its own (CA-S02).
+    function cancelRebalance(uint256 proposalId) external;
 
     /// @notice Settles the pending rebalance during its auction, moving every component to the units the caller
     ///         names:
@@ -371,8 +389,10 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     ///            at or above {currentBar} (`IWeightedMath` has the rule);
     ///         2. sends msg.sender what the index no longer needs of each shrinking component;
     ///         3. calls `IRebalanceExecutor.onXindexRebalance` on msg.sender;
-    ///         4. reverts unless the index then holds every component's new backing, and the whole of `amountsIn` on
-    ///            top of what it held before.
+    ///         4. reverts unless the index then holds the new backing of every component that moved, and the whole
+    ///            of `amountsIn` on top of what it held before. A component that neither sends nor receives is not
+    ///            read at all, so a fill works around one whose `balanceOf` reverts (DA-14), and a settlement says
+    ///            nothing of the backing of a leg it left alone (CA-S08).
     ///         Only a contract can execute. It reads no price: the bar falls until some executor finds the trade worth
     ///         making, and the first to clear it settles. Reverts NothingToRebalance on an index with less than one
     ///         whole share.

@@ -23,6 +23,8 @@ abstract contract DeployChecks is Script {
     /// @notice Fewest signatures a Safe owner may need on a mainnet: the design's 3-of-5 hardware wallets held by
     ///         separate people (the owner's call on 2026-09-30).
     uint256 public constant MIN_OWNER_THRESHOLD = 3;
+    /// @notice Fewest signatures the guardian's Safe may need on a mainnet: more than one key's (CA-M4).
+    uint256 public constant MIN_GUARDIAN_THRESHOLD = 2;
     /// @notice Start of a Safe's module list.
     address public constant SENTINEL_MODULES = address(0x1);
     /// @notice How many of a Safe's modules the role checks compare as its keys: a page larger than any Safe in use.
@@ -46,6 +48,11 @@ abstract contract DeployChecks is Script {
     error GuardianRequired();
     /// @notice The guardian is the key broadcasting the deployment, or a Safe that key signs for.
     error GuardianIsBroadcaster(address guardian);
+    /// @notice On a pinned chain, the guardian is not a Safe: a key, an EIP-7702 delegated account, or a contract that
+    ///         answers no Safe threshold (CA-M4).
+    error GuardianMustBeASafe(address guardian);
+    /// @notice The guardian is a Safe that needs fewer than MIN_GUARDIAN_THRESHOLD signatures: one key (CA-M4).
+    error GuardianThresholdTooLow(address guardian, uint256 threshold);
     /// @notice The guardian signs for the owner Safe, so one key would both act as the owner and hold its veto (SA-06).
     error GuardianSignsForOwner(address guardian);
     /// @notice The guardian is a Safe that shares `signer` with the owner Safe, directly or through a signer that is
@@ -92,7 +99,7 @@ abstract contract DeployChecks is Script {
         // empty answer from a fallback.
         // forge-lint: disable-next-line(low-level-calls)
         (bool ok, bytes memory data) = owner.staticcall(abi.encodeCall(ISafeThreshold.getThreshold, ()));
-        if (ok && data.length == 32) {
+        if (ok && data.length == ScriptUtils.WORD) {
             uint256 threshold = abi.decode(data, (uint256));
             if (threshold < MIN_OWNER_THRESHOLD) revert OwnerThresholdTooLow(owner, threshold);
             _checkNoModules(owner);
@@ -123,11 +130,16 @@ abstract contract DeployChecks is Script {
     ///         one level deep on each side, so a signer that is itself a Safe, such as a treasury, brings in its own.
     ///         A Safe's enabled modules count as its signers, since a module acts as the Safe without signatures
     ///         (RZ-24).
+    ///         On a pinned chain, a mainnet, the guardian must be a Safe that needs at least MIN_GUARDIAN_THRESHOLD
+    ///         signatures, as the deployment is documented. A single key in its place holds the cancel of every
+    ///         rebalance and listing, the keep mask and the quote, and it passed every comparison above, since a key
+    ///         has no signers to compare (CA-M4).
     /// @param owner The intended factory owner.
     /// @param guardian The intended guardian.
     function checkGuardian(address owner, address guardian) public view {
         if (guardian == address(0) || guardian == DEFAULT_SENDER || guardian == owner) revert GuardianRequired();
         if (guardian == msg.sender) revert GuardianIsBroadcaster(guardian);
+        _checkGuardianIsASafe(guardian);
         address[] memory guardianKeys = _signerKeys(guardian);
         for (uint256 j = 0; j < guardianKeys.length; ++j) {
             if (guardianKeys[j] == msg.sender) revert GuardianIsBroadcaster(guardian);
@@ -141,6 +153,19 @@ abstract contract DeployChecks is Script {
                 if (guardianKeys[j] == key) revert GuardianSharesOwnerSigner(guardian, key);
             }
         }
+    }
+
+    /// @dev On a pinned chain, reverts unless `guardian` is a Safe needing at least MIN_GUARDIAN_THRESHOLD signatures.
+    function _checkGuardianIsASafe(address guardian) private view {
+        if (!isPinnedChain()) return;
+        bytes memory code = guardian.code;
+        if (code.length == 0 || ScriptUtils.isDelegatedAccount(code)) revert GuardianMustBeASafe(guardian);
+        // A static call, as for the owner's threshold: a typed call would revert on a fallback's empty answer.
+        // forge-lint: disable-next-line(low-level-calls)
+        (bool ok, bytes memory data) = guardian.staticcall(abi.encodeCall(ISafeThreshold.getThreshold, ()));
+        if (!ok || data.length != ScriptUtils.WORD) revert GuardianMustBeASafe(guardian);
+        uint256 threshold = abi.decode(data, (uint256));
+        if (threshold < MIN_GUARDIAN_THRESHOLD) revert GuardianThresholdTooLow(guardian, threshold);
     }
 
     /// @dev `account`'s signers, each followed by its own signers when it is a Safe too: one level down, so a treasury

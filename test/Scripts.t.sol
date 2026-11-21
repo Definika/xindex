@@ -199,9 +199,11 @@ contract ScriptsTest is Test {
     address usdc;
     address usdt;
     address owner = makeAddr("owner");
-    address guardian = makeAddr("guardian");
+    /// @dev The guardian's Safe, of two signatures: on a mainnet the scripts take no single key for it (CA-M4).
+    address guardian;
 
     function setUp() public {
+        guardian = address(new MockSafe(2));
         deployer = new DeployWeighted();
         testMarket = new SetupTestMarket();
         router = new MockUniversalRouter(makeAddr("poolManager"));
@@ -302,6 +304,39 @@ contract ScriptsTest is Test {
         vm.expectRevert(DeployChecks.GuardianRequired.selector);
         deployer.checkGuardian(owner, owner);
         deployer.checkGuardian(owner, guardian);
+        deployer.checkGuardian(owner, makeAddr("a key")); // any account is accepted off mainnet
+    }
+
+    /// @dev CA-M4: the deployment is documented with the guardian's Safe, and the script took any address for it. A
+    ///      single key passed every check, since a key has no signers to compare with the owner's, and so held the
+    ///      cancel of every rebalance and listing, the keep mask and the quote alone. On a mainnet the guardian is
+    ///      now a Safe of at least two signatures: a key, a delegated account, a contract that answers no Safe
+    ///      threshold and a Safe of one signature are each refused, before anything is deployed.
+    function test_CAM4_onAMainnetTheGuardianIsASafeOfMoreThanOneKey() public {
+        address key = makeAddr("a key");
+        address delegated = makeAddr("delegated");
+        vm.etch(delegated, abi.encodePacked(hex"ef0100", address(router)));
+        address silent = address(new SilentFallback());
+        address reverting = address(new RevertingThreshold());
+        MockSafe oneOfN = new MockSafe(1);
+        address safe = address(new MockSafe(3));
+
+        for (uint256 chain = 1; chain <= 56; chain += 55) {
+            vm.chainId(chain);
+            address[4] memory notSafes = [key, delegated, silent, reverting];
+            for (uint256 i = 0; i < notSafes.length; ++i) {
+                vm.expectRevert(abi.encodeWithSelector(DeployChecks.GuardianMustBeASafe.selector, notSafes[i]));
+                deployer.checkGuardian(safe, notSafes[i]);
+            }
+            vm.expectRevert(abi.encodeWithSelector(DeployChecks.GuardianThresholdTooLow.selector, address(oneOfN), 1));
+            deployer.checkGuardian(safe, address(oneOfN));
+            deployer.checkGuardian(safe, address(new MockSafe(2)));
+            assertEq(deployer.MIN_GUARDIAN_THRESHOLD(), 2);
+        }
+
+        vm.chainId(1);
+        vm.expectRevert(abi.encodeWithSelector(DeployChecks.GuardianMustBeASafe.selector, key));
+        deployer.deploy(safe, key, address(0), address(0), address(0), address(0));
     }
 
     function test_resolveRouter() public {

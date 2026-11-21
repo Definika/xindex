@@ -31,7 +31,7 @@ import {ITokenBridge} from "./interfaces/ITokenBridge.sol";
 /// @dev Three keys. The keeper, a hot key, only fills; the treasury, the restock service's hot key, only bridges stock
 ///      in and out and draws or repays USDC; and the owner, a cold key, withdraws, rotates the keeper, pins the
 ///      treasury and the home-chain recipients, and sets how much of each coin the keeper may still deliver from stock,
-///      both directly and as restocked coins arrive. Anyone can create a factory index and hold all its shares, so a
+///      both directly and as restocked coins arrive. Anyone can come to hold all the shares of a factory index, so a
 ///      fill can deliver to an index the keeper itself owns (CF-1): what bounds the stock a compromised keeper key can
 ///      move is that allowance, which every delivery from stock spends and only the owner raises, restocking included
 ///      (RS-1), not the factory check. The same key can trade the USDC float badly within the floor it sets. A stolen
@@ -116,6 +116,9 @@ contract KeeperExecutor is IRebalanceExecutor {
     ///        USDC buying the stablecoin may cost.
     /// @param expectedNonce The index's rebalanceNonce the fill was simulated at: a settlement since then re-sizes the
     ///        basket, so the fill stops (RX-4).
+    /// @param expected The hash of the request the keeper priced, as `MintRequests.requestHash` computes it. An id
+    ///        is only a counter: after a re-org it can name another request, whose escrow the keeper never valued
+    ///        (RW-7, CA-M6).
     /// @param minUsdcDelta The least the USDC float may change by.
     /// @param deadline The latest block timestamp the fill may be mined at.
     struct RequestFill {
@@ -126,6 +129,7 @@ contract KeeperExecutor is IRebalanceExecutor {
         bytes stableRoute;
         uint256 stableLimit;
         uint256 expectedNonce;
+        bytes32 expected;
         int256 minUsdcDelta;
         uint256 deadline;
     }
@@ -151,6 +155,9 @@ contract KeeperExecutor is IRebalanceExecutor {
     /// @param stableMaxIn Zero for no bound: the most USDC buying what the redeem requests are paid may cost.
     /// @param stableMinOut Zero for no bound: the least USDC selling what the mint requests escrowed must return.
     /// @param expectedNonce The index's rebalanceNonce the batch was simulated at (RX-4).
+    /// @param expected The requests the keeper priced, as one hash: from zero, `keccak256(abi.encode(running, h))`
+    ///        for the hash `h` of each request in turn (`MintRequests.requestHash`), the redeem requests first, then
+    ///        the mint requests, each in the batch's order (RW-7, CA-M6).
     /// @param minUsdcDelta The least the USDC float may change by.
     /// @param deadline The latest block timestamp the batch may be mined at.
     struct BatchFill {
@@ -169,6 +176,7 @@ contract KeeperExecutor is IRebalanceExecutor {
         uint256 stableMaxIn;
         uint256 stableMinOut;
         uint256 expectedNonce;
+        bytes32 expected;
         int256 minUsdcDelta;
         uint256 deadline;
     }
@@ -212,6 +220,12 @@ contract KeeperExecutor is IRebalanceExecutor {
     /// @notice A batch would hand over `spent` more shares of `index` than it brings in, above the `allowance` the
     ///         owner left for delivering that index's shares from stock.
     error OverStockAllowance(address index, uint256 spent, uint256 allowance);
+    /// @notice A batch took `taken` shares of `index` out of those held here before it, and had spent only `spent`
+    ///         of the stock allowance for them: it counted shares in that it never brought in (CA-H1).
+    error ShareStockShort(address index, uint256 taken, uint256 spent);
+    /// @notice The requests a batch names are not the ones the keeper priced: hashed in the batch's order, they are
+    ///         not its `expected` (CA-M6).
+    error RequestsChanged();
     /// @notice `caller` is not the treasury.
     error NotTreasury(address caller);
     /// @notice The owner pinned no recipient on Wormhole chain `chain`.
@@ -495,6 +509,9 @@ contract KeeperExecutor is IRebalanceExecutor {
         if (!request.open) revert IMintRequests.RequestNotOpen(f.id);
         if (block.timestamp > request.deadline) revert IMintRequests.RequestExpired(f.id, request.deadline);
         if (request.isMint != isMint) revert WrongSide(f.id);
+        // The request behind the id is the one the keeper priced, to its last field. The escrow checks the id alone
+        // in the fill below, which this same call makes (RW-7, CA-M6).
+        if (keccak256(abi.encode(request)) != f.expected) revert IMintRequests.RequestChanged(f.id);
         index = IWeightedHub(request.index);
         uint256 nonce = index.rebalanceNonce();
         if (nonce != f.expectedNonce) revert StaleRebalanceNonce(f.expectedNonce, nonce);
@@ -534,15 +551,31 @@ contract KeeperExecutor is IRebalanceExecutor {
         gasUsed = gasStart - gasleft();
     }
 
-    /// @dev {fillBatch}'s steps, after every check that can stop it before a swap (XS-6).
+    /// @dev {fillBatch}, after every check that can stop it before a swap (XS-6): the share stock's allowance is spent
+    ///      on what the batch is to hand over beyond what it is to bring in, its steps run, and the count is held
+    ///      against the shares themselves.
     function _batch(BatchFill calldata f) private {
         address[] memory tokens = _checkBatch(f);
-        (uint256 pay, uint256 sharesIn) = _openSide(f, f.redeemIds, f.redeemPay, false);
-        (uint256 deliver,) = _openSide(f, f.mintIds, f.mintShares, true);
-        // Spent before anything moves. The index's shares are its own hub's, which transfers what it is asked to, so
-        // what the batch brings in and hands over is known here.
-        _spendShareStock(address(f.index), deliver + f.redeem, sharesIn + f.issue);
+        (uint256 pay, uint256 sharesIn, bytes32 priced) = _openSide(f, f.redeemIds, f.redeemPay, false, bytes32(0));
+        uint256 deliver;
+        (deliver,, priced) = _openSide(f, f.mintIds, f.mintShares, true, priced);
+        if (priced != f.expected) revert RequestsChanged();
+        // Spent before anything moves, from a count made ahead of the facts.
+        uint256 spent = _spendShareStock(address(f.index), deliver + f.redeem, sharesIn + f.issue);
+        uint256 sharesBefore = IERC20(address(f.index)).balanceOf(address(this));
+        _batchSteps(f, tokens, pay, deliver);
+        // The stock may have fallen by what was spent for it and no more. Redeem requests paid nothing are never
+        // filled; their escrows, counted above as shares brought in, let the whole stock leave with no allowance
+        // spent, and nothing compared the count with the shares (CA-H1).
+        uint256 sharesHeld = IERC20(address(f.index)).balanceOf(address(this));
+        if (sharesHeld + spent < sharesBefore) {
+            revert ShareStockShort(address(f.index), sharesBefore - sharesHeld, spent);
+        }
+    }
 
+    /// @dev A batch's steps: the issue, the redeem requests paid `pay` in all, the mint requests delivered `deliver`
+    ///      shares in all, the escrows sold, and the redeem.
+    function _batchSteps(BatchFill calldata f, address[] memory tokens, uint256 pay, uint256 deliver) private {
         // The issue first: it is the one step that spends a coin's stock allowance, and it runs before any call
         // into the escrow.
         if (f.issue != 0) _issueHere(f.index, tokens, f.issue, f.routes, f.maxIn);
@@ -589,13 +622,18 @@ contract KeeperExecutor is IRebalanceExecutor {
     /// @dev One side of a batch, read before anything moves, so a request its requester cancelled or another filler
     ///      filled since the simulation costs these reads rather than a basket (XS-6): each request open, not past
     ///      its deadline, of the side named, and on the batch's index and stablecoin.
+    /// @param running The hash of the requests read so far, zero before the first (see {BatchFill}'s `expected`).
     /// @return handed What the fills hand the requesters: shares for mint requests, the stablecoin for redeem requests.
     /// @return escrowed What the fills take: the stablecoin for mint requests, shares for redeem requests.
-    function _openSide(BatchFill calldata f, uint256[] calldata ids, uint256[] calldata amounts, bool isMint)
-        private
-        view
-        returns (uint256 handed, uint256 escrowed)
-    {
+    /// @return priced `running`, with each of these requests' hashes folded in.
+    function _openSide(
+        BatchFill calldata f,
+        uint256[] calldata ids,
+        uint256[] calldata amounts,
+        bool isMint,
+        bytes32 running
+    ) private view returns (uint256 handed, uint256 escrowed, bytes32 priced) {
+        priced = running;
         if (ids.length != amounts.length) revert LengthMismatch();
         for (uint256 i = 0; i < ids.length; ++i) {
             uint256 id = ids[i];
@@ -607,6 +645,7 @@ contract KeeperExecutor is IRebalanceExecutor {
             if (request.stable != f.stable) revert WrongStable(id);
             handed += amounts[i];
             escrowed += request.escrow;
+            priced = keccak256(abi.encode(priced, keccak256(abi.encode(request))));
         }
     }
 
@@ -614,9 +653,10 @@ contract KeeperExecutor is IRebalanceExecutor {
     ///      (`in_`): those come out of the shares held here before the call. Without it a compromised keeper key could
     ///      deliver the whole share stock to a request of its own, or redeem it and sell the basket into a pool it
     ///      moved, where the float's allowance sees no loss because the float does not fall (CF-1).
-    function _spendShareStock(address index, uint256 out, uint256 in_) private {
-        if (out <= in_) return;
-        uint256 spent = out - in_;
+    /// @return spent What it spent of the allowance: what the batch may take out of the shares held before it.
+    function _spendShareStock(address index, uint256 out, uint256 in_) private returns (uint256 spent) {
+        if (out <= in_) return 0;
+        spent = out - in_;
         uint256 allowance = stockAllowance[index];
         if (spent > allowance) revert OverStockAllowance(index, spent, allowance);
         stockAllowance[index] = allowance - spent;

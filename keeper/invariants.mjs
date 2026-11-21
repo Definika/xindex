@@ -10,16 +10,32 @@
 //      scale only shrinks;
 //   2. MintRequests: its balance of each token covers the open requests' escrows;
 //   3. the BasketBuilder: its balance of each token covers its users' escrows, the pairs found from its events;
-//   4. the admin events monitors watch (RT-07): a keep-mask start, a cancel, and the factory's guardian, owner,
-//      listing and fee-policy events, as notices.
+//   4. the admin events monitors watch (RT-07): every start, the quote posted with one, a cancel, and the factory's
+//      guardian, owner, listing, creator-approval and fee-policy events, as notices.
 // Each finding prints as one JSON line when raised and when cleared; breaches and reader findings also go to
-// ALERT_WEBHOOK. With --once it runs one round and exits 1 if anything but a notice stands.
+// ALERT_WEBHOOK, queued until it has taken them. A finding on something a round could not read stands until a read
+// shows it gone. A round the RPC could not serve, or served from a head that has stopped moving, is a reader finding
+// too. With --once it runs one round and exits 1 if anything but a notice stands.
 
 import { readFileSync } from "node:fs";
 import { createPublicClient, http, keccak256, numberToHex, pad, parseAbi, toHex } from "viem";
 import { mainnet, sepolia } from "viem/chains";
 import { HUB_STATE_SLOTS } from "./bot/config.mjs";
-import { checkEscrows, checkIndex, checkProgress, componentWord, diffFindings, lower, requestEscrow, scaleWord } from "./invariants/check.mjs";
+import {
+  FACTORY_NOTICES,
+  HUB_NOTICES,
+  checkEscrows,
+  checkHead,
+  checkIndex,
+  checkProgress,
+  componentWord,
+  createAlerts,
+  createCursor,
+  diffFindings,
+  lower,
+  requestEscrow,
+  scaleWord,
+} from "./invariants/check.mjs";
 import { parseInvariantsConfig } from "./invariants/config.mjs";
 
 const ONCE = process.argv.includes("--once");
@@ -37,20 +53,7 @@ const client = createPublicClient({
   transport: http(cfg.rpcUrl, { batch: { batchSize: 50 }, retryCount: 3 }),
 });
 
-/// What the factory's admin events and the hubs' auction events say, as notices (RT-07).
-const FACTORY_NOTICES = new Set([
-  "GuardianProposed",
-  "GuardianChangeCancelled",
-  "GuardianSet",
-  "OwnershipTransferStarted",
-  "OwnershipTransferred",
-  "ListingProposed",
-  "ListingCancelled",
-  "TokenWhitelisted",
-  "TokenTermsSet",
-  "FeePolicySet",
-]);
-const events = (abi, names) => abi.filter((x) => x.type === "event" && names.has(x.name));
+const events = (abi, names) => abi.filter((x) => x.type === "event" && names.includes(x.name));
 const COMPONENTS_BASE = BigInt(keccak256(pad(toHex(HUB_STATE_SLOTS.components), { size: 32 })));
 
 const print = (record) => console.log(JSON.stringify(record, (_, v) => (typeof v === "bigint" ? v.toString() : v)));
@@ -190,16 +193,20 @@ async function indexFindings(blockNumber, now) {
 }
 
 const openRequests = new Map();
-let requestsSeen = 0n;
+/// The request ids not read yet, from the first: moved on only once their reads are in (CA-M16).
+const newRequests = createCursor(1n);
 
 async function requestFindings(blockNumber) {
   const request = (id) => ({ address: cfg.requests, abi: ABI.requests, functionName: "getRequest", args: [id] });
+  const fold = (ids, read) => ids.forEach((id, i) => (read[i].open ? openRequests.set(id, read[i]) : openRequests.delete(id)));
   const [count] = await multicall([{ address: cfg.requests, abi: ABI.requests, functionName: "requestCount" }], blockNumber);
-  const ids = [...openRequests.keys()];
-  for (let id = requestsSeen + 1n; id <= count; ++id) ids.push(id);
-  requestsSeen = count;
-  const read = await multicall(ids.map(request), blockNumber);
-  ids.forEach((id, i) => (read[i].open ? openRequests.set(id, read[i]) : openRequests.delete(id)));
+  const known = [...openRequests.keys()];
+  fold(known, await multicall(known.map(request), blockNumber));
+  await newRequests(count, async (from, to) => {
+    const ids = [];
+    for (let id = from; id <= to; ++id) ids.push(id);
+    fold(ids, await multicall(ids.map(request), blockNumber));
+  });
   const escrows = [...openRequests.values()].map(requestEscrow);
   return checkEscrows("requests-escrow", cfg.requests, escrows, await balancesOf(cfg.requests, escrows, blockNumber));
 }
@@ -207,18 +214,19 @@ async function requestFindings(blockNumber) {
 /// The builder's (user, token) pairs that ever held an escrow: every credit names its user, and its token or its index,
 /// whose components it credits.
 const builderPairs = new Map();
-let builderLogsTo = null;
+/// The builder's blocks not read yet, from FROM_BLOCK: moved on only once their logs are in (CA-M16).
+const builderBlocks = createCursor(cfg.fromBlock);
 
 async function builderFindings(blockNumber) {
-  const credits = events(ABI.builder, new Set(["Deposited", "Bought", "Redeemed", "Unsold"]));
-  const from = builderLogsTo === null ? cfg.fromBlock : builderLogsTo + 1n;
-  for (const log of await logs(cfg.builder, credits, from, blockNumber)) {
-    const user = lower(log.args.user);
-    const tokens = log.args.token ? [lower(log.args.token)] : await componentsAt(lower(log.args.index), blockNumber);
-    if (!builderPairs.has(user)) builderPairs.set(user, new Set());
-    for (const token of tokens) builderPairs.get(user).add(token);
-  }
-  builderLogsTo = blockNumber;
+  const credits = events(ABI.builder, ["Deposited", "Bought", "Redeemed", "Unsold"]);
+  await builderBlocks(blockNumber, async (from, to) => {
+    for (const log of await logs(cfg.builder, credits, from, to)) {
+      const user = lower(log.args.user);
+      const tokens = log.args.token ? [lower(log.args.token)] : await componentsAt(lower(log.args.index), blockNumber);
+      if (!builderPairs.has(user)) builderPairs.set(user, new Set());
+      for (const token of tokens) builderPairs.get(user).add(token);
+    }
+  });
   const pairs = [...builderPairs].flatMap(([user, tokens]) => [...tokens].map((token) => ({ user, token })));
   const amounts = await multicall(
     pairs.map(({ user, token }) => ({ address: cfg.builder, abi: ABI.builder, functionName: "escrowOf", args: [user, token] })),
@@ -236,7 +244,7 @@ async function componentsAt(index, blockNumber) {
   return componentsOf.get(index);
 }
 
-/// `holder`'s balance of every token `escrows` names, by lowercase token.
+/// `holder`'s balance of every token `escrows` names, by lowercase token; null where the read failed (CA-L9).
 async function balancesOf(holder, escrows, blockNumber) {
   const tokens = [...new Set(escrows.map((e) => lower(e.token)))];
   const read = await multicall(
@@ -244,40 +252,61 @@ async function balancesOf(holder, escrows, blockNumber) {
     blockNumber,
     { optional: true },
   );
-  return new Map(tokens.map((t, i) => [t, read[i] ?? 0n]));
+  return new Map(tokens.map((t, i) => [t, read[i]]));
 }
 
-let noticesTo = null;
+/// The blocks whose admin events are not read yet, from FROM_BLOCK, or from the checker's first block: moved on only
+/// once both reads are in (CA-M16).
+const noticeBlocks = createCursor(cfg.fromBlock);
 
 async function notices(blockNumber) {
-  const from = noticesTo === null ? (cfg.fromBlock ?? blockNumber) : noticesTo + 1n;
-  noticesTo = blockNumber;
-  if (from > blockNumber) return [];
-  const found = [];
-  for (const log of await logs(cfg.factory, events(ABI.factory, FACTORY_NOTICES), from, blockNumber)) {
-    found.push({ level: "notice", code: log.eventName, block: log.blockNumber, tx: log.transactionHash, ...log.args });
-  }
-  if (indexes.length === 0) return found;
-  const auction = events(ABI.hub, new Set(["RebalanceStarted", "RebalanceCancelled"]));
-  for (const log of await logs(indexes, auction, from, blockNumber)) {
-    if (log.eventName === "RebalanceStarted" && log.args.keepMask === 0n) continue;
-    const { eventName, address, blockNumber: block, transactionHash: tx, args } = log;
-    found.push({ level: "notice", code: eventName, index: lower(address), block, tx, ...args });
-  }
-  return found;
+  const found = await noticeBlocks(blockNumber, async (from, to) => {
+    const read = [];
+    for (const log of await logs(cfg.factory, events(ABI.factory, FACTORY_NOTICES), from, to)) {
+      read.push({ level: "notice", code: log.eventName, block: log.blockNumber, tx: log.transactionHash, ...log.args });
+    }
+    if (indexes.length === 0) return read;
+    for (const log of await logs(indexes, events(ABI.hub, HUB_NOTICES), from, to)) {
+      const { eventName, address, blockNumber: block, transactionHash: tx, args } = log;
+      read.push({ level: "notice", code: eventName, index: lower(address), block, tx, ...args });
+    }
+    return read;
+  });
+  return found ?? [];
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Rounds and alerts
 // ---------------------------------------------------------------------------------------------------------------------
 
-async function alert(record) {
-  if (!cfg.alertWebhook) return;
+/// Posts `record` to the webhook; true once it answered 2xx. A webhook that fails, hangs past ten seconds or answers
+/// anything else has not taken the alert, which stays queued (CA-M18).
+async function post(record) {
   const text = `Xindex invariant checker: ${JSON.stringify(record, (_, v) => (typeof v === "bigint" ? v.toString() : v))}`;
   try {
-    await fetch(cfg.alertWebhook, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text, content: text }) });
+    const answer = await fetch(cfg.alertWebhook, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text, content: text }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (answer.ok) return true;
+    print({ level: "reader", code: "webhook", why: `the webhook answered ${answer.status}` });
   } catch (error) {
     print({ level: "reader", code: "webhook", why: error.message });
+  }
+  return false;
+}
+const alerts = createAlerts({ send: post });
+const alert = (record) => cfg.alertWebhook && alerts.push(record);
+
+/// A part of the round that reads on its own: its findings, or, when its reads failed, one reader finding naming the
+/// contract it could not look at, so the other parts are still reported and what stood on this one stands.
+async function section(holder, read) {
+  try {
+    return await read();
+  } catch (error) {
+    return [{ level: "reader", code: "read", holder, why: error.shortMessage ?? error.message }];
   }
 }
 
@@ -287,19 +316,20 @@ async function round() {
   const block = await client.getBlock();
   const blockNumber = block.number;
   await readIndexes(blockNumber);
-  const findings = await indexFindings(blockNumber, block.timestamp);
-  if (cfg.requests) findings.push(...(await requestFindings(blockNumber)));
-  if (cfg.builder) findings.push(...(await builderFindings(blockNumber)));
+  const findings = checkHead(block.timestamp, Math.floor(Date.now() / 1000), cfg.maxHeadAgeSeconds);
+  findings.push(...(await indexFindings(blockNumber, block.timestamp)));
+  if (cfg.requests) findings.push(...(await section(cfg.requests, () => requestFindings(blockNumber))));
+  if (cfg.builder) findings.push(...(await section(cfg.builder, () => builderFindings(blockNumber))));
 
   const diff = diffFindings(standing, findings);
   standing = diff.standing;
   for (const f of diff.raised) {
     print({ block: blockNumber, raised: true, ...f });
-    if (f.level !== "notice") await alert({ block: blockNumber, ...f });
+    if (f.level !== "notice") alert({ block: blockNumber, ...f });
   }
   for (const key of diff.cleared) {
     print({ block: blockNumber, cleared: key });
-    if (!key.startsWith("unreadable:")) await alert({ block: blockNumber, cleared: key });
+    if (!key.startsWith("unreadable:")) alert({ block: blockNumber, cleared: key });
   }
   for (const n of await notices(blockNumber)) print(n);
   const failing = findings.filter((f) => f.level !== "notice").length;
@@ -307,16 +337,40 @@ async function round() {
   return failing;
 }
 
-/// One round; a round the RPC could not serve is itself a reader finding, so it counts as failing.
+/// One round; a round the RPC could not serve is itself a reader finding, so it counts as failing, and is alerted
+/// once when the rounds start failing and once when they are served again (CA-M18). The queued alerts are sent after
+/// every round, served or not.
+let unserved = false;
 async function guardedRound() {
+  let failing = 1;
   try {
-    return await round();
+    failing = await round();
+    if (unserved) alert({ cleared: "round" });
+    unserved = false;
   } catch (error) {
-    print({ level: "reader", code: "round", why: `${error.shortMessage ?? error.message} ${error.details ?? ""}`.trim() });
-    return 1;
+    const record = { level: "reader", code: "round", why: `${error.shortMessage ?? error.message} ${error.details ?? ""}`.trim() };
+    print(record);
+    if (!unserved) alert(record);
+    unserved = true;
+  }
+  const { queued, dropped } = await alerts.flush();
+  if (queued || dropped) print({ level: "reader", code: "webhook", queued, dropped, why: "alerts the webhook has not taken" });
+  return failing;
+}
+
+/// Refuses to run against another chain or another deployment than the one configured: either would answer every
+/// read, and an empty registry there reads as a healthy one here (CA-L12).
+async function checkSetup() {
+  const chainId = await client.getChainId();
+  if (chainId !== cfg.chain.chainId) throw new Error(`RPC_URL serves chain ${chainId}, not CHAIN_ID ${cfg.chain.chainId}`);
+  for (const [name, address, abi] of [["REQUESTS", cfg.requests, ABI.requests], ["BUILDER", cfg.builder, ABI.builder]]) {
+    if (!address) continue;
+    const factory = lower(await client.readContract({ address, abi, functionName: "FACTORY" }));
+    if (factory !== cfg.factory) throw new Error(`${name} ${address} serves the factory ${factory}, not FACTORY ${cfg.factory}`);
   }
 }
 
+await checkSetup();
 if (ONCE) process.exit((await guardedRound()) === 0 ? 0 : 1);
 for (;;) {
   await guardedRound();

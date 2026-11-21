@@ -105,9 +105,10 @@ OpenZeppelin's upgradeable ERC20 and ERC20Permit (clones skip constructors, so n
   then pushes every component. Neither reads a price.
 - **redeemSkipping(shares, to, skipMask):** the same, except each component whose bit is set stays in the index and is
   booked as a claim for `to`, the account that receives every other component (DA-17), before any token moves.
-  **claim(token, to)** pays `msg.sender`'s claim on `token` and clears it.
-- **startRebalance(keepMask)**, **startRebalance(keepMask, prices, tolerance)**, **cancelRebalance()** and the two
-  **executeRebalance** overloads: section 3.
+  **claim(token, to)** pays `msg.sender`'s claim on `token` and clears it; **claim(token, to, amount)** pays part of
+  it and leaves the rest recorded, for a claim the index can no longer pay whole (CA-S01).
+- **startRebalance(keepMask)**, **startRebalance(keepMask, prices, tolerance)**, **cancelRebalance()**,
+  **cancelRebalance(proposalId)** and the two **executeRebalance** overloads: section 3.
 - **Views:** `components()`, `componentTokens()`, `componentCount()`, `componentWeights()`, `recordedUnits()` (the units
   a fill's `newUnits` are compared with, without the scale), `config()`, `previewIssue`, `previewRedeem`, `claimOf`,
   `totalClaims`, `pendingStreamingFee()`, `lastAccrual()`, `earliestRebalance()`, `pendingRebalance()`, `currentBar()`,
@@ -241,10 +242,12 @@ The zap's stateful sibling, built on 2026-10-16 for the basket one transaction c
 several calls into an escrow the caller owns here and issued in one, and selling mirrors it. Ownerless, no upgrade,
 nothing to configure, and nobody else needed: no filler.
 
-- **State:** `escrowOf[user][token]`, the only storage. A token in it moves on its owner's call alone: into an issue,
-  a sale or a withdrawal.
-- `deposit(token, amount)` credits the balance increase it caused, so a fee-on-transfer token credits what arrived;
-  `withdraw(token, amount, to)` debits first and then transfers, `amount` 0 meaning the whole escrow.
+- **State:** `escrowOf[user][token]`, and `totalEscrow[token]`, the sum of every user's escrow of a token. A token in
+  an escrow moves on its owner's call alone: into an issue, a sale or a withdrawal.
+- `deposit(token, amount)` credits the balance increase it caused, so a fee-on-transfer token credits what arrived,
+  and a transfer that delivered nothing reverts `TransferShortfall` (CA-R2-16);
+  `withdraw(token, amount, to)` debits first and then transfers, `amount` 0 meaning the whole escrow, and `to` cannot
+  be the token itself (CA-R2-15).
 - `buy(BuyParams{index, expectedNonce, shares, tokenIn, maxAmountIn, components, legs, deadline})` pulls the whole
   `maxAmountIn` (refusing a fee-on-transfer currency), buys each named component up to what `previewIssue(shares)`
   needs beyond the escrow through the engine, credits the escrow, keeps the basket's own `tokenIn` out of the refund,
@@ -258,8 +261,12 @@ nothing to configure, and nobody else needed: no filler.
   through the engine or, when it is `tokenOut`, counts it toward the payout against its leg's minimum (DA-15), credits
   what a hop did not sell back to the escrow (`Unsold`), measures the payout as its `tokenOut` balance change and pays
   `to`, refusing a fee-on-transfer payout.
-- **Invariant:** for every token the builder's balance covers the sum of the escrows, since every credit is a
-  measured arrival and every debit precedes the transfer it pays for; what strangers send stays, as in `MintRequests`.
+- **Invariant:** for every token the builder's balance covers the sum of the escrows, `totalEscrow`, since every
+  credit is a measured arrival and every debit precedes the transfer it pays for; what strangers send stays, as in
+  `MintRequests`. Only the token's issuer can break it, by taking part of the builder's balance. While it is broken,
+  a deposit, a buy or a redeem that would credit that token reverts `Underbacked`, so a newcomer's coins never pay an
+  earlier escrow; what is left still leaves, first come, first served (CA-H2, as RX-8 in the hub). A leg that is the
+  paying stablecoin itself is checked again once the call's refund has left.
   This assumes one ledger behind one address: a swap measured across two addresses of one ledger reverts
   `SharedBalance` (RW-10), and a redeem of an index naming both would be credited twice, so such a token is never
   listed.
@@ -291,7 +298,17 @@ Two rules tie a fill to what was priced. A request records the index's `rebalanc
 `refund` read no nonce, so the escrow always comes back (RW-2). And a filler may name the request it priced:
 `fill(id, amount, expected)` reverts `RequestChanged` unless the hash of the request behind `id` is `expected`
 (`requestHash`), which covers a re-org or a front-run that puts another request behind the id; `fill(id, amount)` is
-for a caller that reads the request in the same call, as the keeper's executor does (RW-7).
+for a caller that reads the request in the same call, as the keeper's executor does (RW-7). Reading it there is not
+enough alone, so the executor also compares what it read with the hash its keeper priced (CA-M6).
+
+A request records the nonce the index reads when its transaction lands, which need not be the one its requester
+priced. `requestMint(..., expectedNonce)` and `requestRedeem(..., expectedNonce)` name that nonce and revert
+`StaleRebalanceNonce` after a settlement, before anything is escrowed; the unbound two stay for a caller that does
+not price a basket (CA-M1).
+
+`totalEscrow[token]` is the sum of the open escrows in a token. A request is taken only while the contract's balance
+covers it: after an issuer destroyed part of the balance, a new deposit would pay the earlier requests, so it reverts
+`Underbacked` until the balance is whole again (CA-H2, as RX-8 in the hub).
 
 Fillers pay requesters directly, the contract never calls `approve`, and every entry point shares one reentrancy
 guard. A deposit that could not be paid back out, as from an address Tether has blacklisted, is refused (SA-01).
@@ -341,7 +358,10 @@ at are named at the fill, so nothing a holder would leave over is fixed at the s
 `eta + AUCTION_DURATION` (4 hours), the twenty halvings of its bar (section 3.5). Nothing on chain waits for a market to
 be open: an executor that cannot value a coin leaves it alone, naming its units unchanged, and trades the rest.
 
-`cancelRebalance()`, owner or guardian, clears a pending proposal. Cancelling during the notice or the auction holds
+`cancelRebalance()`, owner or guardian, clears a pending proposal, whichever it is when the call lands.
+`cancelRebalance(proposalId)` clears it only if it is still the index's latest proposal, and reverts `StaleProposal`
+otherwise: a Safe uses it, since its transaction lands long after its signers read the proposal, when the other role
+may already have replaced that one with a start of its own (CA-S02). Cancelling during the notice or the auction holds
 strangers off for `REBALANCE_DELAY` from the cancel (`restartAllowedAt`, R15); cancelling one that already expired only
 clears it, and the hold-off the expiry granted stands (VR-04). An auction that expires unfilled holds strangers off
 until `eta + AUCTION_DURATION + REBALANCE_DELAY`, so the owner and guardian get the first restart (XA-02, XA-16,
@@ -434,8 +454,10 @@ holders. After the twenty halvings of the four-hour auction it ends at 476,837,1
 index. It never reaches zero. `currentBar()` returns it, and 0 outside an auction
 (`test_theBarHalvesEveryTwelveMinutesRoundedUp`).
 
-- It starts above what any trade offers. Only a fill that doubles every component, a gift, clears the first second:
-  `L(1) = 0.5333` (`test_onlyAGiftClearsTheBarsFirstSecond`).
+- It starts above what any trade offers. Only a gift clears the first second: a fill that adds about three quarters
+  or more to every component, and takes nothing. Doubling every one scores `L(1) = 0.5333`, and the score peaks a
+  little before that, `L(0.9) = 0.5412`, since it runs under the logarithm (`test_onlyAGiftClearsTheBarsFirstSecond`,
+  CA-S07).
 - It falls about 1.1% of itself per block, so the price of a fill is found to a hundredth of what is at stake.
 - **The bar is on the whole index's gain, not a premium on what is traded.** With the executor choosing the trade, a
   premium on the traded amount is won by the smallest trade: the first profitable fill would move a sliver, restart the
@@ -804,8 +826,8 @@ components (section 2).
   guardian wait out too (RW-3). While a replacement is pending the owner
   cancels the outgoing guardian's keep-mask proposals, within the 2 hours of `REBALANCE_DELAY`, and monitors watch
   `RebalanceStarted` with a non-zero `keepMask` (RT-07). Neither stall moves funds; holders redeem throughout.
-- **Reentrancy.** `nonReentrant` on the hub's eleven entry points that mint, burn, pay, accrue or rebalance
-  (`test_R11_everyEntryPointIsGuardedDuringTheCallback` re-enters ten of them; the quoted start shares the guard), on
+- **Reentrancy.** `nonReentrant` on the hub's thirteen entry points that mint, burn, pay, accrue or rebalance
+  (`test_R11_everyEntryPointIsGuardedDuringTheCallback` re-enters every one of them), on
   `createIndex`, on the zap's seven (CR-I26), on every entry point of `BasketBuilder` and on every entry point of
   `MintRequests`. The new units, the nonce and the cleared proposal are written before any rebalance transfer, and the
   callback goes only to `msg.sender`. Wake's reentrancy detector does not model the guard; its documented suppressions

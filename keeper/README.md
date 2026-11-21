@@ -107,7 +107,13 @@ leaves stock only within the **stock allowance** `OWNER` sets for it (`setStockA
 restock service bridges in adds to, which every delivery from stock spends; with none, nothing is served from stock.
 With `NEEDS_FILE` set, the keeper writes there every coin a fill, a start or a request delivers from stock, with the
 whole of it that fill needs, for the restock service to bring in and then keep: a coin stays on the board while its
-fill waits, covered or not, so stock that has just arrived is not sent home before the fill uses it (RZ-3). Only a
+fill waits, covered or not, so stock that has just arrived is not sent home before the fill uses it (RZ-3). The board
+is dated by the keeper's last block that looked at everything it reports on, not by its last write: while the
+keeper's blocks fail, or stop behind a transaction of its own, the date stands still, and after fifteen minutes the
+restock reads the board as unknown and moves no coin, where a board dated by its last write read as "nothing is
+needed" and sent the stock home (CA-R2-02). A request is on the board once, under its batch while it is in one
+(CA-M8); one short of stock is checked again within ten minutes, so its need does not lapse while the coins are on
+their way; and one its index has settled a rebalance since asks for nothing, since it can never be filled. Only a
 fill that could pay `MIN_PROFIT_USD` at its best price is on the board (RY-8): an auction's, when its settlement at
 its last second, where the bar is lowest, sends out that much more than it takes in at the keeper's prices, before
 routes and gas; a request's,
@@ -167,7 +173,12 @@ routed coin too; only the rest is bought. The executor's address must be able to
   the shares of an index that exists, or request a mint of one, so that check does not keep the stock from an index the
   key's thief holds (CF-1):
   what bounds the stock a stolen key can move is the allowance `OWNER` left, which a request fill spends like an
-  auction fill, so keep each allowance to what the next fills need. The key can also trade the USDC float badly within
+  auction fill, so keep each allowance to what the next fills need. A batch spends the share stock's allowance on a
+  count of the shares it is to hand over and bring in, made before anything moves; after its last step that count is
+  held against the shares the executor holds, and the batch reverts `ShareStockShort` if more left than was spent.
+  Until 2026-11-21 nothing compared the two, and a batch that named a redeem request and paid it nothing, which is
+  never filled, took the whole share stock with the allowance at zero (CA-H1). Every fill also carries the hash of
+  the request, or requests, its keeper priced, and stops if another stands behind an id, as after a re-org (CA-M6). The key can also trade the USDC float badly within
   the floor it sets itself: keep the float to what fills need, and the key's ETH to a few days of gas.
 - **Kept coins are adverse selection.** A coin no route takes is kept as stock, and the worse its pools pay against
   Pyth, the surer no route takes it. The bot values a kept coin at the lower of Pyth and the best quote its route
@@ -204,7 +215,11 @@ what nobody needs. It is a separate process with its own key, the **treasury**, 
    Wormhole's guardians (fetched from Wormholescan) or a CCTP burn attested by Circle (from Iris), then redeemed or
    received on the other side. A move is recorded signed, the journal flushed to the disk, before it is broadcast, so
    a restart, or a power cut, sends the same transaction again rather than a second one; an empty or unreadable journal
-   stops the service rather than starting it afresh (RS-13). Redeeming and receiving are counted once by the contracts
+   stops the service rather than starting it afresh (RS-13). One process holds the journal at a time, by a lock file
+   beside it: a second, a restart overlapping the one it replaces or a `--once` run beside the service, stops at
+   start, where each used to erase the other's moves (CA-M12). A transfer is settled only once the receiving side
+   shows it completed, read back after the completing transaction is mined: a cancel mined on that nonce completes
+   nothing (CA-M10). Redeeming and receiving are counted once by the contracts
    that do them, and a signed transfer or an attestation is stored for a move only when it is the move's own and the
    receiving chain's contract accepts it, so a wrong answer is fetched again rather than kept (RS-14). A signed move
    whose nonce another transaction took is dropped only when a look a minute after the first still finds no receipt,
@@ -237,7 +252,8 @@ what nobody needs. It is a separate process with its own key, the **treasury**, 
 3. Every trade is priced against Pyth through the route search the keeper uses (`bot/routes.mjs`, on each chain's
    Uniswap V3 fork), and refused beyond `ROUTE_MAX_LOSS_BPS`; a buy too large for the pool is halved until it fits or
    falls below `RESTOCK_MIN_USD`, so a thin pool restocks in batches. Buys stop at `RESTOCK_DAILY_USD` a day, the last
-   one cut to what is left of it (RS-7), and each trade or cross-chain transfer, CCTP's sweeps included (RS-11), at
+   one cut to what is left of it (RS-7): the figure bounds what the buys may cost, each counted at its worth at Pyth
+   and the `ROUTE_MAX_LOSS_BPS` its swap may lose on top (CA-M13), and each trade or cross-chain transfer, CCTP's sweeps included (RS-11), at
    `RESTOCK_MAX_TRANSFER_USD`, under Wormhole's Governor's large-transfer delay.
 4. It sends one transaction at a time on each chain: nothing is signed while one of the treasury's is pending there,
    each may pay twice the base fee and the tip, as the keeper's, so it stays includable through six full blocks of
@@ -312,7 +328,7 @@ each chain and the stock, and nothing beyond it.
 | `PYTH_API_KEY` | required | Hermes' API key. |
 | `HERMES_URL` | `https://pyth.dourolabs.app/hermes` | |
 | `NEEDS_FILE` | required | The keeper's `NEEDS_FILE`, which the keeper must be set to write: missing or stale, nothing moves (RS-8). |
-| `JOURNAL_FILE` | required | Where the service keeps its moves, on the disk before each is sent. Keep it: it is what a restart resumes from, and the service refuses to start on one empty or unreadable (RS-13). |
+| `JOURNAL_FILE` | required | Where the service keeps its moves, on the disk before each is sent. Keep it: it is what a restart resumes from, and the service refuses to start on one empty or unreadable (RS-13), or held by another running process (`<file>.lock`, CA-M12). |
 | `RESTOCK_COINS` | every coin | Comma-separated symbols to serve. |
 | `BSC_RPC_URL`, `AVALANCHE_RPC_URL`, `OPTIMISM_RPC_URL`, `BASE_RPC_URL` | required for their coins | Each home chain's JSON-RPC. |
 | `SOLANA_RPC_URL`, `SOLANA_KEY` | required for JUP, PYTH | Solana's JSON-RPC, and the service's Solana wallet, its 64-byte secret key in base58; both go to the signer alone. The RPC must keep transaction history: a move whose blockhash expired is dropped only on the word of a node caught up to the finalized slot that keeps the slots since it was built, and stays signed, reported unknown, otherwise (PD-8). A node that caps the accounts a simulation returns, as the public one does at 3, is asked in chunks (PD-1). |
@@ -325,7 +341,7 @@ each chain and the stock, and nothing beyond it.
 | `ALGORAND_INDEXER_URL` | `https://mainnet-idx.algonode.cloud` | The indexer that confirms a transaction algod no longer remembers (1000 rounds). |
 | `RESTOCK_BUFFER_BPS` | `1000` | How far above the needs a buy fills. |
 | `RESTOCK_MIN_USD` | `200` | Smallest trade or transfer worth its fees. |
-| `RESTOCK_DAILY_USD` | `20000` | Most the buys of a day may cost; the last one is cut to what is left (RS-7). |
+| `RESTOCK_DAILY_USD` | `20000` | Most the buys of a day may cost, each one's loss bound included (CA-M13), gas aside; the last one is cut to what is left (RS-7). |
 | `RESTOCK_KEEP_USD` | `1000` | Stock of each coin kept in the executor when nobody needs it. |
 | `RESTOCK_MAX_TRANSFER_USD` | `25000` | Largest single trade or cross-chain transfer, Wormhole's or CCTP's; at least `RESTOCK_MIN_USD`. Draws and repayments, between the executor and the treasury, are bounded by the owner's figure instead. |
 | `RESTOCK_FLOAT_TARGET_USD` | `5000` | Float kept on each home chain. |
@@ -406,13 +422,30 @@ runs one beside the keeper (the logic-hardening plan's step 6). Every `POLL_SECO
 - **`MintRequests`**, when `REQUESTS` is set: its balance of each token covers the open requests' escrows.
 - **The `BasketBuilder`**, when `BUILDER` is set: its balance of each token covers its users' escrows, the pairs found
   from its credit events since `FROM_BLOCK`.
-- **The admin events monitors watch (RT-07):** a start with a keep mask, a cancel, and the factory's guardian, owner,
-  listing, whitelist and fee-policy events, printed as notices.
+- **The admin events monitors watch (RT-07):** every start, plain or with a keep mask, the quote posted with one, a
+  cancel, and the factory's guardian, owner, listing, whitelist, creator-approval and fee-policy events, printed as
+  notices (CA-L10).
 
 Each finding prints as one JSON line when it is raised and when it clears, not every round; breaches and reader
 findings (the checker could not trust a read) also go to `ALERT_WEBHOOK`. A component whose `balanceOf` reverts is a
 notice: that is what the keep mask and `redeemSkipping` exist for. `--once` runs one round and exits 1 if anything but
 a notice stands, for a cron job or CI.
+
+What it does when it cannot see (the audit of 2026-11-21):
+- A finding on something a round could not read stands until a read shows it gone: a failed snapshot, or a component
+  that stops answering `balanceOf`, clears nothing (CA-M17). An escrow balance that could not be read is a reader
+  finding, not a balance of zero (CA-L9).
+- Requests and events are read forward, and a range is passed only once it has been read, so a failed read is made
+  again next round (CA-M16). `MintRequests` and the builder are read apart from the indexes: one failing does not
+  hide the others' findings.
+- An alert stays queued until the webhook answers with a success, in order, and is sent again every round; a round
+  the RPC could not serve is alerted once when the rounds start failing and once when they are served again (CA-M18).
+- A latest block older than `MAX_HEAD_AGE_SECONDS` is a reader finding: a node that stopped following the chain
+  answers every read from the same healthy block (CA-R2-14).
+- It refuses to start on an RPC that serves another chain than `CHAIN_ID`, or with a `REQUESTS` or `BUILDER` that
+  names another factory (CA-L12).
+- Not covered: a re-org that replaces an index or a builder event already read (CA-M19). It reads the latest block,
+  so run it beside a node you trust, and restart it after a deep re-org.
 
     npm install
     RPC_URL=... FACTORY=... REQUESTS=... BUILDER=... FROM_BLOCK=... ALERT_WEBHOOK=... npm run invariants
@@ -426,6 +459,7 @@ a notice stands, for a cron job or CI.
 | `BUILDER` | none | The `BasketBuilder`, whose escrows are checked when set; needs `FROM_BLOCK`. |
 | `FROM_BLOCK` | none | The deployment's first block: where the builder's events and the notices start. Unset, notices start now. |
 | `POLL_SECONDS` | `60` | How often it reads. |
+| `MAX_HEAD_AGE_SECONDS` | `180` | How old the RPC's latest block may be before the round counts as failed. |
 | `LOG_CHUNK` | `10000` | The widest block range one `eth_getLogs` asks for. |
 | `ALERT_WEBHOOK` | none | A Slack or Discord incoming webhook. |
 

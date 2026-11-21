@@ -1248,8 +1248,8 @@
     "test": "test/KeeperExecutor.t.sol",
     "edits": [
       {
-        "old": "        _spendShareStock(address(f.index), deliver + f.redeem, sharesIn + f.issue);\n",
-        "new": ""
+        "old": "        uint256 spent = _spendShareStock(address(f.index), deliver + f.redeem, sharesIn + f.issue);\n",
+        "new": "        uint256 spent = deliver + f.redeem > sharesIn + f.issue ? deliver + f.redeem - sharesIn - f.issue : 0;\n"
       }
     ],
     "root": "keeper"
@@ -1262,8 +1262,8 @@
     "test": "test/KeeperExecutor.t.sol",
     "edits": [
       {
-        "old": "        _spendShareStock(address(f.index), deliver + f.redeem, sharesIn + f.issue);\n",
-        "new": "        _spendShareStock(address(f.index), deliver, sharesIn + f.issue);\n"
+        "old": "        uint256 spent = _spendShareStock(address(f.index), deliver + f.redeem, sharesIn + f.issue);\n",
+        "new": "        uint256 spent = _spendShareStock(address(f.index), deliver, sharesIn + f.issue);\n"
       }
     ],
     "root": "keeper"
@@ -2039,6 +2039,590 @@
       {
         "old": "Math.max(1000, Number.isFinite(retryAfter) ? retryAfter * 1000 : 0)",
         "new": "Math.max(1000, 0)"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C1",
+    "what": "a request is taken while the contract holds less of the token than its open requests escrowed, so the deposit pays the earlier ones (CA-H2)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "src/MintRequests.sol",
+    "test": "test/MintRequests.t.sol",
+    "edits": [
+      {
+        "old": "        if (before < owed) revert Underbacked(token, before, owed);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "C2",
+    "what": "a fill does not take its request's escrow off the token's total (CA-H2)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "src/MintRequests.sol",
+    "test": "test/MintRequests.t.sol",
+    "edits": [
+      {
+        "old": "        totalEscrow[paid] -= escrow;\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "C3",
+    "what": "a cancel or a refund does not take its request's escrow off the token's total (CA-H2)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "src/MintRequests.sol",
+    "test": "test/MintRequests.t.sol",
+    "edits": [
+      {
+        "old": "        totalEscrow[token] -= escrow;\n        IERC20(token).safeTransfer(request.requester, escrow);",
+        "new": "        IERC20(token).safeTransfer(request.requester, escrow);"
+      }
+    ]
+  },
+  {
+    "id": "C4",
+    "what": "the bound mint request does not check the nonce its limit was set at (CA-M1)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "src/MintRequests.sol",
+    "test": "test/MintRequests.t.sol",
+    "edits": [
+      {
+        "old": "        _checkNonce(index, expectedNonce);\n        id = _requestMint(",
+        "new": "        id = _requestMint("
+      }
+    ]
+  },
+  {
+    "id": "C5",
+    "what": "the bound redeem request does not check the nonce its limit was set at (CA-M1)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "src/MintRequests.sol",
+    "test": "test/MintRequests.t.sol",
+    "edits": [
+      {
+        "old": "        _checkNonce(index, expectedNonce);\n        id = _requestRedeem(",
+        "new": "        id = _requestRedeem("
+      }
+    ]
+  },
+  {
+    "id": "C6",
+    "what": "the builder credits a token it holds less of than its escrows, so the credit pays the earlier ones (CA-H2)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "src/BasketBuilder.sol",
+    "test": "test/BasketBuilder.t.sol",
+    "edits": [
+      {
+        "old": "        if (balance < before) revert TransferShortfall(address(token));\n        _checkBacked(token, balance);\n",
+        "new": "        if (balance < before) revert TransferShortfall(address(token));\n"
+      }
+    ]
+  },
+  {
+    "id": "C7",
+    "what": "a pass-through leg is not checked again once the refund has left, so the call's unspent stablecoin hides a shortfall (CA-H2)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "src/BasketBuilder.sol",
+    "test": "test/BasketBuilder.t.sol",
+    "edits": [
+      {
+        "old": "        if (reserved != 0) _checkBacked(tokenIn, tokenIn.balanceOf(address(this)));\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "C8",
+    "what": "a debit of an escrow does not come off the token's total (CA-H2)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "src/BasketBuilder.sol",
+    "test": "test/BasketBuilder.t.sol",
+    "edits": [
+      {
+        "old": "        escrowOf[msg.sender][token] = held - amount;\n        totalEscrow[token] -= amount;\n",
+        "new": "        escrowOf[msg.sender][token] = held - amount;\n"
+      }
+    ]
+  },
+  {
+    "id": "C9",
+    "what": "a withdrawal may be paid to the token's own contract (CA-R2-15)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "src/BasketBuilder.sol",
+    "test": "test/BasketBuilder.t.sol",
+    "edits": [
+      {
+        "old": "        if (to == token) revert InvalidRecipient(to);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "C10",
+    "what": "a sale may be paid to the payout stablecoin's own contract (CA-R2-15)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "src/BasketBuilder.sol",
+    "test": "test/BasketBuilder.t.sol",
+    "edits": [
+      {
+        "old": "        if (p.to == p.tokenOut) revert InvalidRecipient(p.to);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "C11",
+    "what": "a deposit that delivered nothing is recorded as a deposit of zero (CA-R2-16)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "src/BasketBuilder.sol",
+    "test": "test/BasketBuilder.t.sol",
+    "edits": [
+      {
+        "old": "        if (received == 0) revert TransferShortfall(token);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "C12",
+    "what": "a partial claim is not held to the claim recorded (CA-S01)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.t.sol",
+    "edits": [
+      {
+        "old": "        if (amount > recorded) revert ClaimTooLarge(token, amount, recorded);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "C13",
+    "what": "a partial claim clears the whole claim, so the part not paid is forgotten (CA-S01)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.t.sol",
+    "edits": [
+      {
+        "old": "        claimOf[msg.sender][token] -= amount;\n",
+        "new": "        delete claimOf[msg.sender][token];\n"
+      }
+    ]
+  },
+  {
+    "id": "C14",
+    "what": "the bound cancel cancels whichever proposal is pending, not the one it names (CA-S02)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "        if (proposalId != latest) revert StaleProposal(proposalId, latest);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "C15",
+    "what": "a batch's count of its shares is not held against the shares held, so a redeem side paid nothing lets the stock leave unspent (CA-H1)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "        if (sharesHeld + spent < sharesBefore) {\n            revert ShareStockShort(address(f.index), sharesBefore - sharesHeld, spent);\n        }\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "C16",
+    "what": "a single fill does not compare the request behind its id with the one its keeper priced (CA-M6)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "        if (keccak256(abi.encode(request)) != f.expected) revert IMintRequests.RequestChanged(f.id);\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "C17",
+    "what": "a batch does not compare its requests with the ones its keeper priced (CA-M6)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "        if (priced != f.expected) revert RequestsChanged();\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "C18",
+    "what": "a batch's hash leaves its mint requests out (CA-M6)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "        (deliver,, priced) = _openSide(f, f.mintIds, f.mintShares, true, priced);\n",
+        "new": "        (deliver,,) = _openSide(f, f.mintIds, f.mintShares, true, priced);\n"
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "C19",
+    "what": "on a mainnet the deploy script takes any address for the guardian, a single key among them (CA-M4)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "script/DeployChecks.sol",
+    "test": "test/Scripts.t.sol",
+    "edits": [
+      {
+        "old": "        _checkGuardianIsASafe(guardian);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "C20",
+    "what": "a guardian Safe of one signature passes on a mainnet (CA-M4)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "script/DeployChecks.sol",
+    "test": "test/Scripts.t.sol",
+    "edits": [
+      {
+        "old": "        if (threshold < MIN_GUARDIAN_THRESHOLD) revert GuardianThresholdTooLow(guardian, threshold);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "C21",
+    "what": "a Safe whose owners could not be read is printed with a count of them (CA-R2-18)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "script/CheckToken.s.sol",
+    "test": "test/CheckToken.t.sol",
+    "edits": [
+      {
+        "old": "            if (party.threshold == 0 || party.signers < party.threshold) {\n",
+        "new": "            if (party.threshold == 0) {\n"
+      }
+    ]
+  },
+  {
+    "id": "C22",
+    "what": "the report does not read how many hold DEFAULT_ADMIN_ROLE (CA-R2-17)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "script/CheckToken.s.sol",
+    "test": "test/CheckToken.t.sol",
+    "edits": [
+      {
+        "old": "        (, r.roleAdmins) = _word(token, abi.encodeCall(IAdminReads.getRoleMemberCount, (bytes32(0))));\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "C23",
+    "what": "the needs board is dated by its last write, so a keeper whose rounds fail publishes a fresh empty board (CA-R2-02)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/bot/needs.mjs",
+    "test": "keeper/test/unit/needs.test.mjs",
+    "edits": [
+      {
+        "old": "      if (observed) observedAt = t;\n",
+        "new": "      observedAt = t;\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C24",
+    "what": "a report with no time on the board is read as fresh for ever (CA-L6)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/bot/needs.mjs",
+    "test": "keeper/test/unit/needs.test.mjs",
+    "edits": [
+      {
+        "old": "    if (!isTime(n?.seenAt, nowSeconds) || typeof n.token !== \"string\" || typeof n.amount !== \"string\") return null;\n",
+        "new": "    if (typeof n?.token !== \"string\" || typeof n.amount !== \"string\") return null;\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C25",
+    "what": "a board dated ahead of the clock is read as fresh (CA-L6)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/bot/needs.mjs",
+    "test": "keeper/test/unit/needs.test.mjs",
+    "edits": [
+      {
+        "old": "const isTime = (x, nowSeconds) => Number.isInteger(x) && x >= 0 && x <= nowSeconds + NEEDS_MAX_SKEW_SECONDS;\n",
+        "new": "const isTime = (x, nowSeconds) => Number.isInteger(x) && x >= 0 && nowSeconds >= 0;\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C26",
+    "what": "a failed stock read of a leg the fill leaves alone stops the fill (CA-R2-03)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/requests.test.mjs",
+    "edits": [
+      {
+        "old": "  return moving.some((i) => reads.some((answers) => answers[i].status !== \"success\"));\n",
+        "new": "  return reads.some((answers) => answers.some((answer) => answer.status !== \"success\")) && moving.length >= 0;\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C27",
+    "what": "a request its index has settled a rebalance since is still simulated and still asks the restock for stock",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/requests.test.mjs",
+    "edits": [
+      {
+        "old": "  return at.nonce !== undefined && at.nonce !== null && BigInt(r.rebalanceNonce) !== BigInt(at.nonce);\n",
+        "new": "  return false;\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C28",
+    "what": "a request short of stock is checked again only after its report has lapsed from the restock's board",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/bot/backoff.mjs",
+    "test": "keeper/test/unit/backoff.test.mjs",
+    "edits": [
+      {
+        "old": "export const SHORT_RECHECK_BLOCKS = 50;\n",
+        "new": "export const SHORT_RECHECK_BLOCKS = 200;\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C29",
+    "what": "the bot names its units by the logarithm's slope, not the score's, and takes less than the hub allows (CA-M7)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/bot/units.mjs",
+    "test": "keeper/test/unit/units.test.mjs",
+    "edits": [
+      {
+        "old": "const slope = (x) => 1 - x + x * x - 1.2 * x * x * x;\n",
+        "new": "const slope = (x) => 1 / (1 + x);\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C30",
+    "what": "a finding on something the round could not read is announced as cleared (CA-M17)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/invariants/check.mjs",
+    "test": "keeper/test/unit/invariants.test.mjs",
+    "edits": [
+      {
+        "old": "  return { raised, cleared: gone.filter((key) => !held(key)), standing: new Set([...now.keys(), ...gone.filter(held)]) };\n",
+        "new": "  return { raised, cleared: gone, standing: new Set(now.keys()) };\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C31",
+    "what": "a cursor moves past a range before it has been read, so a failed read skips it for good (CA-M16)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/invariants/check.mjs",
+    "test": "keeper/test/unit/invariants.test.mjs",
+    "edits": [
+      {
+        "old": "    const answer = await read(next, to);\n    next = to + 1n;\n    return answer;\n",
+        "new": "    const from = next;\n    next = to + 1n;\n    return read(from, to);\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C32",
+    "what": "an alert the webhook did not take is dropped as sent (CA-M18)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/invariants/check.mjs",
+    "test": "keeper/test/unit/invariants.test.mjs",
+    "edits": [
+      {
+        "old": "        if (!(await send(queue[0]))) break;\n        queue.shift();\n",
+        "new": "        await send(queue[0]);\n        queue.shift();\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C33",
+    "what": "an escrow balance that could not be read counts as zero, a shortfall nobody measured (CA-L9)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/invariants/check.mjs",
+    "test": "keeper/test/unit/invariants.test.mjs",
+    "edits": [
+      {
+        "old": "    const balance = balances.get(token) ?? null;\n",
+        "new": "    const balance = balances.get(token) ?? 0n;\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C34",
+    "what": "a head that has stopped moving is never reported (CA-R2-14)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/invariants/check.mjs",
+    "test": "keeper/test/unit/invariants.test.mjs",
+    "edits": [
+      {
+        "old": "  if (age <= maxAgeSeconds) return [];\n",
+        "new": "  if (age <= maxAgeSeconds * 1000) return [];\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C35",
+    "what": "the checker does not watch the quote posted with a start (CA-L10)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/invariants/check.mjs",
+    "test": "keeper/test/unit/invariants.test.mjs",
+    "edits": [
+      {
+        "old": "export const HUB_NOTICES = Object.freeze([\"RebalanceStarted\", \"RebalanceQuoted\", \"RebalanceCancelled\"]);",
+        "new": "export const HUB_NOTICES = Object.freeze([\"RebalanceStarted\", \"RebalanceCancelled\"]);"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C36",
+    "what": "a funding is planned beyond what the treasury holds and may draw (CA-R2-10)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/restock/plan.mjs",
+    "test": "keeper/test/unit/restock-plan.test.mjs",
+    "edits": [
+      {
+        "old": "          const amount = min(least + BigInt(Math.round(cfg.floatTargetUsd * 1e6)), most, available);\n",
+        "new": "          const amount = min(least + BigInt(Math.round(cfg.floatTargetUsd * 1e6)), most);\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C37",
+    "what": "spare stock is bridged out to a chain whose wallet is short of gas (CA-R2-09)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/restock/plan.mjs",
+    "test": "keeper/test/unit/restock-plan.test.mjs",
+    "edits": [
+      {
+        "old": "    if (going === 0n && !blocked && spare > keep && ",
+        "new": "    if (going === 0n && spare > keep && "
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C38",
+    "what": "the day's budget bounds what the buys are worth, not what they may cost (CA-M13)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/restock/plan.mjs",
+    "test": "keeper/test/unit/restock-plan.test.mjs",
+    "edits": [
+      {
+        "old": "      const budgetLeft = budget > 0 ? unitsOf(budget / worst, c.decimals, price) : 0n;\n",
+        "new": "      const budgetLeft = budget > 0 ? unitsOf(budget, c.decimals, price) : 0n;\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C39",
+    "what": "the journal counts a buy at its worth, not at the most it may cost (CA-M13)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/restock/journal.mjs",
+    "test": "keeper/test/unit/restock-journal.test.mjs",
+    "edits": [
+      {
+        "old": "usd += m.maxUsd ?? m.usd;",
+        "new": "usd += m.usd;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C40",
+    "what": "a bridge transfer is settled on a mined transaction without reading the bridge back (CA-M10)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/restock/advance.mjs",
+    "test": "keeper/test/unit/restock-advance.test.mjs",
+    "edits": [
+      {
+        "old": "        if (!(await to.transferCompleted(vaa))) throw new Error(NOT_COMPLETED);\n",
+        "new": ""
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C41",
+    "what": "a CCTP transfer is settled on a mined transaction without reading the receiver back (CA-M10)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/restock/advance.mjs",
+    "test": "keeper/test/unit/restock-advance.test.mjs",
+    "edits": [
+      {
+        "old": "      if (!(await to.cctpReceived(signed.message))) throw new Error(NOT_COMPLETED);\n",
+        "new": ""
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C42",
+    "what": "a second restock process takes the journal while the first still runs (CA-M12)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/restock/journal.mjs",
+    "test": "keeper/test/unit/restock-journal.test.mjs",
+    "edits": [
+      {
+        "old": "      if (Number.isInteger(holder) && holder > 0 && holder !== pid && alive(holder)) {\n",
+        "new": "      if (Number.isInteger(holder) && holder > 0 && holder === 0) {\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C43",
+    "what": "a signer is launched by its URL's pathname, which names no file under a folder with a space (CA-L8)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/restock/solana.mjs",
+    "test": "keeper/test/unit/restock-signer-home.test.mjs",
+    "edits": [
+      {
+        "old": "const SIGNER = fileURLToPath(new URL(\"./solana/signer.mjs\", import.meta.url));",
+        "new": "const SIGNER = new URL(\"./solana/signer.mjs\", import.meta.url).pathname;"
       }
     ],
     "runner": "node"

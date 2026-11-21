@@ -6,8 +6,8 @@ pragma solidity 0.8.28;
 interface IRebalanceExecutor {
     /// @notice Called on the `msg.sender` of `executeRebalance`, after the index has sent it `amountsOut`.
     /// @dev Before returning, the executor must send the index the whole of `amountsIn`. The index then checks that it
-    ///      holds enough of every component to back the new units plus open claims, and reverts the whole rebalance
-    ///      otherwise. Surplus the index already held (rounding or a donation) does not count toward `amountsIn`; it
+    ///      holds enough of every component that moved to back the new units plus open claims, and reverts the whole
+    ///      rebalance otherwise. A component with nothing in either array is not checked (CA-S08). Surplus the index already held (rounding or a donation) does not count toward `amountsIn`; it
     ///      stays with the holders.
     /// @dev The index writes the new units and bumps `rebalanceNonce` before it moves any token. So during the payout
     ///      and this callback, an outside reader sees units the index does not yet back. Nothing can act on that:

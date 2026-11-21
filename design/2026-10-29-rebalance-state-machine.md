@@ -94,6 +94,11 @@ What each landing writes:
   bound of the wrong length, `RebalanceUnderfunded` or `CannotSendOut` after the callback, and every price refusal.
   A revert writes nothing, so the proposal stands and the auction goes on.
 
+Since 2026-11-21 a cancel can name its proposal: `cancelRebalance(proposalId)` (CA-S02). Naming the index's latest
+proposal, it is the cancel of this matrix in every state, with the same revert or the same next state and cooldown;
+naming any other, it reverts `StaleProposal` and changes nothing. Its row is
+`test_aBoundCancelIsTheCancelOfTheProposalItNames`, and the mutant that drops the check is C14.
+
 A keep mask that names a component the index does not have, or leaves fewer than `MIN_COMPONENTS` moving, is
 `InvalidKeepMask` for any caller, in every state where a start reaches the mask check: Cooldown, Open and both
 expired states. In Interval it is `RebalanceTooSoon` and in Notice and Auction `RebalancePending`, because those

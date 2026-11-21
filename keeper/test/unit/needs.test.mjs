@@ -72,3 +72,58 @@ test("RS-8: a board the keeper never wrote is unknown too", () => {
   writeFileSync(file, b.text);
   assert.equal(readNeeds(file, b.t).get(XRP), 7n);
 });
+
+test("CA-R2-02: the board is dated by the last round that looked, not by the last write", () => {
+  const b = board();
+  b.needs.report("0xa:1", "fill", [{ token: XRP, amount: 150n }]);
+  b.needs.flush();
+  assert.equal(JSON.parse(b.text).updatedAt, 1_000);
+
+  // Fifteen minutes of rounds that failed, or stopped behind a transaction in flight: each still flushes.
+  for (let k = 0; k < 91; k++) {
+    b.t += 10;
+    b.needs.flush({ observed: false });
+  }
+  assert.equal(b.t, 1_910);
+  assert.deepEqual(JSON.parse(b.text).needs, [], "the report of the last round that looked has lapsed");
+  assert.equal(JSON.parse(b.text).updatedAt, 1_000, "and the board still carries that round's date");
+  assert.equal(totalNeeds(b.text, b.t), null, "so it reads as unknown, not as nothing needed");
+
+  // A round that looks again dates it again: nothing needed is then a finding.
+  b.t += 10;
+  b.needs.flush({ observed: true });
+  assert.equal(totalNeeds(b.text, b.t).size, 0);
+});
+
+test("CA-R2-02: a keeper that has not looked yet writes no board over the one before it", () => {
+  const b = board();
+  b.text = "the board an earlier run left";
+  b.needs.report("0xa:1", "fill", [{ token: XRP, amount: 150n }]);
+  b.needs.flush({ observed: false });
+  assert.equal(b.text, "the board an earlier run left");
+  b.needs.flush({ observed: true });
+  assert.equal(totalNeeds(b.text, b.t).get(XRP), 150n, "its first look writes what it found");
+});
+
+test("CA-L6: a board that is not what the keeper writes is unknown, never read in part", () => {
+  const entry = { key: "0xa:1", source: "fill", token: XRP, amount: "150", seenAt: 1_000 };
+  const read = (over, updatedAt = 1_000) => totalNeeds(JSON.stringify({ updatedAt, needs: [{ ...entry, ...over }] }), 1_000);
+  assert.equal(read({}).get(XRP), 150n, "the keeper's own entry");
+  assert.equal(read({ token: XRP.toUpperCase().replace("0X", "0x") }).get(XRP), 150n, "a token in any case is one token");
+
+  assert.equal(read({}, 1_061), null, "a board dated ahead of the clock");
+  assert.equal(read({}, 1_060).get(XRP), 150n, "within a minute of it, two clocks that keep time");
+  assert.equal(read({}, 999.5), null, "a date that is no whole second");
+  assert.equal(read({}, -1), null);
+  assert.equal(read({ seenAt: undefined }), null, "a report with no time, which no age could drop");
+  assert.equal(read({ seenAt: 1_061 }), null, "a report from the future");
+  assert.equal(read({ seenAt: "1000" }), null);
+  assert.equal(read({ token: "0x1234" }), null, "a token that is no address");
+  assert.equal(read({ token: 7 }), null);
+  assert.equal(read({ amount: 150 }), null, "an amount that is not the string the keeper writes");
+  assert.equal(read({ amount: "-150" }), null);
+  assert.equal(read({ amount: "1.5" }), null);
+  assert.equal(read({ amount: "0x96" }), null);
+  assert.equal(read({ amount: "" }), null);
+  assert.equal(totalNeeds(JSON.stringify({ updatedAt: 1_000, needs: [entry, null] }), 1_000), null, "one bad entry spoils the board");
+});

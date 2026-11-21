@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { decodeFunctionData } from "viem";
 import { ABI } from "../../bot/chain.mjs";
 import { priceKey } from "../../bot/hermes.mjs";
-import { createRequestFiller } from "../../bot/requests.mjs";
+import { batchHash, createRequestFiller, requestHash } from "../../bot/requests.mjs";
 
 const addr = (byte) => `0x${byte.repeat(20)}`;
 const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
@@ -28,7 +28,7 @@ const UNITS = [10n ** 16n, 50_000n];
 const DECIMALS = [18, 8];
 const PRICES = [2000, 60_000];
 
-function world({ shareStockUsd = 0, minProfitUsd = 5 } = {}) {
+function world({ shareStockUsd = 0, minProfitUsd = 5, stock = () => 0n, unrouted = [], unreadable = [], indexes = [INDEX] } = {}) {
   const requests = new Map();
   const state = { shares: 0n, shareAllowance: 0n, reverting: new Set(), calls: [], now: 1_000_000n };
   const L = () => ({ number: 100n, timestamp: state.now, baseFeePerGas: 10n ** 8n, gasUsed: 15_000_000n, gasLimit: 30_000_000n });
@@ -43,7 +43,7 @@ function world({ shareStockUsd = 0, minProfitUsd = 5 } = {}) {
     if (functionName === "rebalanceNonce") return 7n;
     if (functionName === "previewIssue" || functionName === "previewRedeem") return basket(args[0]);
     if (functionName === "stockAllowance") return address === EXECUTOR && args[0] === INDEX ? state.shareAllowance : 0n;
-    if (functionName === "balanceOf") return address === INDEX ? state.shares : 0n;
+    if (functionName === "balanceOf") return address === INDEX ? state.shares : stock(address);
     throw new Error(`the fake chain has no ${functionName}`);
   };
   const revert = (message) => Object.assign(new Error(message), { reverted: true });
@@ -77,7 +77,7 @@ function world({ shareStockUsd = 0, minProfitUsd = 5 } = {}) {
       new Map(ids.map((id) => [priceKey(id), { price: BigInt(PRICES[IDS.indexOf(id)]) * 10n ** 8n, expo: -8, conf: 1n, publishTime: state.now }])),
   };
   const routes = {
-    best: async ({ token }) => `${token}0001f4${USDC.slice(2)}`.toLowerCase(),
+    best: async ({ token }) => (unrouted.includes(token) ? null : `${token}0001f4${USDC.slice(2)}`.toLowerCase()),
     quoteOf: ({ token, amount }) => {
       const i = [ETH, BTC].indexOf(token);
       return i < 0 ? amount : usd((Number(amount) / 10 ** DECIMALS[i]) * PRICES[i]);
@@ -85,6 +85,9 @@ function world({ shareStockUsd = 0, minProfitUsd = 5 } = {}) {
     forgetKey: () => {},
   };
   const logs = [];
+  // The restock's board, as the filler writes it: what each key last reported.
+  const board = new Map();
+  const needs = { report: (key, source, coins) => (coins.length === 0 ? board.delete(key) : board.set(key, coins)) };
   const filler = createRequestFiller({
     chain,
     cfg: { executor: EXECUTOR, factory: addr("fa"), chain: { usdc: USDC }, slippageBps: 30, minProfitUsd, shareStockUsd },
@@ -92,24 +95,28 @@ function world({ shareStockUsd = 0, minProfitUsd = 5 } = {}) {
     routes,
     requests: REQUESTS,
     pyth: addr("b7"),
-    staticsOf: async () => ({ tokens: [ETH, BTC], ids: IDS, decimals: DECIMALS }),
+    staticsOf: async (index) => {
+      if (unreadable.includes(index)) throw new Error("a decimals read failed");
+      return { tokens: [ETH, BTC], ids: IDS, decimals: DECIMALS };
+    },
     log: (...line) => logs.push(line.join(" ")),
-    needs: null,
+    needs,
   });
   let next = 0n;
   const open = (over) => {
     next += 1n;
-    requests.set(next, { requester: addr("c0"), deadline: state.now + 3600n, open: true, index: INDEX, stable: USDC, ...over });
+    requests.set(next, { requester: addr("c0"), deadline: state.now + 3600n, open: true, rebalanceNonce: 7, index: INDEX, stable: USDC, ...over });
     return next;
   };
   return {
     state,
     logs,
+    board,
     requests,
     mint: (dollars, shares, over = {}) => open({ isMint: true, escrow: usd(dollars), limit: BigInt(shares) * SHARE, ...over }),
     redeem: (shares, dollars, over = {}) => open({ isMint: false, escrow: BigInt(shares) * SHARE, limit: usd(dollars), ...over }),
-    scan: () => filler.scan(L(), [INDEX]),
-    best: () => filler.best(L(), [INDEX], 2000, 10n ** 8n, 100n * 10n ** 9n),
+    scan: () => filler.scan(L(), indexes),
+    best: () => filler.best(L(), indexes, 2000, 10n ** 8n, 100n * 10n ** 9n),
     filler,
   };
 }
@@ -251,4 +258,79 @@ test("a request declined alone still joins the batch a later request makes pay",
   await w.scan();
   const pick = await w.best();
   assert.deepEqual(pick?.ids, [first, second], "the back-off of its single check does not keep it out of a batch");
+});
+
+// The two hashes below were computed outside this code, by Foundry's `cast`, from the ABI encoding of the structs:
+//   cast keccak $(cast abi-encode "f((address,uint40,bool,bool,uint40,address,address,uint256,uint256))" "(...)")
+// and, for the batch, cast keccak $(cast abi-encode "f(bytes32,bytes32)" <running> <hash>), from zero, redeem first.
+const MINT_HASH = "0x3238a81f329e77848d3f121b208aeebf119715dce16ce4568e5bdb15c802352f";
+const BATCH_HASH = "0x68f7ed55998c91b33a4700d05bd1a94c91ad29af54352f61f6b85eaa07b35849";
+
+test("CA-M6: a fill names the request it priced by its hash, as MintRequests computes it", async () => {
+  const w = world();
+  const id = w.mint(60, 1);
+  assert.equal(requestHash(w.requests.get(id)), MINT_HASH, "the struct's ABI encoding, hashed");
+  await w.scan();
+  const pick = await w.best();
+  assert.equal(sent(pick).functionName, "fillMint");
+  assert.equal(sent(pick).args[0].expected, MINT_HASH, "and the fill carries it");
+
+  // Another request behind the same id is another hash: the executor would refuse the fill.
+  assert.notEqual(requestHash({ ...w.requests.get(id), escrow: usd(59) }), MINT_HASH);
+});
+
+test("CA-M6: a batch names its requests as one hash, the redeem requests first", async () => {
+  const w = world();
+  const buy = w.mint(60, 1);
+  const sell = w.redeem(1, 40);
+  assert.equal(batchHash([w.requests.get(sell), w.requests.get(buy)]), BATCH_HASH);
+  assert.notEqual(batchHash([w.requests.get(buy), w.requests.get(sell)]), BATCH_HASH, "the order is part of it");
+  await w.scan();
+  const pick = await w.best();
+  assert.deepEqual(pick.ids, [buy, sell]);
+  const f = sent(pick).args[0];
+  assert.deepEqual([f.redeemIds, f.mintIds], [[sell], [buy]]);
+  assert.equal(f.expected, BATCH_HASH, "folded in the order the executor reads them");
+});
+
+test("CA-M8: a request is on the restock's board once, under its batch while it is in one", async () => {
+  // BTC has no route, so stock serves it, and there is none: every check ends short and reports what it needs.
+  const w = world({ unrouted: [BTC] });
+  const ids = [w.mint(60, 1), w.mint(60, 1)];
+  await w.scan();
+  assert.equal(await w.best(), null, "nothing can be filled without the coin");
+  const batch = `batch:${INDEX}:${USDC.toLowerCase()}`;
+  assert.deepEqual([...w.board.keys()], [batch], "the batch's one basket, and no request of it alone beside it");
+  assert.deepEqual(w.board.get(batch), [{ token: BTC, amount: 2n * UNITS[1] }], "what the two requests need together");
+
+  // A request no batch holds reports for itself.
+  const alone = world({ unrouted: [BTC] });
+  const id = alone.mint(60, 1);
+  await alone.scan();
+  assert.equal(await alone.best(), null);
+  assert.deepEqual([...alone.board.keys()], [`request:${id}`]);
+  assert.deepEqual(alone.board.get(`request:${id}`), [{ token: BTC, amount: UNITS[1] }]);
+});
+
+test("a request its index has settled a rebalance since is not simulated and holds no stock", async () => {
+  const w = world({ unrouted: [BTC] });
+  // The index reads nonce 7; this request was made at 6, so MintRequests would never fill it again (RW-2).
+  const stale = w.mint(60, 1, { rebalanceNonce: 6 });
+  await w.scan();
+  assert.equal(await w.best(), null);
+  assert.equal(w.board.size, 0, "it asks the restock for nothing");
+  assert.ok(w.logs.some((l) => l.includes(`request ${stale} not simulated: its index settled a rebalance`)), w.logs.join("\n"));
+  assert.equal(w.state.calls.length, 0, "and no fill of it was simulated");
+});
+
+test("CA-R2-04: an index whose tokens cannot be read is left unpriced, and the others' requests are still filled", async () => {
+  const broken = addr("b2");
+  const w = world({ indexes: [broken, INDEX], unreadable: [broken] });
+  const stuck = w.mint(60, 1, { index: broken });
+  const fine = w.mint(60, 1);
+  await w.scan();
+  assert.ok(w.logs.some((l) => l.includes(`request scan: ${broken} left unpriced`)), w.logs.join("\n"));
+  const pick = await w.best();
+  assert.equal(pick?.id, fine, "the healthy index's request is priced and picked");
+  assert.ok(w.logs.some((l) => l.includes(`request ${stuck} not simulated: no Pyth value for its index yet`)), w.logs.join("\n"));
 });

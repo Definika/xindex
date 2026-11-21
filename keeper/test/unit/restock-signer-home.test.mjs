@@ -139,3 +139,17 @@ test("PD-11: a signer whose input closed under a write fails what is waiting, an
   await assert.rejects(second, /the test signer failed: .*EPIPE|the test signer (failed|exited)/);
   await assert.rejects(first, /the test signer/);
 });
+
+test("CA-L8: a signer is launched by its file's path, which a URL's pathname is not", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath, pathToFileURL } = await import("node:url");
+  // A checkout under a folder with a space or an accent: the pathname keeps both percent-encoded and names no file.
+  const path = "/srv/Xindex audit/é/signer.mjs";
+  assert.equal(pathToFileURL(path).pathname, "/srv/Xindex%20audit/%C3%A9/signer.mjs");
+  assert.equal(fileURLToPath(pathToFileURL(path)), path);
+  for (const chain of ["solana", "sui", "aptos", "algorand"]) {
+    const source = readFileSync(new URL(`../../restock/${chain}.mjs`, import.meta.url), "utf8");
+    assert.ok(source.includes(`fileURLToPath(new URL("./${chain}/signer.mjs", import.meta.url))`), `${chain}'s launcher`);
+    assert.ok(!source.includes(".pathname;"), `${chain}'s launcher still takes a pathname`);
+  }
+});

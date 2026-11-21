@@ -23,6 +23,9 @@ interface IAdminReads {
     /// @notice AccessControlEnumerable's `index`th holder of `role`.
     function getRoleMember(bytes32 role, uint256 index) external view returns (address);
 
+    /// @notice AccessControlEnumerable's number of holders of `role`.
+    function getRoleMemberCount(bytes32 role) external view returns (uint256);
+
     /// @notice An UpgradeableBeacon's implementation.
     function implementation() external view returns (address);
 

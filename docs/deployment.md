@@ -31,8 +31,10 @@ the same Safe rules as on Ethereum. Before a first run there: the two Safes on B
 No oracle is deployed, named or read: there is no `PYTH` variable, and an index rebalances through an auction on units
 alone (`design/2026-11-10-oracle-free-rebalance.md`). There is no relay either. A start of a rebalance is a plain call,
 so the guardian's Safe holds the role itself and sends every guardian call as an ordinary transaction:
-`startRebalance(keepMask)` and `cancelRebalance()` on an index, and `cancelListing(token)`, `delist(token)` and
-`cancelGuardianChange()` on the factory. A later guardian is proposed through `proposeGuardian` and takes the role
+`startRebalance(keepMask)` and `cancelRebalance(proposalId)` on an index, and `cancelListing(token)`, `delist(token)`
+and `cancelGuardianChange()` on the factory. On Ethereum and BNB Chain `DeployWeighted` refuses a guardian that is not
+a Safe of at least two signatures (`MIN_GUARDIAN_THRESHOLD`): a key, a delegated account, any other contract or a Safe
+of one signature reverts `GuardianMustBeASafe` or `GuardianThresholdTooLow` (CA-M4). A later guardian is proposed through `proposeGuardian` and takes the role
 after `GUARDIAN_DELAY`, 7 days.
 
 ```bash
@@ -111,7 +113,8 @@ CHECK=<token,...> forge script script/CheckToken.s.sol --fork-url <any evm rpc>
 **Listings** go through `script/ConfigureWeighted.s.sol`, or the equivalent calls through the Safe:
 `proposeListing(token)` for each coin. A listing is a token and nothing else: no index reads a price, so no token
 carries a price id. `V5_WHITELIST=default` is the first four coins of `script/Listings.sol` (WETH, WBTC, LINK and UNI)
-and `V5_WHITELIST=wide` the other 87. Safe mode labels each with its trust tier:
+and `V5_WHITELIST=wide` the other 76, 80 in all; on BNB Chain `V5_WHITELIST=bnb` is that chain's twelve. Safe mode
+labels each with its trust tier:
 
 ```bash
 # owner is a key you hold (testnets and local forks only; a contract owner such as the mainnet Safe cannot sign, and
@@ -127,7 +130,8 @@ V5_MODE=execute V5_FACTORY=0x... V5_WHITELIST=default forge script script/Config
 ```
 
 `V5_MODE` is one of `propose`, `safe`, `execute` and `status`. `V5_WHITELIST` is `default` or `wide` (chain 1 only,
-`ListOffItsChain` elsewhere), or comma-separated token addresses, and a list that names a token twice reverts
+`ListOffItsChain` elsewhere), `bnb` (chain 56 only, where the script refuses that deployment's own USDT and USDC as
+components, 18 decimals each), or comma-separated token addresses, and a list that names a token twice reverts
 `DuplicateEntry` (RT-24). Propose and safe mode never propose the
 deployment's mint currencies as components: `V5_USDC` and `V5_USDT`, the `USDC` and `USDT` given to `DeployWeighted`,
 required off Ethereum; on Ethereum the address book's, where nothing else is accepted (A7-22).
@@ -160,10 +164,10 @@ No bot holds a role in Xindex, so these duties have owners and deadlines. Watch 
 |---|---|---|---|---|
 | Veto a wrong listing | `ListingProposed` | before `eta` (2 days) | guardian or owner | check the token's address against the coin and the decimals recorded against the token's; `cancelListing(token)` on the factory |
 | Execute a listing | its `eta` | `eta + PROPOSAL_WINDOW`, or it expires silently | anyone, owner signers first | `V5_MODE=execute` at the eta; `listingPending(token)` says whether it can still run |
-| Keep an honest executor bidding | before the first rebalance | none: without one, a lone executor takes each index's distance from its weights out of the holders' value | the keeper's operator first, and anyone else who runs an executor | the keeper prices its own trades off chain from Pyth's prices on Hermes, which requires an API key (`PYTH_API_KEY`); no contract waits on it. With no bidder, a lone executor fills at the auction's last second and keeps the index's distance from its weights, 0.3 to 0.6% of an index in an ordinary week: the rebalance's proceeds, never the holders' principal |
+| Keep an honest executor bidding | before the first rebalance | none: without one, a lone executor takes each index's distance from its weights out of the holders' value | the keeper's operator first, and anyone else who runs an executor | the keeper prices its own trades off chain from Pyth's prices on Hermes, which requires an API key (`PYTH_API_KEY`); no contract waits on it. With no bidder, a lone executor fills at the auction's last second and keeps the index's distance from its weights, which comes out of the holders' value: 0.3 to 0.6% of an index in an ordinary week, about 5% in one fill after one coin of two doubles |
 | Trigger the rebalance | `earliestRebalance()`: the index's interval after `lastRebalance`, a week after a keep-mask fill | none, but the index drifts from its weights | anyone; the keeper in `keeper/` does it when a fill would pay | `canStartRebalance()`, then `startRebalance(0)`, a plain call; an index near its weights offers a fill nothing, and its auction expires unfilled |
 | Start due rebalances with a quote | `earliestRebalance()` | none, but a plain start by anyone else comes first otherwise | guardian or owner | `startRebalance(keepMask, prices, tolerance)` through the Safe: one price per component per raw unit, in one unit of account, and a tolerance under 1e18 wide enough for the market's move over the proposal's six hours, or nothing fills and it expires. A fill must then bring in, at those prices, at least `1 − tolerance` of what it takes out, so an executor alone keeps at most the tolerance of what it trades. A quote only refuses: a wrong one stops its own proposal, as a cancel does |
-| Replace a stranger's plain start | `RebalanceStarted` with no `RebalanceQuoted` after it (`rebalanceQuote()` is empty) | before a lone fill at the auction's end: the 2 hours of notice and the 4 of auction | guardian or owner | one Safe transaction: `cancelRebalance()`, then `startRebalance(keepMask, prices, tolerance)`. A proposal nobody replaced is bound by the bar alone |
+| Replace a stranger's plain start | `RebalanceStarted` with no `RebalanceQuoted` after it (`rebalanceQuote()` is empty) | before a lone fill at the auction's end: the 2 hours of notice and the 4 of auction | guardian or owner | one Safe transaction: `cancelRebalance(proposalId)`, naming the proposal the signers read (`RebalanceStarted`'s id, `proposalCount()`), then `startRebalance(keepMask, prices, tolerance)`. If the other role has replaced that proposal by the time the transaction lands, the cancel reverts `StaleProposal` and the batch with it, where a plain `cancelRebalance()` would cancel the newer, reviewed proposal and post an older quote over it (CA-S02). A proposal nobody replaced is bound by the bar alone |
 | Check each rebalance | `RebalanceStarted` | before the fill | guardian | watch the components: a coin its issuer mints without limit, a bridge in doubt, a corporate action; `cancelRebalance()` on the index, then a start with a keep mask |
 | Watch keep-mask rebalances | `RebalanceStarted` with a non-zero `keepMask` | before `eta` (2 hours) | owner signers | while a guardian replacement is pending, cancel the outgoing guardian's keep-mask proposals (RT-07) |
 | Fill auctions | the auction opens at `eta` | `eta + AUCTION_DURATION` | any executor contract | anyone may run the keeper in `keeper/`, which holds no role; executors competing to fill earlier are what make the price fair, and a lone one keeps the index's distance from its weights |
@@ -171,7 +175,7 @@ No bot holds a role in Xindex, so these duties have owners and deadlines. Watch 
 | Restock the wrapped and real-world legs | the keeper's `restock <coins>` log | before the auction that needs them | the restock service for AVAX, OP and AERO (XRP, ADA, LTC, DOT and BNB left Ethereum's list on 2026-11-13); the keeper's operator for the rest | the service buys each on its home chain and bridges it into the executor through Wormhole's Token Bridge (`keeper/restock.mjs`); for ATOM, the copies from chains it has no adapter for, Tether Gold and the Ondo stocks, bridge through Wormhole's Portal or acquire the token, and send it to the executor |
 | Keep the restock service running | its `gas below its minimum`, `top up its USDT float by hand` or `still pending` log | before the next restock | the treasury's operator | send gas to the treasury's wallet on that chain, top up the BNB Chain USDT float, or cancel the transaction stuck past a fee spike (`keeper/README.md`, Restock) |
 | Renew a restock allowance | its `restock allowance ... is spent` log | before that coin's stock runs out | the executor's owner | `setRestockAllowance(<copy>, <amount>)`, or the other allowance the log names; what arrives through the bridge earns the keeper stock allowance only within it (RS-1) |
-| Rebalance around a frozen component | a paused or blacklisting component | each auction | guardian | the guardian's Safe calls `cancelRebalance()`, then `startRebalance(keepMask)`, on the index; an executor fills it like any other auction, naming the kept component's units unchanged |
+| Rebalance around a frozen component | a paused or blacklisting component | each auction | guardian | the guardian's Safe calls `cancelRebalance(proposalId)`, then `startRebalance(keepMask)`, on the index; an executor fills it like any other auction, naming the kept component's units unchanged |
 | Restart after an unfilled auction | `eta + AUCTION_DURATION` passed with no `Rebalanced` | anyone after `REBALANCE_DELAY` more | guardian first, then anyone | `canStartRebalance()`, then `startRebalance(0)`; the owner and the guardian's Safe may start at once, and start with a quote |
 | Re-check venue depth per leg | monthly, and before a large mint or burn | none | app | V3 and V4 depth move independently; the route is the app's choice |
 | Watch guardian changes | `GuardianProposed` | `eta` (7 days) | owner signers, guardian, app | a security alert: once executed, the new guardian's veto replaces the old one. `guardianChangePending()` says whether it is still executable |

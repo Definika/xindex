@@ -42,6 +42,7 @@ const MAX_START_CHECKS = 4; // ready indexes whose start is simulated per round,
 const DAY = 86_400n;
 const INT256_MIN = -(2n ** 255n);
 const ONCE = process.argv.includes("--once");
+const ONCE_HEAD_WAIT_MS = 60_000; // how long --once waits for a block it can read
 
 const log = (...args) => console.log(new Date().toISOString(), ...args);
 const cfg = parseConfig(process.env);
@@ -101,6 +102,23 @@ async function staticsOf(index, blockNumber) {
     statics.set(index, { tokens, ids, decimals: decimals.map((r) => Number(r.result)), weights: null });
   }
   return statics.get(index);
+}
+
+/// The entries of `list`, each naming an `index`, whose tokens could be read, their statics now cached. An index
+/// whose own tokens cannot be read, as when one of them no longer answers `decimals`, is left out and said so, and
+/// `onUnread(entry)` is told: it waits, and does not stop the round for every other index (CA-R2-04).
+async function withStatics(list, L, what, onUnread = () => {}) {
+  const read = [];
+  for (const r of list) {
+    try {
+      await staticsOf(r.index, L.number);
+      read.push(r);
+    } catch (error) {
+      onUnread(r);
+      say(r.index, `${what}: its tokens could not be read: ${revertReason(error)}`);
+    }
+  }
+  return read;
 }
 
 /// The weights of `index`, fixed at its creation, in basis points.
@@ -200,8 +218,10 @@ async function legs(index, st, sim, maxIn, L, key) {
     L.number,
   );
   // A stock read that failed is not an empty stock: valued as one, the fill would deliver stock it never counted
-  // and overstate its profit by that stock's value. The check is made again next block (RY-9).
-  if ([...held, ...allowed].some((r) => r.status !== "success")) throw new Error("a stock read failed");
+  // and overstate its profit by that stock's value. The check is made again next block (RY-9). Only the legs the fill
+  // moves count: the hub and the executor read no other, so a coin that answers no balance, which the guardian keeps
+  // or the fill leaves at its units, does not stop the fill of the rest (CA-R2-03, DA-14).
+  if (M.movingReadFailed(sim.moving, held, allowed)) throw new Error("a stock read failed");
   const routeOf = st.tokens.map(() => "0x");
   const short = [];
   const stocked = []; // every leg stock serves, for the restock's board (RZ-3)
@@ -353,11 +373,13 @@ async function worthChecking(open, L) {
       if (ok) live.push({ index, supply: supply.result, units: comps.result[1] });
       else worth.set(keyOf(index), { supply: 0n, tvl: 0, block: L.number });
     });
-    if (live.length) {
+    // An index left out is valued at nothing here, and read again with the others in 25 blocks.
+    const readable = await withStatics(live, L, "no fill check", (r) => worth.set(keyOf(r.index), { supply: 0n, tvl: 0, block: L.number }));
+    if (readable.length) {
       const ids = new Set();
-      for (const r of live) for (const id of (await staticsOf(r.index, L.number)).ids) if (id) ids.add(id);
+      for (const r of readable) for (const id of statics.get(r.index).ids) if (id) ids.add(id);
       const latest = ids.size ? await hermes.latest([...ids], Date.now() + HERMES_MS) : new Map();
-      for (const r of live) {
+      for (const r of readable) {
         const st = statics.get(r.index);
         const prices = pricesFrom(latest, st.ids);
         worth.set(keyOf(r.index), { supply: r.supply, tvl: M.tvlUsd({ supply: r.supply, units: r.units, decimals: st.decimals, prices }), block: L.number });
@@ -492,12 +514,13 @@ async function startChecks(L, open) {
   }
   if (ready.length === 0 && ahead.length === 0) return;
 
+  const readable = await withStatics([...ready, ...ahead], L, "no start check");
   const ids = new Set();
-  for (const r of [...ready, ...ahead]) for (const id of (await staticsOf(r.index, L.number)).ids) if (id) ids.add(id);
+  for (const r of readable) for (const id of statics.get(r.index).ids) if (id) ids.add(id);
   const latest = ids.size ? await hermes.latest([...ids], Date.now() + HERMES_MS) : new Map();
   const worthy = [];
   const worthyAhead = [];
-  for (const r of [...ready, ...ahead]) {
+  for (const r of readable) {
     const st = statics.get(r.index);
     const tvl = M.tvlUsd({ supply: r.supply, units: r.units, decimals: st.decimals, prices: pricesFrom(latest, st.ids) });
     if (tvl < cfg.minTvlUsd) {
@@ -546,6 +569,9 @@ async function startChecks(L, open) {
   await tracker.send(tx, { label: `start ${go.index}`, targetBlock: Number(L.number) + 1 });
 }
 
+/// One block's work. Returns whether it looked at everything the needs board reports on: every open auction, the
+/// starts when their round is due, and the requests. A block that stopped short of that, behind a transaction in
+/// flight or a block that passed, observed nothing the board can be dated by (CA-R2-02).
 async function onBlock(L) {
   const nextBase = M.nextBaseFee(L);
   const done = await tracker.onBlock(Number(L.number), nextBase);
@@ -588,8 +614,8 @@ async function onBlock(L) {
       );
     }
   }
-  if (tracker.busy()) return;
-  if (await tracker.clearStuck(Number(L.number), nextBase, tip)) return;
+  if (tracker.busy()) return false;
+  if (await tracker.clearStuck(Number(L.number), nextBase, tip)) return false;
   if (lastRefresh === null || L.number - lastRefresh >= START_EVERY_BLOCKS) await refresh(L);
 
   const T = L.timestamp + 12n;
@@ -629,17 +655,23 @@ async function onBlock(L) {
   } else if (best && !(await fitsItsGas(best.tx, L, best.over))) {
     say(best.index, `not filling: the fill does not run within its gas limit of ${best.tx.gas}`);
   } else if (best) {
-    if ((await chain.blockNumber()) !== L.number) return log(best.index, "block passed before sending; next block");
+    if ((await chain.blockNumber()) !== L.number) {
+      log(best.index, "block passed before sending; next block");
+      return false;
+    }
     if (best.profit < 0) subsidies.push({ at: L.timestamp, usd: -best.profit });
     log(best.index, `filling at a bar of ${best.bar.toFixed(6)}: profit ${best.profit.toFixed(2)} USD (float ${(Number(best.usdcDelta) / 1e6).toFixed(2)}, stock ${best.inventoryUsd.toFixed(2)}, gas ${best.gasUsd.toFixed(2)})`);
     await tracker.send(best.tx, { label: `fill ${best.index} ${best.proposal}`, targetBlock: Number(L.number) + 1 });
-    return;
+    return false;
   }
   if (cfg.fillAuctions && (lastStartCheck === null || L.number - lastStartCheck >= START_EVERY_BLOCKS)) {
     lastStartCheck = L.number;
     await startChecks(L, open);
   }
-  if (filler && !tracker.busy()) await requestChecks(L);
+  if (!filler) return true;
+  if (tracker.busy()) return false;
+  await requestChecks(L);
+  return true;
 }
 
 /// Every 25 blocks the open requests are read again; every block, with nothing else in flight, the most profitable
@@ -667,17 +699,27 @@ if (cfg.fillRequests) {
 }
 log(`keeper ${chain.account.address} on ${cfg.chain.name}, executor ${cfg.executor}, factory ${cfg.factory}, auctions ${cfg.fillAuctions ? "on" : "off"}, requests ${cfg.fillRequests ? setup.requests : "off"}`);
 let last = -1n;
+// With --once the process answers for its one block: a block it could not read in a minute, or whose round failed,
+// exits non-zero, so a scheduler that runs it does not record a run that did nothing as a success (CA-R2-20).
+const headBy = Date.now() + ONCE_HEAD_WAIT_MS;
 while (!stopping) {
   const n = await chain.blockNumber().catch(() => last);
+  if (n <= last && ONCE && Date.now() > headBy) {
+    log(`no block read within ${ONCE_HEAD_WAIT_MS / 1000} s`);
+    process.exitCode = 1;
+    break;
+  }
   if (n > last) {
     last = n;
+    let observed = false;
     try {
-      await onBlock(await chain.block(n));
+      observed = await onBlock(await chain.block(n));
     } catch (error) {
       log("block", n, "failed:", revertReason(error));
+      if (ONCE) process.exitCode = 1;
     }
     try {
-      needs.flush();
+      needs.flush({ observed });
     } catch (error) {
       log("needs file", cfg.needsFile, "not written:", error.message);
     }

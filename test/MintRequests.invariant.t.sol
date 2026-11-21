@@ -300,6 +300,8 @@ contract MintRequestsInvariantTest is Test {
                 handler.openEscrow(tokens[i]) + handler.donated(tokens[i]),
                 "the balance drifted from the open escrows"
             );
+            // What a new request's deposit is measured against (CA-H2).
+            assertEq(requests.totalEscrow(tokens[i]), handler.openEscrow(tokens[i]), "the total is not the escrows");
         }
     }
 

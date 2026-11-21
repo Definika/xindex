@@ -29,6 +29,13 @@ interface IRouterImmutables {
     function poolManager() external view returns (address);
 }
 
+/// @notice The guardian's Safe as the deploy checks read it: a contract that answers a threshold of two (CA-M4).
+contract GuardianSafe {
+    function getThreshold() external pure returns (uint256) {
+        return 2;
+    }
+}
+
 /// @notice Checks the scripts' `BnbChainAddresses` against BNB Chain, as `MainnetAddresses.fork.t.sol` checks
 ///         Ethereum's: tokens by symbol and decimals, the router, the PoolManager and Uniswap's V3 factory by their
 ///         runtime code hashes, the BNB Chain list listed on a fresh factory and through `CheckToken`, a whole
@@ -158,14 +165,16 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
     }
 
     /// @dev A whole deployment on BNB Chain from the book alone: a contract owner the operator acknowledges (this
-    ///      test, which answers no Safe threshold, A7-08), a guardian, and zero for every market address.
+    ///      test, which answers no Safe threshold, A7-08), a guardian's Safe of two signatures, which a mainnet asks
+    ///      for (CA-M4), and zero for every market address.
     function _deploy()
         internal
         returns (WeightedIndexFactory factory, IndexZap zap, BasketBuilder builder, MintRequests requests)
     {
         DeployWeighted deployer = new DeployWeighted();
-        (factory, zap, builder, requests) =
-            deployer.deploy(address(this), makeAddr("guardian"), address(0), address(0), address(0), address(this));
+        (factory, zap, builder, requests) = deployer.deploy(
+            address(this), address(new GuardianSafe()), address(0), address(0), address(0), address(this)
+        );
         deployer.checkDeployment(factory, zap, builder, requests);
     }
 

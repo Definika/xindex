@@ -67,10 +67,11 @@ import {IRebalanceExecutor} from "./interfaces/IRebalanceExecutor.sol";
 ///        units ({IWeightedMath}).
 ///      - That product is what a constant-weight pool keeps. So whatever the coins are worth, a fill cannot take more
 ///        than the index's distance from its weights at the market's prices allows, and nothing when it is on them.
-///      - The bar starts at the math's BAR_MAX and halves every BAR_HALF_LIFE. Executors compete to clear it first,
-///        and the fill that clears the highest bar is the one that puts the index on its weights at the market's
-///        prices. A lone executor at the auction's end keeps the whole distance; competition is what returns it to the
-///        holders.
+///      - The bar starts at the math's BAR_MAX and halves every BAR_HALF_LIFE. Executors compete to clear it first.
+///        Among fills worth the same at the market's prices, the one that clears the highest bar is close to the one
+///        that puts the index on its weights, not exactly it: `L` runs under the logarithm, more so on a leg that
+///        grows much, so a fill a little short of the weights can score a little more (CA-S07). A lone executor at
+///        the auction's end keeps the whole distance; competition is what returns it to the holders.
 ///      - The caps do not depend on what anything is worth. One fill sends out at most MAX_TURNOVER of each
 ///        component's own units and adds at most the math's MAX_GROWTH of them (V5-M2, RX-15).
 ///      - A fill that changes nothing has no gain, so none can restart the rebalance interval for free (V5-L2). An
@@ -300,11 +301,23 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
 
     /// @inheritdoc IWeightedHub
     function claim(address token, address to) external nonReentrant returns (uint256 amount) {
-        _checkRecipient(to);
         amount = claimOf[msg.sender][token];
+        _claim(token, to, amount);
+    }
+
+    /// @inheritdoc IWeightedHub
+    function claim(address token, address to, uint256 amount) external nonReentrant {
+        uint256 recorded = claimOf[msg.sender][token];
+        if (amount > recorded) revert ClaimTooLarge(token, amount, recorded);
+        _claim(token, to, amount);
+    }
+
+    /// @dev Pays `amount` of the caller's claim on `token` to `to`. The caller's claim covers `amount`.
+    function _claim(address token, address to, uint256 amount) private {
+        _checkRecipient(to);
         if (amount == 0) revert NothingToClaim(token);
 
-        delete claimOf[msg.sender][token];
+        claimOf[msg.sender][token] -= amount;
         totalClaims[token] -= amount;
         emit Claimed(msg.sender, to, token, amount);
 
@@ -601,6 +614,20 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
 
     /// @inheritdoc IWeightedHub
     function cancelRebalance() external nonReentrant onlyInitialized {
+        _cancel();
+    }
+
+    /// @inheritdoc IWeightedHub
+    function cancelRebalance(uint256 proposalId) external nonReentrant onlyInitialized {
+        // A Safe signs a cancel for the proposal its signers read. By the time it lands, the other role may have
+        // cancelled that one and started another, which this cancel was never meant for (CA-S02).
+        uint256 latest = proposalCount;
+        if (proposalId != latest) revert StaleProposal(proposalId, latest);
+        _cancel();
+    }
+
+    /// @dev Cancels the pending rebalance for the owner or guardian, and sets when strangers may start the next.
+    function _cancel() private {
         uint256 eta = _eta;
         if (eta == 0) revert NoPendingRebalance();
         // A view on the factory, by STATICCALL: nothing it reaches can change state, so nothing re-enters.
@@ -724,8 +751,12 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
         _clearPendingRebalance();
     }
 
+    /// @dev Clears the pending proposal. Each caller emits the event that records it: RebalanceCancelled from a
+    ///      cancel, Rebalanced from a settlement. The lint does not follow the cancel's private caller to its event.
     function _clearPendingRebalance() private {
+        // forge-lint: disable-next-line(missing-events-access-control)
         delete _eta;
+        // forge-lint: disable-next-line(missing-events-access-control)
         delete _keepMask;
     }
 

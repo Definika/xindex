@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
+import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {WeightedHub} from "../src/WeightedHub.sol";
@@ -261,7 +262,9 @@ contract WeightedHubTest is WeightedTest {
         eth.approve(address(index), amounts[0]);
         btc.approve(address(index), amounts[1]);
         usd.approve(address(index), amounts[2]);
-        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.Underbacked.selector, address(btc), required - 1, required));
+        vm.expectRevert(
+            abi.encodeWithSelector(IXindexErrors.Underbacked.selector, address(btc), required - 1, required)
+        );
         index.issue(1e18, stranger);
         vm.stopPrank();
 
@@ -381,6 +384,60 @@ contract WeightedHubTest is WeightedTest {
         index.claim(address(btc), address(0));
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, address(factory)));
         index.claim(address(btc), address(factory));
+    }
+
+    /// @dev CA-S01: a claim was paid whole or not at all. After the token's issuer burned part of the index's balance,
+    ///      a claimant owed more than was left could collect none of it, even with nobody else owed anything. A claim
+    ///      can now be taken in part: what is left leaves, the rest stays recorded, and is paid once it is there.
+    function test_CAS01_aClaimCanBeCollectedInPart() public {
+        _issue(index, alice, 1e18);
+        vm.prank(alice);
+        index.redeemSkipping(1e18, alice, 2);
+        assertEq(index.claimOf(alice, address(btc)), BTC_UNITS);
+        btc.burn(address(index), BTC_UNITS - 3);
+
+        vm.startPrank(alice);
+        vm.expectRevert(
+            abi.encodeWithSelector(IERC20Errors.ERC20InsufficientBalance.selector, address(index), 3, BTC_UNITS)
+        );
+        index.claim(address(btc), alice);
+
+        vm.expectEmit(address(index));
+        emit IWeightedHub.Claimed(alice, stranger, address(btc), 3);
+        index.claim(address(btc), stranger, 3);
+        assertEq(btc.balanceOf(stranger), 3, "what the burn left was collected");
+        assertEq(index.claimOf(alice, address(btc)), BTC_UNITS - 3, "and the rest is still recorded");
+        assertEq(index.totalClaims(address(btc)), BTC_UNITS - 3);
+
+        btc.mint(address(index), BTC_UNITS - 3);
+        assertEq(index.claim(address(btc), alice), BTC_UNITS - 3, "the whole of what is left, once it is there");
+        vm.stopPrank();
+        assertEq(index.claimOf(alice, address(btc)), 0);
+        assertEq(index.totalClaims(address(btc)), 0);
+    }
+
+    function test_CAS01_aPartialClaimChecksItsArguments() public {
+        _issue(index, alice, 1e18);
+        vm.prank(alice);
+        index.redeemSkipping(1e18, alice, 2);
+
+        vm.startPrank(alice);
+        vm.expectRevert(
+            abi.encodeWithSelector(IWeightedHub.ClaimTooLarge.selector, address(btc), BTC_UNITS + 1, BTC_UNITS)
+        );
+        index.claim(address(btc), alice, BTC_UNITS + 1);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.NothingToClaim.selector, address(btc)));
+        index.claim(address(btc), alice, 0);
+        vm.expectRevert(IXindexErrors.ZeroAddress.selector);
+        index.claim(address(btc), address(0), 1);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, address(factory)));
+        index.claim(address(btc), address(factory), 1);
+        vm.stopPrank();
+
+        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.ClaimTooLarge.selector, address(btc), 1, 0));
+        vm.prank(stranger);
+        index.claim(address(btc), stranger, 1);
+        assertEq(index.claimOf(alice, address(btc)), BTC_UNITS, "no refused call moved the claim");
     }
 
     function test_CRI01_RT21_sharesCannotBeSentToTheIndexOrItsFactory() public {

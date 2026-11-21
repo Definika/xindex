@@ -19,7 +19,7 @@ import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 contract RepoTest is Test {
     /// @dev keccak256 of the files `test_A712_theCiConfigIsPinnedWhole` pins whole: CI's workflow and the two Foundry
     ///      configs it runs. A change to one fails that test, which prints the new hash, until it is pinned here.
-    bytes32 private constant WORKFLOW_HASH = 0x09ce789055c1ca709d8d787b287b123d2ab770852a87ba4e199f72fd05cfbbf8;
+    bytes32 private constant WORKFLOW_HASH = 0x4eedfb771cd1dc8c660e84500269f7a1128d4a7ecd697d15b3aa276227b12f03;
     bytes32 private constant FOUNDRY_TOML_HASH = 0xed56be1c9acc47165fe8a9303665b35391357ee7d85ef998f8c0c74761a0c3c4;
     bytes32 private constant KEEPER_FOUNDRY_TOML_HASH =
         0x5426d5180cca7c4ac15d7fb182272a805a3ce19a143d6c6f8c158f61765d7592;
@@ -260,7 +260,7 @@ contract RepoTest is Test {
                     "          import re\n",
                     "          import sys\n",
                     "\n",
-                    "          rows, short = 0, []\n",
+                    "          rows, short, cut = 0, [], []\n",
                     "          for line in open(\"coverage.txt\"):\n",
                     "              cells = [cell.strip() for cell in line.strip().strip(\"|\").split(\"|\")]\n",
                     "              if not re.match(r\"^(src|script|test)/\", cells[0]):\n",
@@ -268,11 +268,19 @@ contract RepoTest is Test {
                 ),
                 string.concat(
                     "              rows += 1\n",
-                    "              if any(hit != total for hit, total in re.findall(r\"\\((\\d+)/(\\d+)\\)\", line)):",
-                    "\n",
-                    "                  short.append(cells[0])\n",
+                    "              counts = re.findall(r\"\\((\\d+)/(\\d+)\\)\", line)\n",
+                    "              if len(counts) != 4:\n",
+                    "                  cut.append(cells[0])\n",
+                    "              elif any(hit != total for hit, total in counts):\n",
+                    "                  short.append(cells[0])\n"
+                ),
+                string.concat(
                     "          if rows == 0:\n",
                     "              print(\"::error::the coverage summary lists no files\")\n",
+                    "              sys.exit(1)\n",
+                    "          if cut:\n",
+                    "              print(\"::error::the coverage summary lacks one of the four counts for \" + \", \".join(cut))",
+                    "\n",
                     "              sys.exit(1)\n",
                     "          if short:\n",
                     "              print(\"::error::coverage is below 100% in \" + \", \".join(short))\n",
@@ -281,7 +289,7 @@ contract RepoTest is Test {
                     "          EOF\n"
                 )
             ),
-            "coverage below 100% on any file fails"
+            "coverage below 100% on any file fails, and so does a row without its four counts (CA-L11)"
         );
         assertEq(
             _step(workflow, "Run the Wake detectors on src"),

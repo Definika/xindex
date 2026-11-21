@@ -5,7 +5,8 @@
 //   - the hub's arithmetic, word for word (`barAt`, `gainOf`), so the bot knows what the index will accept before it
 //     asks; `test/unit/units.test.mjs` replays the contracts' own vectors (test/vectors/settlement.json) through it;
 //   - `nameUnits`, which picks, at the keeper's own prices, the units that clear the bar while giving the index the
-//     least: the keeper's best fill at that second.
+//     least: the keeper's best fill at that second, found on the score the hub computes, not on the logarithm it
+//     stands under (CA-M7).
 // Amounts and units are BigInt; prices are floats, used only to choose, and whatever they choose is checked in exact
 // integers before it is returned.
 
@@ -24,6 +25,30 @@ export const AUCTION_DURATION = 14_400n;
 /// The most the keeper grows a leg: 1.9 times its units. The hub allows twice, but the score `L` peaks near 1.92 and
 /// falls after, so past it a leg costs more and scores less; under it the gain only rises with the units named.
 const GROWTH_USED = 9n * 10n ** 17n;
+
+/// The slope of the score, `L'(x) = 1 − x + x² − 6x³/5`. It falls all the way across the changes the keeper names,
+/// from 1.2496 at the lower cap to 0.0352 at 1.9 times a leg's units, so `L` is concave there and each slope is
+/// reached at one change only.
+const slope = (x) => 1 - x + x * x - 1.2 * x * x * x;
+const LOWEST_CHANGE = -0.2;
+const HIGHEST_CHANGE = 0.9;
+const SLOPE_AT_LOWEST = slope(LOWEST_CHANGE);
+const SLOPE_AT_HIGHEST = slope(HIGHEST_CHANGE);
+
+/// The change at which the score's slope is `y`: a cap where the slope never gets there, and otherwise found by
+/// halving, to a float's precision.
+function changeAtSlope(y) {
+  if (!(y < SLOPE_AT_LOWEST)) return LOWEST_CHANGE;
+  if (!(y > SLOPE_AT_HIGHEST)) return HIGHEST_CHANGE;
+  let below = LOWEST_CHANGE;
+  let above = HIGHEST_CHANGE;
+  for (let step = 0; step < 60; step++) {
+    const mid = (below + above) / 2;
+    if (slope(mid) > y) below = mid;
+    else above = mid;
+  }
+  return (below + above) / 2;
+}
 
 const ceilDiv = (a, b) => (a + b - 1n) / b;
 /// a / b rounded toward minus infinity, for b > 0: BigInt division truncates toward zero.
@@ -89,10 +114,17 @@ export function quoteOf(units, newUnits, prices, tolerance) {
   return { valueOut, valueIn, floor, holds: valueIn >= floor };
 }
 
-/// The units the keeper names for a fill that must clear `bar`: for every leg it may move, `λ · weight / price`, with
-/// `λ` the smallest that clears the bar. That is the fill that leaves the index the least value at `prices` among
-/// those the index accepts (the first-order condition of maximising what is taken under a gain of logarithms), so it
-/// is the keeper's best at that second; whether it pays is the simulation's to say, not this function's.
+/// The units the keeper names for a fill that must clear `bar`: the fill that leaves the index the least value at
+/// `prices` among those the index accepts, so the keeper's best at that second; whether it pays is the simulation's
+/// to say, not this function's.
+///
+/// What is taken is linear in the units and the gain is a sum of concave scores, so the best fill is where every
+/// moved leg's score has the same slope per dollar: `L'(x_i) = price_i · units_i / (λ · weight_i)`, with `λ` the
+/// smallest that clears the bar. Until 2026-11-21 the legs were named by the logarithm's slope, `1 / (1 + x)`, which
+/// is `λ · weight / price` units: a fill the hub accepts, but not the best one, because `L` lies under the logarithm
+/// and further under it the more a leg grows. With two legs moving freely the old rule took an eighth less, forty
+/// minutes into the auction of an index one of whose three coins had doubled and another halved, so the keeper
+/// waited for a lower bar than it needed to (CA-M7).
 ///
 /// `prices[i]` is dollars per raw unit of leg `i`, or null for a leg the keeper cannot value, which it leaves alone,
 /// as it does a kept one. `costBps` is what trading a leg is taken to cost: a leg is grown only past its target at the
@@ -117,10 +149,14 @@ export function nameUnits({ units, weights, keepMask = 0n, prices, bar, costBps 
   const at = (lambda) => {
     const named = [...units];
     for (const i of free) {
-      const grown = (lambda * w[i]) / ask(i);
-      const shrunk = (lambda * w[i]) / bid(i);
-      const target = grown > u[i] ? grown : shrunk < u[i] ? shrunk : null;
-      if (target === null || !Number.isFinite(target)) continue;
+      // A leg is grown where buying it scores more per dollar than λ asks, shrunk where selling it costs less
+      // score per dollar, and left alone in between, where its trading cost is more than either is worth.
+      const grown = changeAtSlope((u[i] * ask(i)) / (lambda * w[i]));
+      const shrunk = changeAtSlope((u[i] * bid(i)) / (lambda * w[i]));
+      const change = grown > 0 ? grown : shrunk < 0 ? shrunk : null;
+      if (change === null) continue;
+      const target = u[i] * (1 + change);
+      if (!Number.isFinite(target)) continue;
       const lowest = lowestOf(units[i]);
       const top = units[i] + (units[i] * GROWTH_USED) / WAD;
       const highest = top > UINT96_MAX ? UINT96_MAX : top;
@@ -142,8 +178,8 @@ export function nameUnits({ units, weights, keepMask = 0n, prices, bar, costBps 
   let low = Infinity;
   let high = 0;
   for (const i of free) {
-    low = Math.min(low, Math.log((0.8 * u[i] * bid(i)) / w[i]));
-    high = Math.max(high, Math.log((1.9 * u[i] * ask(i)) / w[i]));
+    low = Math.min(low, Math.log((u[i] * bid(i)) / (w[i] * SLOPE_AT_LOWEST)));
+    high = Math.max(high, Math.log((u[i] * ask(i)) / (w[i] * SLOPE_AT_HIGHEST)));
   }
   low -= 1e-6;
   high += 1e-6;

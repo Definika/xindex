@@ -14,8 +14,8 @@
 // bought or sold for the difference. A request too small to pay for a basket of its own is filled this way, since
 // the batch as a whole has to pay MIN_PROFIT_USD, not each request (design/2026-11-11-batch-fills.md).
 
-import { encodeFunctionData } from "viem";
-import { failedRequests, revertedRequestFills, skippedRequests } from "./backoff.mjs";
+import { encodeAbiParameters, encodeFunctionData, keccak256 } from "viem";
+import { failedRequests, revertedRequestFills, shortRequests, skippedRequests } from "./backoff.mjs";
 import { ABI, revertReason } from "./chain.mjs";
 import { FRESH_SECONDS, MAX_CONF_BPS, SHARE_PRICED_IDS, TX_GAS_CAP } from "./config.mjs";
 import { priceKey } from "./hermes.mjs";
@@ -23,6 +23,19 @@ import * as M from "./math.mjs";
 
 const INT256_MIN = -(2n ** 255n);
 const HERMES_MS = 5_000;
+const REQUEST_TYPE = ABI.requests.find((x) => x.type === "function" && x.name === "getRequest").outputs;
+const PAIR_OF_HASHES = [{ type: "bytes32" }, { type: "bytes32" }];
+const NO_REQUESTS = `0x${"00".repeat(32)}`;
+
+/// A request's hash as `MintRequests.requestHash` computes it, `keccak256(abi.encode(request))`, of the very struct
+/// the bot read and priced. A fill carries it, so the executor refuses any other request that has come to stand
+/// behind the id, as after a re-org (RW-7, CA-M6).
+export const requestHash = (request) => keccak256(encodeAbiParameters(REQUEST_TYPE, [request]));
+
+/// The requests of a batch as the executor folds them into one hash: from zero, each request's hash in turn, the
+/// redeem requests first and then the mint requests, each in the batch's order (`KeeperExecutor.BatchFill`).
+export const batchHash = (requests) =>
+  requests.reduce((running, r) => keccak256(encodeAbiParameters(PAIR_OF_HASHES, [running, requestHash(r)])), NO_REQUESTS);
 const same = (a, b) => a.toLowerCase() === b.toLowerCase();
 const sharePriced = (id) => SHARE_PRICED_IDS.includes(id.toLowerCase());
 
@@ -33,6 +46,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
   const failed = failedRequests(); // `request:id` -> simulations that reverted (XS-7)
   const reverts = revertedRequestFills(); // `request:id`, `requester:a`, `index:a` -> fills that reverted (XS-7, RX-10)
   const skips = skippedRequests(); // `request:id` -> checks that declined it without a revert (RX-24)
+  const waits = shortRequests(); // `request:id` -> checks that found the executor short of stock for it
   let scanned = 0n; // the last id read, every one before it read too
 
   function say(id, reason) {
@@ -75,6 +89,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
         ...indexes.flatMap((index) => [
           { address: cfg.factory, abi: ABI.factory, functionName: "feeTerms", args: [index, cfg.executor] },
           { address: index, abi: ABI.hub, functionName: "components" },
+          { address: index, abi: ABI.hub, functionName: "rebalanceNonce" },
         ]),
       ],
       L.number,
@@ -89,6 +104,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
     reverts.keep([...reverts.entries.keys()].filter((k) => !k.startsWith("request:") || known.has(BigInt(k.slice(8)))));
     reverts.prune(L.number);
     skips.keep(keys());
+    waits.keep(keys());
     if (result.failed.length) {
       log(`request scan: ${result.failed.length} reads failed (${result.failed.join(", ")}); kept as they were, read again next scan`);
     }
@@ -97,24 +113,34 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
     const live = [];
     indexes.forEach((index, k) => {
       if (!open.has(index.toLowerCase())) return;
-      const [terms, comps] = [read[ids.length + 2 * k], read[ids.length + 2 * k + 1]];
+      const [terms, comps, nonce] = [0, 1, 2].map((j) => read[ids.length + 3 * k + j]);
       live.push({
         index,
         mintAllowed: terms.status === "success" ? terms.result[0] : null,
         units: comps.status === "success" ? comps.result[1] : null,
+        nonce: nonce.status === "success" ? nonce.result : null,
       });
     });
-    // Every read first, so a failed one leaves the last scan's values in place.
+    // Every read first, so a failed one leaves the last scan's values in place. An index whose own tokens cannot be
+    // read is left unpriced, and its requests wait: it does not stop the scan for every other index (CA-R2-04).
+    const statics = new Map();
+    for (const r of live) {
+      try {
+        statics.set(r.index, await staticsOf(r.index, L.number));
+      } catch (error) {
+        log(`request scan: ${r.index} left unpriced, its tokens could not be read: ${revertReason(error)}`);
+      }
+    }
     const priceIds = new Set();
-    for (const r of live) for (const id of (await staticsOf(r.index, L.number)).ids) if (id) priceIds.add(id);
-    const latest = live.length ? await trustedLatest([...priceIds], L) : new Map();
+    for (const st of statics.values()) for (const id of st.ids) if (id) priceIds.add(id);
+    const latest = priceIds.size ? await trustedLatest([...priceIds], L) : new Map();
     info.clear();
     for (const r of live) {
-      const st = await staticsOf(r.index, L.number);
-      const prices = st.ids.map((id) => (id ? latest.get(priceKey(id)) : undefined));
-      const priced = r.units !== null && prices.every(Boolean);
+      const st = statics.get(r.index);
+      const prices = st ? st.ids.map((id) => (id ? latest.get(priceKey(id)) : undefined)) : [];
+      const priced = st !== undefined && r.units !== null && prices.every(Boolean);
       const shareUsd = priced ? M.tvlUsd({ supply: 10n ** 18n, units: r.units, decimals: st.decimals, prices }) : null;
-      info.set(r.index.toLowerCase(), { shareUsd, mintAllowed: r.mintAllowed });
+      info.set(r.index.toLowerCase(), { shareUsd, mintAllowed: r.mintAllowed, nonce: r.nonce });
     }
   }
 
@@ -268,8 +294,10 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
 
   /// Request `id`, as a fill this bot could send now: its profit after gas and the transaction, or why not. With
   /// `probe` the request reports no need to the restock's board: it is checked only to find which request of a
-  /// batch stopped the batch's simulation, and may pay nothing alone (RY-8).
-  async function evaluate(id, r, L, ethUsd, tip, feeCap, { probe = false } = {}) {
+  /// batch stopped the batch's simulation, and may pay nothing alone (RY-8). With `batched` it reports none either,
+  /// and clears what it reported alone: its batch reports the one basket that serves all its requests, and the
+  /// board adds its reports up, so the same request would be counted twice (CA-M8).
+  async function evaluate(id, r, L, ethUsd, tip, feeCap, { probe = false, batched = false } = {}) {
     if (ethUsd === null) return { skip: "no ETH price to value gas" };
     const T = L.timestamp + 12n;
     const st = await staticsOf(r.index, L.number);
@@ -288,9 +316,9 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
     }
     const leg = await legs(id, r, st, amounts, L);
     if (leg.skip) return { ...leg, declined: true };
-    if (!probe) needs?.report(`request:${id}`, "request", leg.stocked);
+    if (!probe) needs?.report(`request:${id}`, "request", batched ? [] : leg.stocked);
     if (leg.short.length) {
-      return { skip: `restock: no route and too little stock of ${leg.short.map((s) => s.token).join(", ")}`, declined: true };
+      return { skip: `restock: no route and too little stock of ${leg.short.map((s) => s.token).join(", ")}`, declined: true, short: true };
     }
     const fill = (minUsdcDelta) => ({
       id,
@@ -300,6 +328,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
       stableRoute: leg.stableRoute,
       stableLimit: leg.stableLimit,
       expectedNonce: nonce,
+      expected: requestHash(r),
       minUsdcDelta,
       deadline: T,
     });
@@ -409,6 +438,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
       stableMaxIn,
       stableMinOut,
       expectedNonce: nonce,
+      expected: batchHash([...redeems, ...mints].map((m) => m.request)),
       minUsdcDelta,
       deadline: T,
     });
@@ -439,7 +469,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
       else if (failed.blocked(key, L.number)) say(id, `backing off after ${failed.failures(key)} failed simulations`);
       else {
         batchable.push({ id, request });
-        if (!skips.blocked(key, L.number)) entries.push({ id, request });
+        if (!skips.blocked(key, L.number) && !waits.blocked(key, L.number)) entries.push({ id, request });
       }
     }
     // A request is never subsidised, so one that cannot pay MIN_PROFIT_USD at its limit is not simulated (RY-8).
@@ -447,9 +477,12 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
     const T = L.timestamp + 12n;
 
     // With a share stock one request is a batch too: the stock may fill it without a basket.
-    const groups = M.batchGroups(batchable, T, indexes, info, { minSize: cfg.shareStockUsd > 0 ? 1 : 2, minProfitUsd }).filter(
-      (g) => !failed.blocked(M.batchKey(g), L.number) && !skips.blocked(M.batchKey(g), L.number),
-    );
+    const formed = M.batchGroups(batchable, T, indexes, info, { minSize: cfg.shareStockUsd > 0 ? 1 : 2, minProfitUsd });
+    const groups = formed.filter((g) => !failed.blocked(M.batchKey(g), L.number) && !skips.blocked(M.batchKey(g), L.number));
+    // One report per request on the restock's board: its batch's while it is in one, its own otherwise (CA-M8). A
+    // batch that no longer forms leaves its report to lapse: for a while the board may count a request twice, which
+    // buys a little too much, where clearing it at once could leave the request off the board and send stock home.
+    const batched = new Set(formed.flatMap((g) => g.members.map((m) => m.id)));
     const batches = await Promise.all(
       groups.map((g) => evaluateBatch(g, L, ethUsd, tip, feeCap).catch((error) => ({ skip: `check failed: ${revertReason(error)}`, failed: chain.isRevert(error) }))),
     );
@@ -480,7 +513,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
     const checks = [...candidates, ...probes];
     const priced = await Promise.all(
       checks.map(({ id, request, probe }) =>
-        evaluate(id, request, L, ethUsd, tip, feeCap, { probe }).catch((error) => ({ skip: `check failed: ${revertReason(error)}`, failed: chain.isRevert(error) })),
+        evaluate(id, request, L, ethUsd, tip, feeCap, { probe, batched: batched.has(id) }).catch((error) => ({ skip: `check failed: ${revertReason(error)}`, failed: chain.isRevert(error) })),
       ),
     );
     priced.forEach((p, k) => {
@@ -490,8 +523,9 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
         failed.fail(`request:${id}`, L.number);
         routes.forgetKey(`request:${id}`); // its routes are searched again (RX-13)
       }
-      // A probe that pays nothing alone is no decoy: it waits for its batch, not for a check slot (RX-24).
-      if (p.declined && !checks[k].probe) skips.fail(`request:${id}`, L.number);
+      // A probe that pays nothing alone is no decoy: it waits for its batch, not for a check slot (RX-24). A request
+      // short of stock is checked again within the life of its report on the restock's board.
+      if (p.declined && !checks[k].probe) (p.short ? waits : skips).fail(`request:${id}`, L.number);
       say(id, p.skip);
     });
     const fills = [...batches.filter((b) => !b.skip), ...priced.filter((p) => !p.skip)];
@@ -518,6 +552,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
     failed.forget(`request:${id}`);
     reverts.forget(`request:${id}`);
     skips.forget(`request:${id}`);
+    waits.forget(`request:${id}`);
   }
 
   /// A fill of request `id` reverted on chain at block `block`, after its simulation passed: it, its requester and its

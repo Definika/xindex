@@ -1,10 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
+  FACTORY_NOTICES,
+  HUB_NOTICES,
   checkEscrows,
+  checkHead,
   checkIndex,
   checkProgress,
   componentWord,
+  createAlerts,
+  createCursor,
   diffFindings,
   popcount,
   requestEscrow,
@@ -150,7 +156,11 @@ test("escrows are summed per token and must be covered by the holder's balance",
   assert.equal(f.token, A);
   assert.equal(f.owed, 12n);
   assert.equal(f.shortfall, 1n);
-  assert.deepEqual(codes(checkEscrows("x", INDEX, [{ token: C, amount: 1n }], new Map())), ["breach:x"], "no balance read");
+  // CA-L9: a balance that could not be read is not a balance of zero, which would report the whole escrow missing.
+  assert.deepEqual(codes(checkEscrows("x", INDEX, [{ token: C, amount: 1n }], new Map())), ["reader:unreadable"], "no balance read");
+  const [unread, short] = checkEscrows("x", INDEX, escrows, new Map([[A, null], [B, 0n]]));
+  assert.deepEqual([unread.level, unread.code, unread.token, unread.holder], ["reader", "unreadable", A, INDEX]);
+  assert.deepEqual([short.code, short.token, short.shortfall], ["x", B, 1n], "a balance read as zero is still a shortfall");
 });
 
 test("a mint request escrows its stablecoin, a redeem request the index's shares, and a closed one nothing", () => {
@@ -184,4 +194,107 @@ test("the checker's configuration", () => {
     ["RPC_URL is required", "FACTORY must be an address", "CHAIN_ID must be one of"].every((p) => e.message.includes(p)),
   );
   assert.throws(() => parseInvariantsConfig({ ...base, ALERT_WEBHOOK: "ftp://x" }), /ALERT_WEBHOOK must be an http\(s\) URL/);
+});
+
+test("CA-M17: a finding stands while what it is about cannot be read", () => {
+  const onA = { level: "breach", code: "backing", index: INDEX, token: A, shortfall: 1n };
+  const onB = { level: "breach", code: "backing", index: INDEX, token: B, shortfall: 1n };
+  const keyA = `backing:${INDEX}:${A}:`;
+  const keyB = `backing:${INDEX}:${B}:`;
+  let d = diffFindings(new Set(), [onA, onB]);
+  assert.equal(d.raised.length, 2);
+
+  // The index's snapshot fails: no read shows either breach gone, so neither is cleared.
+  d = diffFindings(d.standing, [{ level: "reader", code: "read", index: INDEX, why: "timeout" }]);
+  assert.deepEqual(d.cleared, []);
+  assert.deepEqual(d.raised.map((f) => f.code), ["read"], "the failed read itself is what is new");
+  assert.ok(d.standing.has(keyA) && d.standing.has(keyB));
+
+  // Read again, still short: nothing new to raise, and the reader finding clears.
+  d = diffFindings(d.standing, [onA, onB]);
+  assert.deepEqual(d.raised, []);
+  assert.deepEqual(d.cleared, [`read:${INDEX}::timeout`]);
+
+  // One component stops answering balanceOf: its breach stands, the other's is cleared by the balance read.
+  d = diffFindings(d.standing, [{ level: "notice", code: "unreadable", index: INDEX, token: A, why: "balanceOf reverts" }]);
+  assert.deepEqual(d.cleared, [keyB]);
+  assert.ok(d.standing.has(keyA), "an unread leg clears nothing of its own");
+
+  // Readable and healthy again: now it clears.
+  d = diffFindings(d.standing, []);
+  assert.deepEqual(d.cleared.sort(), [keyA, `unreadable:${INDEX}:${A}:balanceOf reverts`].sort());
+  assert.equal(d.standing.size, 0);
+
+  // An escrow holder, the same way, and another contract's findings are untouched by it.
+  const escrow = { level: "breach", code: "requests-escrow", holder: C, token: A, shortfall: 1n };
+  d = diffFindings(new Set(), [escrow, onB]);
+  d = diffFindings(d.standing, [{ level: "reader", code: "unreadable", holder: C, token: A, why: "balanceOf could not be read" }]);
+  assert.deepEqual(d.cleared, [keyB], "what was read and found healthy clears");
+  assert.ok(d.standing.has(`requests-escrow:${C}:${A}:`));
+});
+
+test("CA-R2-14: a head that has stopped moving is a reader finding, raised once however old it grows", () => {
+  assert.deepEqual(checkHead(1_000n, 1_180, 180), [], "at the limit");
+  const [stale] = checkHead(1_000n, 1_181, 180);
+  assert.deepEqual([stale.level, stale.code, stale.age], ["reader", "stale-head", 181]);
+  const first = diffFindings(new Set(), checkHead(1_000n, 1_181, 180));
+  const later = diffFindings(first.standing, checkHead(1_000n, 9_999, 180));
+  assert.equal(first.raised.length, 1);
+  assert.deepEqual([later.raised.length, later.cleared.length], [0, 0], "the same finding, older");
+  assert.equal(diffFindings(later.standing, checkHead(9_990n, 9_999, 180)).cleared.length, 1, "a head that moves again");
+});
+
+test("CA-M16: a cursor moves past a range only once it has been read", async () => {
+  const seen = [];
+  const blocks = createCursor(null);
+  await assert.rejects(blocks(12n, async () => Promise.reject(new Error("the RPC failed"))), /the RPC failed/);
+  await blocks(15n, async (from, to) => seen.push([from, to]));
+  assert.deepEqual(seen, [[12n, 15n]], "the failed range is read again, from the first block ever asked for");
+  await blocks(15n, async (from, to) => seen.push([from, to]));
+  assert.equal(seen.length, 1, "and a range already read is not read twice");
+  assert.equal(await blocks(16n, async (from, to) => `${from}-${to}`), "16-16", "it hands back what the read returned");
+
+  // From a given start, as the requests' ids from 1 and the builder's blocks from FROM_BLOCK.
+  const ids = createCursor(1n);
+  await ids(0n, async () => assert.fail("nothing to read yet"));
+  await assert.rejects(ids(3n, async () => Promise.reject(new Error("failed"))));
+  assert.deepEqual(await ids(4n, async (from, to) => [from, to]), [1n, 4n]);
+});
+
+test("CA-M18: an alert the webhook did not take stays queued, in order, until it does", async () => {
+  const taken = [];
+  let up = false;
+  const alerts = createAlerts({ send: async (record) => up && taken.push(record) > 0, limit: 3 });
+  alerts.push("breach");
+  alerts.push("cleared");
+  assert.deepEqual(await alerts.flush(), { queued: 2, dropped: 0 }, "the webhook is down: nothing is taken, nothing is lost");
+  up = true;
+  assert.deepEqual(await alerts.flush(), { queued: 0, dropped: 0 });
+  assert.deepEqual(taken, ["breach", "cleared"], "sent once it answers, oldest first");
+
+  // A webhook that fails part of the way keeps the rest in order behind the one it refused.
+  let budget = 1;
+  const partial = createAlerts({ send: async (record) => budget-- > 0 && taken.push(record) > 0 });
+  ["a", "b", "c"].forEach((r) => partial.push(r));
+  assert.deepEqual(await partial.flush(), { queued: 2, dropped: 0 });
+  budget = 5;
+  await partial.flush();
+  assert.deepEqual(taken.slice(2), ["a", "b", "c"]);
+
+  // The queue is bounded: past its limit the oldest go, and the flush says how many.
+  up = false;
+  ["1", "2", "3", "4", "5"].forEach((r) => alerts.push(r));
+  assert.deepEqual(await alerts.flush(), { queued: 3, dropped: 2 });
+  assert.deepEqual(await alerts.flush(), { queued: 3, dropped: 0 }, "a loss is reported once");
+});
+
+test("CA-L10: every event the checker watches is an event of the committed ABIs, plain starts and quotes among them", () => {
+  const eventsOf = (name) => JSON.parse(readFileSync(new URL(`../../../abi/${name}.json`, import.meta.url), "utf8")).filter((x) => x.type === "event").map((x) => x.name);
+  const factory = eventsOf("WeightedIndexFactory");
+  const hub = eventsOf("WeightedHub");
+  for (const name of FACTORY_NOTICES) assert.ok(factory.includes(name), `the factory has no ${name} event`);
+  for (const name of HUB_NOTICES) assert.ok(hub.includes(name), `the hub has no ${name} event`);
+  assert.ok(HUB_NOTICES.includes("RebalanceStarted") && HUB_NOTICES.includes("RebalanceQuoted"));
+  assert.ok(FACTORY_NOTICES.includes("CreatorApprovalSet"), "who may create an index is an admin event too");
+  assert.equal(parseInvariantsConfig({ RPC_URL: "https://rpc.example", FACTORY: A }).maxHeadAgeSeconds, 180);
 });

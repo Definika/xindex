@@ -57,6 +57,7 @@ export function createJournal({ load, save, now = () => Math.floor(Date.now() / 
         chain: action.chain ?? null,
         amount: amount === undefined ? null : amount.toString(),
         usd: action.usd ?? null,
+        maxUsd: action.maxUsd ?? action.usd ?? null,
         stage: "signed",
         data,
         at: now(),
@@ -130,11 +131,14 @@ export function createJournal({ load, save, now = () => Math.floor(Date.now() / 
       }
       return busy;
     },
-    /// What the buys of the last day cost, the dropped ones aside.
+    /// The most the buys of the last day may have cost, the dropped ones aside: each one's worth at Pyth and the loss
+    /// bound its swap was held to (`maxUsd`, CA-M13); a move recorded before that field counts at its worth.
     spentUsd() {
       const since = now() - DAY;
       let usd = 0;
-      for (const m of Object.values(state.moves)) if (m.kind === "buy" && m.stage !== "dropped" && m.at >= since) usd += m.usd;
+      for (const m of Object.values(state.moves)) {
+        if (m.kind === "buy" && m.stage !== "dropped" && m.at >= since) usd += m.maxUsd ?? m.usd;
+      }
       return usd;
     },
     /// Forgets moves that settled more than `days` ago; a day's buys stay, for the budget.
@@ -148,6 +152,44 @@ export function createJournal({ load, save, now = () => Math.floor(Date.now() / 
       if (old.length) change((s) => old.forEach((m) => delete s.moves[m.id]));
     },
   };
+}
+
+/// Whether process `pid` still runs: signal 0 reaches it, or is refused for want of permission, which only a live
+/// process can answer.
+function running(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+
+/// Takes the journal in `path` for this process: a lock file beside it that names the process, which a second
+/// writer finds and stops at. Each writer loads the journal once and saves it whole after every change, so two of
+/// them, a restart overlapping the process it replaces or a one-shot run beside the service, each erased the moves the
+/// other had recorded (CA-M12). A lock left by a process that is gone, or by this very pid in a container that always
+/// starts at the same one, is taken over. Returns `release()`, which removes the lock if it is still this process's.
+export function lockJournal(path, { fs = nodeFs, pid = process.pid, alive = running } = {}) {
+  const lock = `${path}.lock`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      fs.writeFileSync(lock, `${pid}\n`, { flag: "wx" });
+      return () => {
+        if (fs.existsSync(lock) && fs.readFileSync(lock, "utf8").trim() === String(pid)) fs.unlinkSync(lock);
+      };
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      const holder = Number(fs.readFileSync(lock, "utf8").trim());
+      if (Number.isInteger(holder) && holder > 0 && holder !== pid && alive(holder)) {
+        throw new Error(
+          `another restock process (pid ${holder}) holds the journal ${path}: two writers erase each other's moves. If none is running, remove ${lock}`,
+        );
+      }
+      fs.unlinkSync(lock);
+    }
+  }
+  throw new Error(`the journal's lock ${lock} could not be taken`);
 }
 
 /// The saved journal `text`, or a fresh journal where there is none (null). Text that is empty or unreadable throws:

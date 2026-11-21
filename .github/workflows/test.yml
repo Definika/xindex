@@ -145,7 +145,8 @@ jobs:
         run: node --test keeper/test/unit/*.test.mjs
 
       # Offline suites only; the fork helpers are covered by them. Every file row must show hit == total for lines,
-      # statements, branches and functions, and an empty summary fails.
+      # statements, branches and functions, and an empty summary fails. So does a row that does not carry all four
+      # counts: with fewer there was less to compare, and a row cut short passed (CA-L11).
       - name: Require 100% coverage on every file
         run: |
           set -euo pipefail
@@ -154,16 +155,22 @@ jobs:
           import re
           import sys
 
-          rows, short = 0, []
+          rows, short, cut = 0, [], []
           for line in open("coverage.txt"):
               cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
               if not re.match(r"^(src|script|test)/", cells[0]):
                   continue
               rows += 1
-              if any(hit != total for hit, total in re.findall(r"\((\d+)/(\d+)\)", line)):
+              counts = re.findall(r"\((\d+)/(\d+)\)", line)
+              if len(counts) != 4:
+                  cut.append(cells[0])
+              elif any(hit != total for hit, total in counts):
                   short.append(cells[0])
           if rows == 0:
               print("::error::the coverage summary lists no files")
+              sys.exit(1)
+          if cut:
+              print("::error::the coverage summary lacks one of the four counts for " + ", ".join(cut))
               sys.exit(1)
           if short:
               print("::error::coverage is below 100% in " + ", ".join(short))

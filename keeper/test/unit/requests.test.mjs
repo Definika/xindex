@@ -150,3 +150,29 @@ test("RY-8: a request whose escrow over its limit cannot pay MIN_PROFIT_USD is n
   assert.ok(picked.skipped.every((s) => /cannot pay MIN_PROFIT_USD/.test(s.reason)));
   assert.equal(fillableRequests(entries, 1_000n, [INDEX], infoOf(50)).chosen.length, 4, "with no minimum all four pay something");
 });
+
+test("a request made before its index's last settlement is not simulated, alone or in a batch", async () => {
+  const { batchGroups, movingReadFailed, settledSince } = await import("../../bot/math.mjs");
+  const at = (nonce) => new Map([[INDEX.toLowerCase(), { shareUsd: 50, mintAllowed: true, nonce }]]);
+  const made = (id, rebalanceNonce) => ({ id, request: { requester: `0x${"cc".repeat(20)}`, deadline: 2_000n, isMint: true, open: true, rebalanceNonce, index: INDEX, stable: USDC, escrow: 60_000_000n, limit: 10n ** 18n } });
+  const entries = [made(1n, 6), made(2n, 7), made(3n, 7)];
+
+  const alone = fillableRequests(entries, 1_000n, [INDEX], at(7n));
+  assert.deepEqual(alone.chosen.map((e) => e.id).sort(), [2n, 3n]);
+  assert.deepEqual(alone.skipped, [{ id: 1n, reason: "its index settled a rebalance since it was made: it can only be cancelled or refunded" }]);
+  assert.deepEqual(batchGroups(entries, 1_000n, [INDEX], at(7n))[0].members.map((m) => m.id).sort(), [2n, 3n]);
+
+  // A nonce that could not be read, or was never asked for, says nothing: the request is checked as before.
+  assert.equal(fillableRequests(entries, 1_000n, [INDEX], at(null)).chosen.length, 3);
+  assert.equal(batchGroups(entries, 1_000n, [INDEX], at(undefined))[0].members.length, 3);
+  assert.equal(settledSince({ rebalanceNonce: 7 }, { nonce: 7n }), false);
+  assert.equal(settledSince({ rebalanceNonce: 7n }, { nonce: 8n }), true);
+
+  // CA-R2-03: only a failed read of a leg the fill moves stops it.
+  const ok = { status: "success", result: 1n };
+  const bad = { status: "failure" };
+  assert.equal(movingReadFailed([0, 2], [ok, bad, ok], [ok, bad, ok]), false, "the leg left alone answers nothing, and nothing reads it");
+  assert.equal(movingReadFailed([0, 2], [ok, ok, ok], [ok, ok, bad]), true, "a moving leg's allowance");
+  assert.equal(movingReadFailed([1], [ok, bad, ok], [ok, ok, ok]), true, "a moving leg's balance");
+  assert.equal(movingReadFailed([], [bad], [bad]), false);
+});

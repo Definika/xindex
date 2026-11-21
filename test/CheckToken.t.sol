@@ -23,9 +23,10 @@ import {
     MockTokenController,
     MockMiniMeToken,
     MockRolesToken,
+    MockUncountedRolesToken,
     MockSuperOperatorToken
 } from "./mocks/MockAdminTokens.sol";
-import {MockSafeOwner, MockTimelockOwner, MockDelayOwner} from "./mocks/MockOwners.sol";
+import {MockSafeOwner, MockTimelockOwner, MockDelayOwner, MockTruncatedSafeOwner} from "./mocks/MockOwners.sol";
 import {MockLegacyProxy} from "./mocks/MockLegacyProxy.sol";
 import {MockPoolManager} from "./mocks/MockPoolManager.sol";
 import {MockUniswapV3Factory, MockUniswapV3Pool} from "./mocks/MockUniswapV3.sol";
@@ -311,6 +312,39 @@ contract CheckTokenTest is Test {
         checker.log(r);
     }
 
+    /// @dev CA-R2-17: the report read the first holder of DEFAULT_ADMIN_ROLE and printed it as the role's. A token
+    ///      administered by a Safe and by a key beside it then read as the Safe's alone. The line now says how many
+    ///      hold the role, and that the one named is only the first; where the token does not count them, it says so.
+    function test_CAR217_theReportSaysHowManyHoldTheAdminRole() public {
+        MockRolesToken roles = new MockRolesToken(key);
+        vm.prank(key);
+        roles.mint(address(this), 1e24);
+        CheckToken.Report memory r = _check(address(roles));
+        assertEq(r.roleAdmins, 1);
+        string memory alone = checker.describe(r.roleAdmin);
+        assertEq(checker.roleAdminText(r.roleAdmin, r.roleAdmins), alone, "one holder is the role's holder");
+
+        address second = makeAddr("a second admin");
+        vm.prank(key);
+        roles.grantRole(bytes32(0), second);
+        r = _check(address(roles));
+        assertEq(r.roleAdmin.account, key, "still the first one read");
+        assertEq(r.roleAdmins, 2);
+        assertEq(
+            checker.roleAdminText(r.roleAdmin, r.roleAdmins),
+            string.concat(alone, "; the first of 2 holders: read each with getRoleMember")
+        );
+        checker.log(r);
+
+        r = _check(address(new MockUncountedRolesToken(key)));
+        assertEq(r.roleAdmin.account, key);
+        assertEq(r.roleAdmins, 0, "a token that does not count the holders");
+        assertEq(
+            checker.roleAdminText(r.roleAdmin, r.roleAdmins),
+            string.concat(alone, "; the first holder, of a number the token does not give: read its RoleGranted events")
+        );
+    }
+
     function test_classify() public {
         CheckToken.Party memory p = checker.classify(address(0));
         assertEq(uint8(p.kind), uint8(CheckToken.Kind.None));
@@ -332,6 +366,17 @@ contract CheckTokenTest is Test {
         assertEq(checker.kindText(p), "a Safe, 3 of 5");
         p = checker.classify(address(new MockSafeOwner(2, 4, false)));
         assertEq(p.signers, 0, "a multisig that lists no owners");
+        // CA-R2-18: owners that could not be read are not a count of zero: "a Safe, 2 of 0" named a multisig nobody
+        // could sign for. Nor is a length the answer is too short to hold.
+        assertEq(checker.kindText(p), "a Safe, threshold 2, its owners unread");
+        p = checker.classify(address(new MockTruncatedSafeOwner()));
+        assertEq(uint8(p.kind), uint8(CheckToken.Kind.Safe));
+        assertEq(p.signers, 0, "five owners announced, none returned");
+        assertEq(checker.kindText(p), "a Safe, threshold 3, its owners unread");
+        p = checker.classify(address(new MockSafeOwner(0, 4, true)));
+        assertEq(checker.kindText(p), "a Safe, threshold 0, its owners unread", "no Safe needs no signature");
+        p = checker.classify(address(new MockSafeOwner(4, 4, true)));
+        assertEq(checker.kindText(p), "a Safe, 4 of 4");
 
         p = checker.classify(address(new MockTimelockOwner(2 days)));
         assertEq(uint8(p.kind), uint8(CheckToken.Kind.Timelock));

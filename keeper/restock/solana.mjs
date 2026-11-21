@@ -1,10 +1,12 @@
 // The restock service's home on Solana: a signer home (`signer-home.mjs`) whose signer is `solana/signer.mjs`, the one
 // process that holds the Solana key and loads the Solana libraries (D3 of design/2026-11-01-non-evm-restock.md).
 
+import { fileURLToPath } from "node:url";
 import { CHAINS } from "./coins.mjs";
 import { createSignerHome } from "./signer-home.mjs";
 
-const SIGNER = new URL("./solana/signer.mjs", import.meta.url).pathname;
+// A path, not a URL's pathname, which keeps a space or an accent percent-encoded and names no file (CA-L8).
+const SIGNER = fileURLToPath(new URL("./solana/signer.mjs", import.meta.url));
 
 /// The Solana signer's whole environment, from the chain's settings (`config.mjs`): never this process's, which holds
 /// the treasury's key.

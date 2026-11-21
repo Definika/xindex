@@ -216,3 +216,39 @@ test("whatever nameUnits returns is inside every cap and clears its bar", () => 
   }
   assert.ok(named > 100, `only ${named} of 400 rounds named a fill`);
 });
+
+test("CA-M7: nameUnits takes what the hub's own score allows, against an exhaustive search", () => {
+  // Three coins of a third each. One has doubled and one halved since the index was on its weights, and forty
+  // minutes into the auction the bar still asks 5.2%: two legs move freely, inside their caps, which is where the
+  // score and the logarithm it stands under part ways.
+  const weights = [3334, 3333, 3333];
+  const units = [10n ** 18n, 10n ** 18n, 10n ** 18n];
+  const dollars = [2, 1, 0.5]; // what each leg is worth
+  const prices = dollars.map((d) => d / 1e18);
+  const bar = U.barAt(2400n);
+  const named = U.nameUnits({ units, weights, prices, bar });
+  assert.ok(U.gainOf(units, named.newUnits, weights).gain >= bar, "what it names, the hub accepts");
+  const taken = U.takeUsd(units, named.newUnits, prices);
+
+  // The search, which knows nothing of slopes: every pair of changes of the first two legs on a fine grid, and for
+  // the third the least change that still clears the bar.
+  const score = (x) => x - x ** 2 / 2 + x ** 3 / 3 - 0.3 * x ** 4;
+  const asked = (Number(bar) / 1e18) * 10_000;
+  let best = -Infinity;
+  for (let a = -0.2; a <= 0.9; a += 0.004) {
+    for (let b = -0.2; b <= 0.9; b += 0.004) {
+      const left = (asked - weights[0] * score(a) - weights[1] * score(b)) / weights[2];
+      if (left > score(0.9)) continue; // the third leg cannot score what is left
+      let [below, above] = [-0.2, 0.9];
+      for (let step = 0; step < 50; step++) {
+        const mid = (below + above) / 2;
+        if (score(mid) < left) below = mid;
+        else above = mid;
+      }
+      best = Math.max(best, -(dollars[0] * a + dollars[1] * b + dollars[2] * above));
+    }
+  }
+  assert.ok(best > 0.16, `the search finds a fill that takes ${best}`);
+  assert.ok(taken > 0.999 * best, `it takes ${taken} of the ${best} the score allows`);
+  assert.ok(taken < 1.001 * best, "and no more than the search found: the search covers every fill");
+});

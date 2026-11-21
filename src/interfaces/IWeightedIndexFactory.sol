@@ -58,9 +58,10 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
         IWeightedHub.Config config,
         bool listed
     );
-    /// @notice The owner set the fee policy that every index created from now on copies: the platform's fee, its
-    ///         yearly streaming fee, the referrer's share of the platform's fee, the recipient of the platform's shares
-    ///         and creation fees, and the creation fee in wei.
+    /// @notice The owner set the fee policy. Every index created from now on copies the platform's fee, its yearly
+    ///         streaming fee and the referrer's share of the platform's fee. The recipient of the platform's shares
+    ///         and of the creation fees is read by every index, old and new, at each call from now on; the creation
+    ///         fee, in wei, is what {createIndex} takes from now on.
     event FeePolicySet(
         uint16 platformFeeBps,
         uint16 platformStreamingBps,

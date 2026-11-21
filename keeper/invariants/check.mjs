@@ -139,14 +139,20 @@ export function checkProgress(index, prev, cur) {
   return findings;
 }
 
-/// `escrows` is a list of { token, amount }; `balances` maps a lowercase token to the holder's balance. Every token's
-/// escrows must be covered by what the holder has: MintRequests' open requests, or the BasketBuilder's escrows.
+/// `escrows` is a list of { token, amount }; `balances` maps a lowercase token to the holder's balance, null where the
+/// read failed. Every token's escrows must be covered by what the holder has: MintRequests' open requests, or the
+/// BasketBuilder's escrows. A balance that could not be read is not a balance of zero: it is a reader finding, where
+/// a zero would have reported the whole escrow as a shortfall nobody measured (CA-L9).
 export function checkEscrows(code, holder, escrows, balances) {
   const owed = new Map();
   for (const { token, amount } of escrows) owed.set(lower(token), (owed.get(lower(token)) ?? 0n) + amount);
   const findings = [];
   for (const [token, amount] of owed) {
-    const balance = balances.get(token) ?? 0n;
+    const balance = balances.get(token) ?? null;
+    if (balance === null) {
+      findings.push({ level: "reader", code: "unreadable", holder: lower(holder), token, why: "balanceOf could not be read" });
+      continue;
+    }
     if (balance < amount) {
       findings.push({ level: "breach", code, holder: lower(holder), token, balance, owed: amount, shortfall: amount - balance });
     }
@@ -163,10 +169,93 @@ export function findingKey(f) {
   return [f.code, f.index ?? f.holder ?? "", f.token ?? "", f.why ?? ""].join(":");
 }
 
-/// The findings of this round against the keys standing from the last: the ones raised and the keys cleared.
+/// What a round's own findings say it could not look at: a reader finding names a contract whose properties were not
+/// evaluated, and with a token, or as an unreadable component, the one balance that was not read.
+const unseenBy = (findings) =>
+  findings.filter((f) => f.level === "reader" || f.code === "unreadable").map((f) => ({ scope: f.index ?? f.holder ?? "", token: f.token }));
+
+/// The findings of this round against the keys standing from the last: the ones raised and the keys cleared. A
+/// standing finding on something this round could not look at is neither: no read showed it gone, so it stands until
+/// one does. Dropped from the round for want of a read, it used to be announced as cleared (CA-M17).
 export function diffFindings(standing, findings) {
   const now = new Map(findings.map((f) => [findingKey(f), f]));
+  const unseen = unseenBy(findings);
+  const held = (key) => {
+    const [, scope, token] = key.split(":");
+    return unseen.some((u) => u.scope === scope && (u.token === undefined || u.token === token));
+  };
   const raised = [...now].filter(([key]) => !standing.has(key)).map(([, f]) => f);
-  const cleared = [...standing].filter((key) => !now.has(key));
-  return { raised, cleared, standing: new Set(now.keys()) };
+  const gone = [...standing].filter((key) => !now.has(key));
+  return { raised, cleared: gone.filter((key) => !held(key)), standing: new Set([...now.keys(), ...gone.filter(held)]) };
 }
+
+/// The RPC's latest block against the clock: a head older than `maxAgeSeconds` is a reader finding. A node that
+/// answers but has stopped following the chain serves the same healthy block for ever, and every round on it found
+/// nothing (CA-R2-14). The age is not part of the finding's identity, so a stalled head is raised once.
+export function checkHead(blockTimestamp, nowSeconds, maxAgeSeconds) {
+  const age = nowSeconds - Number(blockTimestamp);
+  if (age <= maxAgeSeconds) return [];
+  return [{ level: "reader", code: "stale-head", age, why: "the RPC's latest block is older than MAX_HEAD_AGE_SECONDS" }];
+}
+
+/// A range read forward, once: block numbers, or request ids. `step(to, read)` hands `read(from, to)` what has not
+/// been read yet and moves past it only once `read` has returned. A read that throws leaves its range to the next
+/// round: moved first, the cursor skipped for good every request and every event of a round whose read failed
+/// (CA-M16). `first` is where the range starts; null starts it at the first `to` it is asked for, and keeps that
+/// start through any number of failed reads.
+export function createCursor(first = null) {
+  let next = first;
+  return async function step(to, read) {
+    if (next === null) next = to;
+    if (next > to) return undefined;
+    const answer = await read(next, to);
+    next = to + 1n;
+    return answer;
+  };
+}
+
+/// The alerts on their way to the webhook, oldest first. `send(record)` resolves true once the webhook has taken the
+/// record. `flush()` sends what is queued and stops at the first the webhook does not take, which stays queued with
+/// everything after it for the next round: an alert the webhook answered 503 to used to count as sent, and a breach
+/// is raised only once (CA-M18). At most `limit` are kept, the oldest dropped first, which `flush` reports.
+export function createAlerts({ send, limit = 500 }) {
+  const queue = [];
+  let dropped = 0;
+  return {
+    push(record) {
+      queue.push(record);
+      if (queue.length > limit) {
+        queue.shift();
+        dropped += 1;
+      }
+    },
+    async flush() {
+      while (queue.length) {
+        if (!(await send(queue[0]))) break;
+        queue.shift();
+      }
+      const lost = dropped;
+      dropped = 0;
+      return { queued: queue.length, dropped: lost };
+    },
+  };
+}
+
+/// The factory's admin events and the hubs' auction events the checker prints as notices (RT-07). Every start is
+/// one, plain or masked, and so is the quote posted with one: the guardian's runbook replaces a stranger's plain
+/// start, which it can only do if it sees it (CA-L10). `test/unit/invariants.test.mjs` holds each name against the
+/// committed ABIs, where a renamed event used to stay on the list unnoticed.
+export const FACTORY_NOTICES = Object.freeze([
+  "GuardianProposed",
+  "GuardianChangeCancelled",
+  "GuardianSet",
+  "OwnershipTransferStarted",
+  "OwnershipTransferred",
+  "ListingProposed",
+  "ListingCancelled",
+  "TokenWhitelisted",
+  "TokenDecimalsSet",
+  "FeePolicySet",
+  "CreatorApprovalSet",
+]);
+export const HUB_NOTICES = Object.freeze(["RebalanceStarted", "RebalanceQuoted", "RebalanceCancelled"]);

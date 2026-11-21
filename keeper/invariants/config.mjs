@@ -8,6 +8,7 @@ export const DEFAULTS = {
   CHAIN_ID: "1",
   POLL_SECONDS: "60",
   LOG_CHUNK: "10000",
+  MAX_HEAD_AGE_SECONDS: "180",
 };
 
 /// Parses and checks `env`. Throws one Error naming every problem, so a misconfigured checker never starts.
@@ -30,6 +31,9 @@ export function parseInvariantsConfig(env) {
     // deployment. Unset, the admin notices start at the checker's first block and the builder is not checked.
     fromBlock: get("FROM_BLOCK") ? BigInt(number("FROM_BLOCK", { min: 0, integer: true }) || 0) : null,
     pollSeconds: number("POLL_SECONDS", { integer: true, positive: true }),
+    // How old the RPC's latest block may be before the round counts as failed: a node that stopped following the
+    // chain answers every read from the same healthy block (CA-R2-14).
+    maxHeadAgeSeconds: number("MAX_HEAD_AGE_SECONDS", { integer: true, positive: true }),
     // The widest block range one eth_getLogs asks for; public RPCs cap it.
     logChunk: BigInt(number("LOG_CHUNK", { integer: true, positive: true }) || 1),
     // A Slack or Discord incoming webhook that receives every breach and reader finding when raised and cleared.

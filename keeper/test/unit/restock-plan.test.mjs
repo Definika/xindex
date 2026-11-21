@@ -99,7 +99,8 @@ test("transfers and buys are cut to RESTOCK_MAX_TRANSFER_USD, and buys to what i
   assert.equal(r.actions[0].usd, 20_000);
   const spent = plan(round({ needs, spentUsd: 45_000, home: { ...round().home, floats: new Map([["bsc", usdt(50_000)]]) } }));
   assert.deepEqual(kinds(spent), ["buy"]);
-  assert.equal(spent.actions[0].usd, 5_000, "the $5,000 left of the day, not nothing (RS-7)");
+  assert.ok(Math.abs(spent.actions[0].maxUsd - 5_000) < 1e-6, "the $5,000 left of the day, not nothing (RS-7)");
+  assert.ok(Math.abs(spent.actions[0].usd - 5_000 / 1.01) < 1e-6, "which is the most the buy may cost, loss bound included (CA-M13)");
 });
 
 test("a buy short of float waits: CCTP funds it, drawn from the executor, and BNB Chain is flagged for a hand top-up", () => {
@@ -123,8 +124,65 @@ test("a buy short of float waits: CCTP funds it, drawn from the executor, and BN
   assert.match(bsc.notes.join("\n"), /bsc: top up its USDT float by hand/);
 
   const small = plan({ ...sui, treasury: { usdc: 0n, allowance: usdc(10) } });
-  assert.deepEqual(kinds(small), ["fund"]);
-  assert.match(small.notes.join("\n"), /allowance on the executor is too small/);
+  assert.deepEqual(kinds(small), [], "no funding is planned that nothing could pay");
+  assert.match(small.notes.join("\n"), /sui: the treasury's USDC and its allowance on the executor are too small/);
+});
+
+test("CA-R2-10: what a buy waits for is funded first, and the float's target with what the treasury has left", () => {
+  // A buy worth $200 waits for float; the treasury holds nothing and may draw $1,000. The float's $5,000 target is
+  // out of reach, and the buy is not: planned as one sum of $5,202, the funding had no draw and never ran.
+  const sui = (treasury, floatUsd = 0) =>
+    plan(
+      round({
+        coins: [SUI],
+        needs: new Map([[SUI.copy, 60n * 10n ** 9n]]),
+        prices: new Map([["SUI", 3]]),
+        cfg: { ...CFG, bufferBps: 0, minUsd: 100 },
+        home: { coins: new Map(), floats: new Map([["sui", usdc(floatUsd)]]), gas: new Map([["sui", 10n ** 9n]]), funding: new Map() },
+        treasury,
+      }),
+    );
+  const short = sui({ usdc: 0n, allowance: usdc(1_000) });
+  assert.deepEqual(kinds(short), ["draw", "fund"]);
+  assert.equal(short.actions[1].amount, usdc(1_000), "all the treasury can send: the buy's $181.80 and what is left toward the target");
+  assert.equal(short.actions[0].amount, usdc(1_000), "drawn in full, within the allowance");
+
+  const exact = sui({ usdc: usdc(100), allowance: usdc(81.8) });
+  assert.deepEqual(kinds(exact), ["draw", "fund"]);
+  assert.equal(exact.actions[1].amount, usdc(181.8), "exactly what the buy waits for, and nothing for the target");
+  assert.equal(exact.actions[0].amount, usdc(81.8), "the treasury's own USDC first");
+
+  const under = sui({ usdc: usdc(100), allowance: usdc(81.7) });
+  assert.deepEqual(kinds(under), [], "a cent short of the buy, nothing is sent: part of it would start no buy");
+
+  const ample = sui({ usdc: usdc(50_000), allowance: 0n });
+  assert.deepEqual(kinds(ample), ["fund"]);
+  assert.equal(ample.actions[0].amount, usdc(5_181.8), "with the means, the buy and the whole target");
+});
+
+test("CA-R2-09: spare stock is not sent to a chain whose wallet is short of gas", () => {
+  const cfg = { ...CFG, gasMin: new Map([["bsc", E18]]) };
+  const stock = new Map([[XRP.copy, { balance: 5_000n * E18, allowance: 0n }]]);
+  const dry = plan(round({ cfg, stock, home: { ...round().home, gas: new Map([["bsc", E18 - 1n]]) } }));
+  assert.deepEqual(kinds(dry), [], "it could not be redeemed there, and would wait at the bridge");
+  assert.match(dry.notes.join("\n"), /bsc: gas below its minimum/);
+  const funded = plan(round({ cfg, stock, home: { ...round().home, gas: new Map([["bsc", E18]]) } }));
+  assert.deepEqual(kinds(funded), ["bridgeOut"], "at the reserve it goes");
+});
+
+test("CA-M13: a day of buys may cost RESTOCK_DAILY_USD at most, each one's loss bound included", () => {
+  const cfg = { ...CFG, dailyUsd: 20_000, maxTransferUsd: 25_000 };
+  const first = plan(round({ cfg, needs: new Map([[XRP.copy, 15_000n * E18]]), home: floats50k }));
+  const [buy] = first.actions;
+  // In dollars, to the planner's own floating point: a millionth of a dollar either way.
+  const most = Number(buy.maxIn) / 1e18;
+  assert.ok(most <= 20_000 + 1e-6, `the most the swap may spend, ${most}, is inside the day's budget`);
+  assert.ok(most > 20_000 - 1e-6, "and takes all of it");
+  assert.ok(Math.abs(buy.maxUsd - 20_000) < 1e-6 && buy.usd < 19_802, "it buys what $20,000 can pay for at the 1% bound");
+  // The journal sums what each buy may have cost, so the day is then spent.
+  const next = plan(round({ cfg, needs: new Map([[XRP.copy, 15_000n * E18]]), spentUsd: buy.maxUsd, home: floats50k }));
+  assert.deepEqual(kinds(next), []);
+  assert.match(next.notes.join("\n"), /past RESTOCK_DAILY_USD/);
 });
 
 test("a chain without gas is left alone and flagged, a coin without a price too", () => {
@@ -277,9 +335,10 @@ test("RS-7: a buy larger than what is left of the day's budget is cut to it, not
   const cfg = { ...CFG, dailyUsd: 20_000, maxTransferUsd: 25_000 }; // the defaults: a day's budget below one transfer
   const big = plan(round({ cfg, needs: new Map([[XRP.copy, 15_000n * E18]]), home: floats50k }));
   assert.deepEqual(kinds(big), ["buy"]);
-  assert.equal(big.actions[0].amountOut, 10_000n * E18, "$20,000 of the $33,000 short: the day's whole budget");
+  const coins = (action) => Number(action.amountOut) / 1e18;
+  assert.ok(Math.abs(coins(big.actions[0]) - 10_000 / 1.01) < 1e-6, "of the $33,000 short, what the day's whole $20,000 may cost");
   const late = plan(round({ cfg, needs: new Map([[XRP.copy, 4_000n * E18]]), spentUsd: 15_000, home: floats50k }));
-  assert.equal(late.actions[0].amountOut, 2_500n * E18, "the $5,000 left of it");
+  assert.ok(Math.abs(coins(late.actions[0]) - 2_500 / 1.01) < 1e-6, "the $5,000 left of it");
   const spent = plan(round({ cfg, needs: new Map([[XRP.copy, 4_000n * E18]]), spentUsd: 19_950, home: floats50k }));
   assert.deepEqual(kinds(spent), [], "$50 left is below RESTOCK_MIN_USD");
   assert.match(spent.notes.join("\n"), /past RESTOCK_DAILY_USD/);

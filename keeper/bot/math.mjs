@@ -276,6 +276,10 @@ export function fillableRequests(entries, T, indexes, info, cap = MAX_REQUEST_CH
       skipped.push({ id: entry.id, reason: "its index is gated and does not issue to the executor" });
       continue;
     }
+    if (settledSince(r, at)) {
+      skipped.push({ id: entry.id, reason: "its index settled a rebalance since it was made: it can only be cancelled or refunded" });
+      continue;
+    }
     const { escrowUsd, limitUsd } = requestUsd(r, at.shareUsd);
     if (limitUsd > escrowUsd) {
       skipped.push({ id: entry.id, reason: `its limit, worth ${limitUsd.toFixed(2)} USD, is above its escrow's ${escrowUsd.toFixed(2)} USD` });
@@ -293,6 +297,21 @@ export function fillableRequests(entries, T, indexes, info, cap = MAX_REQUEST_CH
   const chosen = [...first, ...ranked.filter((e) => !first.includes(e)).slice(0, cap - first.length)].sort((a, b) => b.usd - a.usd);
   for (const e of ranked) if (!chosen.includes(e)) skipped.push({ id: e.id, reason: `past the ${cap} largest open requests` });
   return { chosen, skipped };
+}
+
+/// Whether a read a fill depends on failed. `moving` are the positions of the legs the fill moves, and each of `reads`
+/// is a multicall's answers, one per component. A leg the fill leaves alone is read by nobody on chain, so its answer,
+/// failed or not, says nothing about the fill (CA-R2-03).
+export function movingReadFailed(moving, ...reads) {
+  return moving.some((i) => reads.some((answers) => answers[i].status !== "success"));
+}
+
+/// Whether request `r` was made before its index's last settlement, `at.nonce` being the index's `rebalanceNonce` at
+/// the last scan. `MintRequests` fills a request only at the nonce it recorded (RW-2), so such a request can never be
+/// filled again: it is not simulated, and holds no stock on the restock's board. A nonce that could not be read
+/// (null), or was not asked for, says nothing.
+export function settledSince(r, at) {
+  return at.nonce !== undefined && at.nonce !== null && BigInt(r.rebalanceNonce) !== BigInt(at.nonce);
 }
 
 /// Folds a scan's reads into `known`, the open requests by id (XS-11). `ids` are the ids read, `results` their
@@ -353,6 +372,7 @@ export function batchGroups(entries, T, indexes, info, { cap = MAX_BATCH_REQUEST
     const at = info.get(index);
     if (!at || at.shareUsd === null) continue;
     if (r.isMint && at.mintAllowed !== true) continue;
+    if (settledSince(r, at)) continue;
     const { escrowUsd, limitUsd } = requestUsd(r, at.shareUsd);
     if (limitUsd > escrowUsd) continue;
     const key = `batch:${index}:${r.stable.toLowerCase()}`;

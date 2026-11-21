@@ -22,8 +22,10 @@ weights. No contract reads a price, a feed or an oracle, for any of it.
   pays the components out. No oracle sits on either path, so nothing can block an exit. `redeemSkipping` exits around a
   frozen component, which can be claimed later.
 - **Trade with stablecoins.** `IndexZap` mints with USDC or USDT and burns to USDC or USDT in one transaction,
-  through Uniswap's Universal Router (V3 and V4 pools); a USDC permit makes the mint one signature. The two stablecoins
-  are the only currencies, on each chain its own (the owner's call of 2026-11-18): no contract takes ether.
+  through Uniswap's Universal Router (V3 and V4 pools); a USDC permit spares the approval, so the mint is one
+  transaction, signed after the permit itself. The two stablecoins are the only currencies, on each chain its own
+  (the owner's call of 2026-11-18): no mint, burn, buy or sale takes ether. The one place ether enters is the
+  factory's creation fee, zero today, which an approved creator pays with `createIndex`.
   `BasketBuilder` does the same over several transactions for baskets too wide for one. `MintRequests` holds limit
   orders anyone can fill.
 - **Rebalance.** Once an index's interval (7 to 91 days) has passed, anyone can start a rebalance. After 2 hours of

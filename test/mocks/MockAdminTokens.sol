@@ -123,6 +123,22 @@ contract MockRolesToken is ERC20, AccessControlEnumerable {
     }
 }
 
+/// @notice A token whose DEFAULT_ADMIN_ROLE holders can be read one by one and are not counted: `getRoleMember`
+///         without `getRoleMemberCount`. `CheckToken` then names the first holder as the first of an unknown number
+///         (CA-R2-17).
+contract MockUncountedRolesToken is ERC20 {
+    address internal immutable _ADMIN;
+
+    constructor(address admin) ERC20("Uncounted Roles Token", "UROLE") {
+        _ADMIN = admin;
+        _mint(admin, 1e24);
+    }
+
+    function getRoleMember(bytes32, uint256) external view returns (address) {
+        return _ADMIN;
+    }
+}
+
 /// @notice The Sandbox's shape (SAND): an admin read through `getAdmin()`, who appoints super operators whose
 ///         `transferFrom` and `burnFor` need no allowance, so they move or burn any holder's balance. No blacklist.
 contract MockSuperOperatorToken is ERC20 {

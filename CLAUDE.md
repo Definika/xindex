@@ -54,7 +54,7 @@ and P2 proofs of Ethereum's finality, the hybrid index) is tagged `stage-b-2026-
 v4's market-cap index (reference supplies and a price-free λ auction, deleted on 2026-10-06,
 `audit/2026-10-06-v4-retirement.md`). Nothing is deployed on a mainnet yet.
 
-Where it stands (2026-11-18). The bullets below are a history: those written before 2026-11-10 describe the
+Where it stands (2026-11-21). The bullets below are a history: those written before 2026-11-10 describe the
 Pyth-priced rebalance as it then was, the bullet of that day says what replaced it, and the ones after it what was
 built on it and found in it.
 - The weighted index is built and reviewed twice (`audit/2026-10-05-v5-review.md`, `audit/2026-10-07-v5-logic-review.md`).
@@ -353,6 +353,46 @@ built on it and found in it.
   - The stock's price is the operator's, accepted at launch sizes with no hedge (the owner's call).
   - The copies of JUP, PYTH, SUI, APT and ALGO left Ethereum's list (the owner's call, below): 80 coins. Their
     restock signers stay, unrun.
+- **The audit of 2026-11-21** (`audit/2026-11-21-consolidated-audit.md`, ids `CA-H1`, `CA-H2`, `CA-M1`..`CA-M19`,
+  `CA-L1`..`CA-L12`, `CA-R2-01`..`CA-R2-20` and `CA-S01`..`CA-S08`: the reports' own ids under a prefix, since v1
+  already holds `M01`, `L06` and their neighbours). An agent's audit of `main` at `5b7635f`, in three passes and a
+  follow-up, 61 numbered findings, handed over that day; not the external audit asked for below. It found no path
+  that takes holders' funds from an index. The owner's call was to fix everything confirmed, the changes to `src/`
+  among them. Thirty-three are fixed in code, seven by documentation, and twenty-one are left as they are, each
+  with its reason in the record.
+  - **`CA-H1`, the one real break of a stated bound.** `KeeperExecutor.fillBatch` spent the share stock's allowance
+    on a count of the shares it was to bring in, and a redeem side paid nothing is never filled: with a stolen
+    keeper key the whole share stock left with the allowance at zero. The count is now held against the shares the
+    executor holds after the batch (`ShareStockShort`). Every fill also carries the hash of the request its keeper
+    priced (`expected`, `RequestChanged`, `RequestsChanged`; CA-M6).
+  - **In `src/`**, all four release hashes moved:
+    - `MintRequests` and `BasketBuilder` keep `totalEscrow[token]` and take nothing into a token they hold less of
+      than they owe (`Underbacked`, now in `IXindexErrors`; CA-H2, which is RX-8's rule on the two escrows).
+    - `requestMint` and `requestRedeem` each have an overload naming the nonce the limit was set at (CA-M1).
+    - The hub has `claim(token, to, amount)` (CA-S01) and `cancelRebalance(proposalId)` (CA-S02). It is 21,627
+      bytes, 2,949 under EIP-170.
+    - The builder refuses the paid token itself as a recipient (CA-R2-15) and a deposit that delivered nothing
+      (CA-R2-16).
+  - **The keeper's bot** names its units on the hub's own score, where it solved for the logarithm's optimum and took
+    an eighth less in the tested case (CA-M7); dates the needs board by its last block that looked, not its last
+    write (CA-R2-02); reports a request's need once (CA-M8); reads only the legs a fill moves (CA-R2-03); and leaves
+    out one index whose tokens cannot be read instead of failing the round (CA-R2-04).
+  - **The restock** runs again: on `main` it read `PYTH()` from the factory, which has had none since 2026-11-10. It
+    also reads a transfer's completion back before settling it (CA-M10), locks its journal to one process (CA-M12),
+    holds the day's budget to what the buys may cost (CA-M13), funds what the buys wait for before the float's
+    target (CA-R2-10), sends no stock to a chain without gas (CA-R2-09) and leaves out a chain whose node is down
+    (CA-R2-11).
+  - **The invariant checker** no longer clears a breach it could not read (CA-M17), skips a range whose read failed
+    (CA-M16), loses an alert the webhook refused (CA-M18) or trusts a head that stopped moving (CA-R2-14).
+  - **The scripts**: on chains 1 and 56 the guardian must be a Safe of at least two signatures (CA-M4, the figure
+    this record's reading and the owner's to change); `CheckToken` counts the admin role's holders and never prints
+    an unread owner list as a count (CA-R2-17, CA-R2-18); CI's coverage gate fails a row cut short (CA-L11).
+  - Mutants C1 to C43, all killed; B1 and B2 follow the rewritten line. The suite has 555 tests, the executor's 83,
+    the bot's 232.
+  - Not done: the fork suites and the keeper's end-to-end tests on this change; a new Sepolia deployment, the
+    executor included; the app and the backend (the bound request calls, `cancelRebalance(proposalId)` in the Safe
+    batches, `Underbacked` as a state to show); and before the non-EVM signers run, CA-M14, CA-L7, CA-R2-12 and
+    CA-R2-13.
 - Before any mainnet: a Hermes plan that serves the keeper its feeds (its price source is its own business now, and
   no contract waits on it); a run of the fork suites; an external audit (the red
   team of the oracle-free mechanism ran on 2026-11-14), then `DeployWeighted`'s release hashes fixed at the
@@ -363,6 +403,8 @@ built on it and found in it.
   is ours or MIT-licensed (`NOTICE`).
 
 For more:
+- `audit/2026-11-21-consolidated-audit.md`: the audit of 2026-11-21, every finding with its verdict, what was fixed,
+  what was left and why, and what changed for integrators.
 - `design/2026-11-10-oracle-free-rebalance.md`: the rebalance's spec since 2026-11-10: the rule, why it is safe,
   the auction, what a fill can take, and what is left.
 - `audit/2026-11-10-oracle-retirement.md`: the review ids that went with Pyth, and every re-targeted test.
@@ -497,7 +539,7 @@ stablecoins from that chain's address book and refuses any other address
      `test/WeightedHub.rebalance.t.sol` and `test/WeightedHub.invariant.t.sol`, the builder's in
      `test/BasketBuilder.t.sol`, XS-17's in `test/Repo.t.sol`, the keeper's in `keeper/test/KeeperExecutor.t.sol` and
      the node tests named `XS-5: ...` and so on in `keeper/test/unit/`. XS-18 is recorded by documentation and the R11
-     test's eleven entry points.
+     test's entry points, thirteen since 2026-11-21.
    - The red team of 2026-10-18: `RX-1`..`RX-67` (`audit/2026-10-18-red-team.md`), a test named `test_RX8_...`, and a
      node test named `RX-1: ...` in `keeper/test/unit/`. The record's "Status of the fixes" names every test; the ids
      fixed by documentation alone, the listing calls and the off-chain readings have none.
@@ -528,6 +570,17 @@ stablecoins from that chain's address book and refuses any other address
      RW-7's in `test/MintRequests.t.sol`, RW-9's in `test/IndexZap.t.sol` and, for the builder's half, in
      `test/BasketBuilder.t.sol`, where RW-10's are too, with their mutants W1 to W29. The record's "Status of the
      fixes" names every test; RW-3, RW-4 and RW-5 are recorded by documentation alone.
+   - The audit of 2026-11-21: `CA-H1`, `CA-H2`, `CA-M1`..`CA-M19`, `CA-L1`..`CA-L12`, `CA-R2-01`..`CA-R2-20` and
+     `CA-S01`..`CA-S08` (`audit/2026-11-21-consolidated-audit.md`). The ids are the reports' own under the prefix
+     `CA`, kept for the reason the CR ids keep theirs. A test is named `test_CAH1_...`, `test_CAM4_...`,
+     `test_CAS01_...` or `test_CAR215_...`, and a node test `CA-M7: ...`: CA-H1's and CA-M6's in
+     `keeper/test/KeeperExecutor.t.sol`; CA-H2's and CA-M1's in `test/MintRequests.t.sol`, CA-H2's builder half,
+     CA-R2-15's and CA-R2-16's in `test/BasketBuilder.t.sol`; CA-S01's in `test/WeightedHub.t.sol`, CA-S02's in
+     `test/WeightedHub.rebalance.t.sol` and `test/WeightedHub.states.t.sol`; CA-M4's in `test/Scripts.t.sol`;
+     CA-R2-17's and CA-R2-18's in `test/CheckToken.t.sol`; the bot's, the restock's and the checker's in
+     `keeper/test/unit/`, with their mutants C1 to C43. The record's "Status of the fixes" names every test, the
+     ids fixed by documentation alone, the ones left as they are, and the wiring fixes that have no unit suite
+     (CA-M8, CA-R2-04, CA-R2-11, CA-R2-20, CA-L12).
    - The skills audit of 2026-10-04: `A7-08`, `A7-12`, `A7-13`, `A7-17`, `A7-18`, `A7-22`, `A1a-05` and `A1a-06`, the
      eight of its findings still open on `main`, fixed on 2026-10-25 (`audit/2026-10-25-skills-audit-port.md`), a
      test named `test_A708_...` or `test_A1a05_...`. The record's status table names every test.
@@ -629,7 +682,9 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   stop its own proposal from filling, which a cancel already can; it can make no fill worse than a start
   without one allows. Keep it that way: never let a quote accept a fill the bar refuses, replace the bar, outlive
   its proposal (mutant Q2), or reach an issue, a redeem or a claim. What it buys: a lone executor keeps at most the
-  tolerance of what it trades, not the index's distance from its weights. Its limits: a stranger's start carries
+  tolerance of what it trades, not the index's distance from its weights. That is counted at the quote's prices,
+  which are fixed at the start: after the market moves, an accepted fill can cost the index the tolerance and that
+  move on top, never more than the bar allows. Say so wherever the tolerance is described (CA-M5). Its limits: a stranger's start carries
   none, so the guardian replaces such a proposal within its six hours; the tolerance has to cover six hours of
   market, or the proposal expires unfilled (the spec's section 10); and one thing it can do that a cancel cannot: a
   quote that refuses every trade worth making still passes a fill that shrinks no leg, so the role that posted it
@@ -641,7 +696,9 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   lowers the weighted product of the units, and at any prices the index is worth at least `e^(bar − D)` times what
   it was, `D` its distance from its weights at those prices (`design/2026-11-10-oracle-free-rebalance.md`, section
   3). Do not replace `L` by anything that can exceed the logarithm on the capped range, nor widen the caps past the
-  range the lemma covers: the margin at `x = −0.2` is three millionths.
+  range the lemma covers: the margin at `x = −0.2` is three millionths. `L` is not the logarithm, so the fill that
+  scores highest is close to the one that puts the index on its weights, not exactly it: do not write that it is
+  (CA-S07). The keeper names its units on `L` itself, by its slope, for the same reason (CA-M7).
 - **The bar is on the whole index's gain.** It starts at `BAR_MAX` (a half), halves every `BAR_HALF_LIFE` (12
   minutes) along a straight line, rounds up, and never reaches zero. Do not turn it into a premium on the traded
   amount: with the executor choosing the trade, a premium is won by the smallest trade, and the index would never
@@ -702,7 +759,10 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   An issue makes the same probe on every leg it pulls (`_checkCanSendOut`, RW-8; until 2026-11-14 the check was the
   app's alone, RZ-25): a deposit into a leg the index can no longer send reverts `CannotSendOut` instead of becoming
   a claim nobody can pay. So a token that refuses a transfer to oneself, or charges for one, can be neither bought
-  by a fill nor issued.
+  by a fill nor issued. After a burn the index still pays amounts: redeems and claims on that leg are paid in full,
+  first come, first served, until what is left runs out, and no part of it is set aside for the claims recorded
+  before the burn (CA-M3, a known limitation: sharing a loss out would need a share of a balance). A claim larger
+  than what is left is collected in part (`claim(token, to, amount)`, CA-S01).
 - **The notice is 2 hours.** `WeightedHub`'s `REBALANCE_DELAY` is 2 hours: the notice is for executors, not for
   holders' exits. `AUCTION_DURATION` is 4 hours, the bar's twenty halvings; the math's must equal the hub's
   (`test_theMathConstantsAreTheHubs`). The
@@ -778,8 +838,10 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
 - **Holders can always leave.** `redeemSkipping` must keep working when any subset of components is frozen, claims must
   be payable once transfers resume, and neither the notice nor the auction ever freezes issue or redeem. A claim is
   booked to `to`, who receives every other component of that redemption, and `ClaimRecorded` names `to`, so a router
-  redeeming on a holder's behalf does not strand the skipped components (DA-17). There is no speed limit and no cap on
-  a burn anywhere: a holder burns any amount at any time.
+  redeeming on a holder's behalf does not strand the skipped components (DA-17). A claim is collected whole
+  (`claim(token, to)`) or in part (`claim(token, to, amount)`, CA-S01), so what an issuer's burn left of a component
+  can still be taken. There is no speed limit and no cap on a burn anywhere: a holder burns any amount at any
+  time.
 - **No admin power over funds, no rebalancing key.**
   - The factory owner proposes listings (behind `LISTING_DELAY`, 2 days) and guardian changes (behind
     `GUARDIAN_DELAY`, 7 days). Anyone can execute a proposal, but only within `PROPOSAL_WINDOW` (7 days) after its
@@ -794,6 +856,10 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
     rebalance or the handoff.
   - The guardian can: cancel pending listings; delist; cancel a rebalance; start one with a keep mask; start one before
     strangers may; and cancel a guardian change that would remove the role. It cannot block its own replacement.
+  - A Safe cancels a rebalance by its id. `cancelRebalance(proposalId)` reverts `StaleProposal` unless the index's
+    latest proposal is still that one; `cancelRebalance()` cancels whichever is pending when it lands. A Safe's
+    transaction lands hours after it is signed, when the other role may have replaced the proposal its signers read
+    with a start of its own, which a plain cancel then removed (CA-S02). The runbook's batches use the bound one.
   - The guardian is the guardian's Safe itself. `GuardianRelay` (RZ-26, 2026-11-02) existed because a start carried
     a Pyth update valid for one slot, which a Safe cannot land; a start is a plain call since 2026-11-10, and the
     relay is deleted.
@@ -906,6 +972,14 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   more buy. The pass-through legs honour their limits (DA-15), the recipients are checked as the zap's (RT-21), and
   the builder never calls `redeemSkipping` or `executeRebalance` either. A hundred-leg basket fits three buys and one
   mint under EIP-7825 (`test_aHundredLegBasketFitsInThreeBuysAndAMint`, on mock pools).
+  - **The escrows' total.** `totalEscrow[token]` is the sum of every user's escrow of a token, moved with each
+    credit and debit. Only the token's issuer can put the builder's balance under it, by taking part of the
+    balance. While it is under, a deposit, a bought leg or a redeemed leg of that token reverts `Underbacked`, so a
+    newcomer's coins never pay an earlier escrow (CA-H2, RX-8's rule); what is left still leaves by withdrawal, sale
+    or mint, first come, first served. A leg that is the paying stablecoin itself is checked again once the buy's
+    refund has left, since the call's unspent stablecoin hid a shortfall from the check made at the credit. A
+    sale's unsold input goes back to the escrow it left in the same call with no check. A withdrawal or a sale is
+    never paid to the paid token itself (CA-R2-15), and a deposit that delivered nothing reverts (CA-R2-16).
   - **Errors.** Swap failures reach the caller unchanged. The router wraps a command in `ExecutionFailed` only when it
     dispatched it with a low-level call; swaps are internal calls, so what surfaces is the pool's own revert
     (`V3TooMuchRequested`, `V4TooLittleReceived` and their neighbours), which is why `IUniversalRouter` does not declare
@@ -931,9 +1005,20 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
     `keccak256(abi.encode(request))` is `expected`; `requestHash(id)` reports it, and it leaves the id out, so it
     follows a request a re-org renumbered. A filler hashes the request it priced: calling `requestHash` at fill
     time proves nothing. `fill(id, amount)` stays for a caller that reads the request in the same call, as the
-    keeper's executor does (RW-7).
-  - The invariant suite holds the contract's balance of each token at exactly its open escrows plus donations, under
-    any interleaving with Tether's fee switch.
+    keeper's executor does (RW-7). Reading it there binds nothing by itself: the executor compares what it read
+    with the hash its keeper priced, for a single fill and, folded in order, for a batch (CA-M6).
+  - A requester may name the basket it priced. `requestMint(..., expectedNonce)` and
+    `requestRedeem(..., expectedNonce)` revert `StaleRebalanceNonce` when the index has settled since the limit was
+    set, before anything is escrowed; a request otherwise records whatever nonce the index reads when it lands,
+    and its own fill check then lets it fill (CA-M1). The unbound two stay; the app uses the bound ones.
+  - No request is taken into an uncovered escrow. `totalEscrow[token]` is the sum of the open escrows in a token,
+    and a request reverts `Underbacked` while the contract holds less: after an issuer destroyed part of the
+    balance, the deposit would pay the cancels and refunds of the requests whose own escrow is gone (CA-H2,
+    RX-8's rule). Nothing but the issuer can lower the balance under the total, and only making the balance whole,
+    by anyone, reopens that token. The requests the burn caught are refunded whole or not at all: do not add a
+    partial refund without deciding who bears the rest.
+  - The invariant suite holds the contract's balance of each token at exactly its open escrows plus donations, and
+    `totalEscrow` at exactly its open escrows, under any interleaving with Tether's fee switch.
 - **Checks-effects-interactions.** Emit events and write state before external calls where the data is available; make
   the call into a user-supplied address the last interaction when possible.
 - **Standard ERC-20s only as components** (whitelist policy). `issue` rejects fee-on-transfer tokens by checking the
@@ -1037,8 +1122,12 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   come from `DEFAULT_SENDER`.
 - **Deployment rules.**
   - Deployments never use raw private keys: `--account` keystores or `--ledger`.
-  - `OWNER` and `GUARDIAN` are required, on each chain. `GUARDIAN` is the guardian's Safe, which controls the relay the
-    script deploys as the factory's guardian; the guardian rules below read it.
+  - `OWNER` and `GUARDIAN` are required, on each chain. `GUARDIAN` is the guardian's Safe, which holds the role
+    itself; the guardian rules below read it.
+  - On a mainnet the guardian must be a Safe that needs at least `MIN_GUARDIAN_THRESHOLD` (2) signatures: a key, an
+    EIP-7702 delegated account, any other contract and a Safe of one signature are refused (`GuardianMustBeASafe`,
+    `GuardianThresholdTooLow`, CA-M4). A key has no signers to compare with the owner's, so it passed every other
+    check. The figure is the audit record's reading of "the guardian's Safe", and the owner's to change.
   - On a mainnet the owner must be a contract that is not an EIP-7702 delegated account. A Safe owner must need at least
     `MIN_OWNER_THRESHOLD` (3) signatures, the design's 3-of-5 (the owner's call on 2026-09-30), and have no enabled
     module. Any other contract, such as a timelock, is refused unless the operator sets `OWNER_IS_NOT_A_SAFE` to that

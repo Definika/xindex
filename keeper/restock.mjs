@@ -30,7 +30,7 @@ import { createSolanaHome } from "./restock/solana.mjs";
 import { createSuiHome } from "./restock/sui.mjs";
 import { createAptosHome } from "./restock/aptos.mjs";
 import { createAlgorandHome } from "./restock/algorand.mjs";
-import { createJournal, fileStore, resumeOrder } from "./restock/journal.mjs";
+import { createJournal, fileStore, lockJournal, resumeOrder } from "./restock/journal.mjs";
 import { plan } from "./restock/plan.mjs";
 
 const ONCE = process.argv.includes("--once");
@@ -39,6 +39,8 @@ const FRESH_SECONDS = 120;
 const log = (...args) => console.log(new Date().toISOString(), ...args);
 const cfg = parseRestockConfig(process.env);
 
+// One writer at a time: a second process stops here, before it loads the journal (CA-M12).
+process.on("exit", lockJournal(cfg.journalFile));
 const journal = createJournal(fileStore(cfg.journalFile));
 const hermes = createHermes({ url: cfg.hermesUrl, apiKey: cfg.pythApiKey });
 const wormholescan = createWormholescan({ url: process.env.WORMHOLESCAN_URL });
@@ -105,16 +107,6 @@ const advance = createAdvance({
 // Reading
 // ---------------------------------------------------------------------
 
-/// Pyth's contract, read once from the executor's factory, as the keeper reads it.
-let pythContract;
-async function pyth() {
-  if (!pythContract) {
-    const factory = await eth.read(cfg.executor, ABI.executor, "FACTORY");
-    pythContract = await eth.read(factory, ABI.factory, "PYTH");
-  }
-  return pythContract;
-}
-
 /// An `eth_call` from the treasury on Ethereum, with `value`, decoded; what Pyth's parse needs its fee sent as.
 async function ethCall({ to, abi, functionName, args, value = 0n }) {
   const data = encodeFunctionData({ abi, functionName, args });
@@ -128,7 +120,7 @@ async function ethCall({ to, abi, functionName, args, value = 0n }) {
 /// forged price would have set the bounds a sandwich takes to.
 async function prices() {
   const ids = cfg.coins.map((c) => PRICE_IDS[c.symbol]);
-  const latest = await hermes.trusted(ids, Date.now() + 5_000, { read: eth.read, call: ethCall, pyth: await pyth(), abi: ABI.pyth });
+  const latest = await hermes.trusted(ids, Date.now() + 5_000, { read: eth.read, call: ethCall, pyth: MAINNET.pyth, abi: ABI.pyth });
   const now = Math.floor(Date.now() / 1000);
   const out = new Map();
   for (const c of cfg.coins) {
@@ -156,13 +148,27 @@ async function readState() {
     eth.balance(MAINNET.usdc),
     eth.read(cfg.executor, ABI.executor, "treasuryUsdcAllowance"),
   ]);
+  // Each home chain is read on its own. One whose node does not answer is left out of this round's plan, its coins
+  // neither bought, sold nor bridged, and the others are planned as usual: read in one go, an outage on one chain
+  // stopped new work on every chain (CA-R2-11). What is already on its way there stays in the journal.
   const home = { coins: new Map(), floats: new Map(), gas: new Map(), funding: journal.funding() };
+  const down = new Set();
   for (const [name, h] of Object.entries(homes)) {
-    home.floats.set(name, await h.balance(CHAINS[name].float.id));
-    home.gas.set(name, await h.balance(null));
-    for (const c of cfg.coins.filter((x) => x.chain === name)) home.coins.set(c.symbol, await h.balance(c.home));
+    try {
+      const float = await h.balance(CHAINS[name].float.id);
+      const gas = await h.balance(null);
+      const held = [];
+      for (const c of cfg.coins.filter((x) => x.chain === name)) held.push([c.symbol, await h.balance(c.home)]);
+      home.floats.set(name, float);
+      home.gas.set(name, gas);
+      for (const [symbol, balance] of held) home.coins.set(symbol, balance);
+    } catch (error) {
+      down.add(name);
+      log(name, `left out of this round, its balances could not be read: ${revertReason(error)}`);
+    }
   }
-  return { needs, stock, restockAllowance, home, treasury: { usdc: treasuryUsdc, allowance: treasuryAllowance } };
+  const coins = cfg.coins.filter((c) => !down.has(c.chain));
+  return { coins, needs, stock, restockAllowance, home, treasury: { usdc: treasuryUsdc, allowance: treasuryAllowance } };
 }
 
 // ---------------------------------------------------------------------
@@ -241,7 +247,6 @@ async function round() {
   const p = await prices();
   const state = await readState();
   const { actions, notes } = plan({
-    coins: cfg.coins,
     ...state,
     inflight: journal.inflight(),
     prices: p,
@@ -280,7 +285,12 @@ for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => (stopping =
 await checkSetup();
 log(`restock ${eth.address}, executor ${cfg.executor}, coins ${cfg.coins.map((c) => c.symbol).join(", ")}`);
 while (!stopping) {
-  await round().catch((error) => log("round failed:", revertReason(error)));
+  await round().catch((error) => {
+    log("round failed:", revertReason(error));
+    // A one-shot run answers for its round: a scheduler must not record one that planned nothing as a success
+    // (CA-R2-20).
+    if (ONCE) process.exitCode = 1;
+  });
   if (ONCE) break;
   for (let s = 0; s < cfg.intervalSeconds && !stopping; s++) await new Promise((r) => setTimeout(r, 1000));
 }

@@ -35,6 +35,13 @@ export const failedRequests = () => new Backoff({ blocks: 2, maxBlocks: 200 });
 /// block for 30 days (RX-24).
 export const skippedRequests = () => new Backoff({ blocks: 2, maxBlocks: 200 });
 
+/// A request declined only because the executor is short of a coin no route sells is waiting for the restock, which
+/// reads what it needs from the keeper's board, where a report lasts NEEDS_MAX_AGE_SECONDS (900 s, 75 blocks). It is
+/// checked again 2, 4, 8... blocks later, at most 50: under the board's lifetime, so the need stays on the board until
+/// the coins land, where the 200 blocks of {skippedRequests} let it lapse and the restock send the stock home.
+export const SHORT_RECHECK_BLOCKS = 50;
+export const shortRequests = () => new Backoff({ blocks: 2, maxBlocks: SHORT_RECHECK_BLOCKS });
+
 export class Backoff {
   /// After its n-th failure at block B a key is tried again from block B + `blocks · 2^(n-1)`, at most B +
   /// `maxBlocks`; after `limit` failures it is stopped. A key whose last failure is `lapseBlocks` old is forgotten.

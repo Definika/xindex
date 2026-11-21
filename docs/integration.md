@@ -98,8 +98,10 @@ ordered.
 **Rebalance around a frozen component.** The guardian cancels and starts again with the component's bit in `keepMask`;
 that component must keep its units exactly, and the settlement neither transfers it nor reads its balance, so the
 mask also routes around a component whose contract stops answering (DA-14, RT-01). At least two components must stay
-moving (`InvalidKeepMask`). The guardian is the guardian's Safe: `cancelRebalance()` and `startRebalance(keepMask)`
-are plain calls on the index, which a Safe sends like any other transaction. An executor needs no mask to leave a
+moving (`InvalidKeepMask`). The guardian is the guardian's Safe: `cancelRebalance(proposalId)` and
+`startRebalance(keepMask)` are plain calls on the index, which a Safe sends like any other transaction. The cancel
+names the proposal its signers read and reverts `StaleProposal` if another has replaced it since; the plain
+`cancelRebalance()` cancels whichever is pending when it lands (CA-S02). An executor needs no mask to leave a
 component alone: it names that component's current units.
 
 **Start with a quote.** The owner or guardian may post a quote with a start: `startRebalance(keepMask, prices,
@@ -129,7 +131,9 @@ has none.
 
 **Exit while a component is frozen.** If, say, WBTC is paused, `redeem` and the zap revert. The holder calls
 `redeemSkipping(shares, to, skipMask)` with the WBTC bit set: every other component arrives now and the WBTC amount is
-recorded in `claimOf(to, WBTC)`. Once WBTC transfers resume, `claim(WBTC, to)` pays it.
+recorded in `claimOf(to, WBTC)`. Once WBTC transfers resume, `claim(WBTC, to)` pays it. If the issuer burned part
+of the index's balance meanwhile and the whole claim can no longer be paid, `claim(WBTC, to, amount)` collects what is
+left and keeps the rest recorded (CA-S01).
 
 **Trade.** An index is a normal ERC-20, so it can be transferred or listed on any DEX. The burn path is the guaranteed
 exit.
@@ -138,7 +142,12 @@ exit.
 already holds the components or shares.
 
 **Requests.** A holder of USDC who wants shares without swapping a basket calls `requestMint` with a limit the app
-suggests from its own valuation, for example 1% under the index's value. A minter who holds shares, or can issue them in
+suggests from its own valuation, for example 1% under the index's value. Use the overload that takes `expectedNonce`,
+the index's `rebalanceNonce` when the limit was computed: a settlement between the quote and the transaction then
+reverts `StaleRebalanceNonce` instead of opening the request on a basket the limit was not set for (CA-M1). The same
+holds for `requestRedeem`. A request in a stablecoin the contract holds less of than its open requests escrowed, as
+after the issuer destroyed part of it, reverts `Underbacked`: show that stablecoin as unavailable there, and read
+`totalEscrow(token)` against the contract's balance to know (CA-H2). A minter who holds shares, or can issue them in
 kind, calls `fill(id, amount)`: at least `minShares` shares go from the minter to the requester, measured at the
 requester, and the escrowed USDC goes to the minter. A redemption is the mirror image, and a USDT fee comes out of the
 filler's delivery, so the requester still receives the limit. Unfilled, the escrow goes back on `cancel` (the requester,
@@ -146,7 +155,10 @@ at any time) or `refund` (anyone, after the deadline). A request fills only whil
 one it was made at: after a settlement a fill reverts `StaleRebalanceNonce`, so show such a request as stale and offer
 to cancel it and ask again. A filler that priced a request off chain calls `fill(id, amount, expected)` with the hash
 of the request it priced, `keccak256(abi.encode(request))`, and is refused with `RequestChanged` if anything else
-sits behind the id; compute the hash from the request you read, not from `requestHash(id)` at fill time.
+sits behind the id; compute the hash from the request you read, not from `requestHash(id)` at fill time. The hash
+covers all nine fields, so for a request not yet mined it takes the escrow as it will be credited, the amount that
+arrives after any fee, and the index's nonce at inclusion, not only the amount sent. A cancel or a refund returns the
+escrow as it was taken: the stablecoin of a mint request, the shares of a redeem request.
 
 ## Integration notes
 

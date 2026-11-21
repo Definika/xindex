@@ -290,6 +290,48 @@ contract WeightedHubRebalanceTest is WeightedTest {
         index.startRebalance(0);
     }
 
+    /// @dev CA-S02: a cancel named no proposal, so it cancelled whichever was pending when it landed. A Safe's cancel
+    ///      lands hours after it is signed: by then the other role had cancelled that proposal and started one of its
+    ///      own, and the late cancel removed that one instead. The bound cancel names the proposal its signers read.
+    ///      It is refused once another has replaced it, leaving that one as it stands, and for the proposal it names
+    ///      it is the cancel it always was.
+    function test_CAS02_aCancelBoundToItsProposalSparesTheNext() public {
+        _open(0, 0);
+        uint256 reviewed = index.proposalCount();
+        vm.startPrank(guardian);
+        index.cancelRebalance();
+        index.startRebalance(4);
+        vm.stopPrank();
+        (uint256 eta, uint256 keepMask) = index.pendingRebalance();
+        uint256 cooldown = index.restartAllowedAt();
+
+        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.StaleProposal.selector, reviewed, reviewed + 1));
+        vm.prank(owner);
+        index.cancelRebalance(reviewed);
+        (uint256 etaAfter, uint256 maskAfter) = index.pendingRebalance();
+        assertEq(etaAfter, eta, "the guardian's proposal stands");
+        assertEq(maskAfter, keepMask, "with its mask");
+        assertEq(index.restartAllowedAt(), cooldown, "and no clock moved");
+
+        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.StaleProposal.selector, reviewed + 2, reviewed + 1));
+        vm.prank(owner);
+        index.cancelRebalance(reviewed + 2);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, stranger));
+        vm.prank(stranger);
+        index.cancelRebalance(reviewed + 1);
+
+        vm.expectEmit(address(index));
+        emit IWeightedHub.RebalanceCancelled(reviewed + 1, owner, block.timestamp + 2 hours);
+        vm.prank(owner);
+        index.cancelRebalance(reviewed + 1);
+        (etaAfter,) = index.pendingRebalance();
+        assertEq(etaAfter, 0, "bound to the pending proposal, it cancels it");
+
+        vm.expectRevert(IWeightedHub.NoPendingRebalance.selector);
+        vm.prank(owner);
+        index.cancelRebalance(reviewed + 1);
+    }
+
     function test_XA02_XA16_VR04_anExpiredAuctionHoldsStrangersOffUntilItsDelayPasses() public {
         _open(0, 0);
         (uint256 eta,) = index.pendingRebalance();
@@ -718,7 +760,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
         executor.setMode(MockWeightedExecutor.Mode.Reentrant);
         executor.execute(index, _fair(), "");
         bytes[] memory errors = executor.reentryErrors();
-        assertEq(errors.length, 11, "every entry point that mints, burns, pays, accrues or rebalances (XS-18)");
+        assertEq(errors.length, 13, "every entry point that mints, burns, pays, accrues or rebalances (XS-18)");
         for (uint256 i = 0; i < errors.length; ++i) {
             assertEq(errors[i], abi.encodeWithSelector(ReentrancyGuard.ReentrancyGuardReentrantCall.selector));
         }

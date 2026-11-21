@@ -153,6 +153,7 @@ contract CheckToken is Script {
         Party owner;
         Party admin;
         Party roleAdmin;
+        uint256 roleAdmins;
         Pool[] pools;
         Verdict verdict;
         string reason;
@@ -334,6 +335,8 @@ contract CheckToken is Script {
         r.owner = classify(_ownerOf(token));
         r.admin = classify(r.upgrader);
         r.roleAdmin = classify(_roleAdminOf(token));
+        // How many hold the role, zero when the token does not count them: the report names the first alone.
+        (, r.roleAdmins) = _word(token, abi.encodeCall(IAdminReads.getRoleMemberCount, (bytes32(0))));
         r.pools = depth(token, m);
         uint256 amount =
             r.decimalsAnswered && r.decimals <= MAX_SCALED_DECIMALS ? DECIMAL_BASE ** r.decimals : FALLBACK_AMOUNT;
@@ -898,7 +901,7 @@ contract CheckToken is Script {
         );
         console2.log(string.concat("owner: ", describe(r.owner)));
         if (r.roleAdmin.account != address(0)) {
-            console2.log(string.concat("DEFAULT_ADMIN_ROLE: ", describe(r.roleAdmin)));
+            console2.log(string.concat("DEFAULT_ADMIN_ROLE: ", roleAdminText(r.roleAdmin, r.roleAdmins)));
         }
         _logDepth(r);
     }
@@ -944,11 +947,31 @@ contract CheckToken is Script {
         }
     }
 
+    /// @notice The DEFAULT_ADMIN_ROLE line of a report: the role's first holder, `first`, and how many hold it. The
+    ///         report read one holder and printed it as the role's, so a token administered by a Safe and by a key
+    ///         beside it read as the Safe's alone, or the key's, whichever was granted first (CA-R2-17).
+    function roleAdminText(Party memory first, uint256 holders) public view returns (string memory) {
+        string memory text = describe(first);
+        if (holders == 1) return text;
+        if (holders == 0) {
+            return
+                string.concat(
+                    text, "; the first holder, of a number the token does not give: read its RoleGranted events"
+                );
+        }
+        return string.concat(text, "; the first of ", vm.toString(holders), " holders: read each with getRoleMember");
+    }
+
     /// @notice What kind of account `party` is, in words.
     function kindText(Party memory party) public pure returns (string memory) {
         if (party.kind == Kind.Key) return "an externally owned key";
         if (party.kind == Kind.DelegatedKey) return "a key delegated under EIP-7702";
         if (party.kind == Kind.Safe) {
+            // A Safe needs at least one signature and has at least as many owners. Fewer owners than signatures is an
+            // owner list this check could not read, which it used to print as a count: "2 of 0" (CA-R2-18).
+            if (party.threshold == 0 || party.signers < party.threshold) {
+                return string.concat("a Safe, threshold ", vm.toString(party.threshold), ", its owners unread");
+            }
             return string.concat("a Safe, ", vm.toString(party.threshold), " of ", vm.toString(party.signers));
         }
         if (party.kind == Kind.Timelock) {
@@ -1064,10 +1087,12 @@ contract CheckToken is Script {
         return word >> 160 == 0 ? address(SafeCast.toUint160(word)) : address(0);
     }
 
-    /// @dev The length of the address array `target` answers `query` with, or zero for no answer.
+    /// @dev The length of the address array `target` answers `query` with, or zero for no answer, and for an answer
+    ///      too short to hold the entries it announces: a length nothing backs is not a count (CA-R2-18).
     function _arrayLength(address target, bytes memory query) private view returns (uint256) {
         (bool ok, uint256 size,, uint256 second) = _read(target, query);
-        return ok && size >= 2 * ScriptUtils.WORD ? second : 0;
+        if (!ok || size < 2 * ScriptUtils.WORD) return 0;
+        return second <= (size - 2 * ScriptUtils.WORD) / ScriptUtils.WORD ? second : 0;
     }
 
     /// @dev The `size` bytes of `code` from `at`, big-endian, stopping at its end (a push cut off by the end of the code).

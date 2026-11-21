@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createAdvance, REATTEST_EVERY_SECONDS } from "../../restock/advance.mjs";
+import { createAdvance, NOT_COMPLETED, REATTEST_EVERY_SECONDS } from "../../restock/advance.mjs";
 import { createJournal } from "../../restock/journal.mjs";
 
 const hex = (n, bytes) => BigInt(n).toString(16).padStart(bytes * 2, "0");
@@ -12,22 +12,26 @@ const message = (tag, expirationBlock) => {
 
 /// The service around one move: an in-memory journal, Ethereum and a Sui home whose answers the test sets, and the two
 /// attestation services, each recording what it was asked.
-function rig({ verifiesCctp = () => true, verifiesVaa = () => true, irisAnswers = [], vaaAnswers = [] } = {}) {
+function rig({ verifiesCctp = () => true, verifiesVaa = () => true, irisAnswers = [], vaaAnswers = [], lands = () => true } = {}) {
   let text = null;
   let clock = 1_000_000;
   const journal = createJournal({ load: () => text, save: (t) => (text = t), now: () => clock });
   const did = [];
+  // What each side shows completed: a redeem or a receive lands there unless `lands()` says its transaction was
+  // replaced on its nonce by one that did something else.
+  const completed = { ethereum: new Set(), sui: new Set() };
+  const complete = (name, what) => lands() && completed[name].add(what);
   const side = (name) => ({
     def: { wormhole: name === "ethereum" ? 2 : 21 },
     emitter: `0x${"cc".repeat(32)}`,
     cctpSender: `0x${"aa".repeat(32)}`,
     cctpRecipient: `0x${"bb".repeat(32)}`,
-    cctpReceived: async () => false,
+    cctpReceived: async (m) => completed[name].has(m),
     verifyCctp: async (m) => ({ valid: verifiesCctp(m), reason: "Message expired and must be re-signed" }),
-    receive: async (m) => did.push(["receive", name, m]),
+    receive: async (m) => (did.push(["receive", name, m]), complete(name, m)),
     verifyVaa: async (v) => ({ valid: verifiesVaa(v), reason: "guardian set expired" }),
-    transferCompleted: async () => false,
-    redeem: async (v) => did.push(["redeem", name, v]),
+    transferCompleted: async (v) => completed[name].has(v),
+    redeem: async (v) => (did.push(["redeem", name, v]), complete(name, v)),
     sequenceOfTx: async () => 9n,
     resume: async () => null,
   });
@@ -44,7 +48,7 @@ function rig({ verifiesCctp = () => true, verifiesVaa = () => true, irisAnswers 
     homes,
     wormholescan,
     iris,
-    redeemIn: async (v, copy) => did.push(["redeemIn", v, copy]),
+    redeemIn: async (v, copy) => (did.push(["redeemIn", v, copy]), complete("ethereum", v)),
     coinOf: () => ({ copy: "0xcopy" }),
     log: () => {},
     now: () => clock,
@@ -124,4 +128,34 @@ test("a bridge-in is attested, then redeemed by the executor with the copy recor
   assert.equal(r.journal.get(id).data.sequence, "9");
   assert.equal(r.journal.get(id).stage, "redeemed");
   assert.deepEqual(r.did, [["redeemIn", "0xvaa", "0xrecorded"]]);
+});
+
+test("CA-M10: a completing transaction that was mined proves nothing: the other side is read back", async () => {
+  // The operator cancelled a stuck redeem on its nonce. The cancel is mined, with success, and the waiter hands back
+  // its receipt: the transfer is not completed, and the move must not settle on it.
+  let replaced = true;
+  const r = rig({ vaaAnswers: ["0xvaa"], lands: () => !replaced });
+  const out = r.journal.open({ kind: "bridgeOut", coin: "SUI", copy: "0xcopy", chain: "sui", amount: 5n }, { chain: "ethereum", hash: "0xout", sequence: "9" });
+  r.journal.advance(out, "sent", { status: "success" });
+  await assert.rejects(r.advance(r.journal.get(out)), new RegExp(NOT_COMPLETED));
+  assert.equal(r.journal.get(out).stage, "attested", "the transfer is still to redeem");
+  assert.deepEqual(r.did.map((d) => d[0]), ["redeem"]);
+
+  // The next round sends the redeem again, and it lands.
+  replaced = false;
+  await r.advance(r.journal.get(out));
+  assert.equal(r.journal.get(out).stage, "redeemed");
+  assert.deepEqual(r.did.map((d) => d[0]), ["redeem", "redeem"]);
+
+  // Into the executor, and a CCTP receive, the same way.
+  replaced = true;
+  const into = r.journal.open({ kind: "bridgeIn", coin: "SUI", copy: "0xcopy", chain: "sui", amount: 5n }, { chain: "sui", hash: "0xin", sequence: "9" });
+  r.journal.advance(into, "sent", { status: "success" });
+  await assert.rejects(r.advance(r.journal.get(into)), new RegExp(NOT_COMPLETED));
+  assert.equal(r.journal.get(into).stage, "attested");
+
+  const cctp = rig({ irisAnswers: [{ message: message(1, 0), attestation: "0xsig" }], lands: () => false });
+  const id = fund(cctp.journal);
+  await assert.rejects(cctp.advance(cctp.journal.get(id)), new RegExp(NOT_COMPLETED));
+  assert.equal(cctp.journal.get(id).stage, "attested", "the burn's USDC is still to receive");
 });

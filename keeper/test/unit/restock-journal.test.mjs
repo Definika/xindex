@@ -62,6 +62,9 @@ test("buys count against the day's budget until a day has passed, dropped ones n
   const dropped = j.open({ kind: "buy", coin: "XRP", chain: "bsc", usd: 900, amountIn: 1n }, {});
   j.drop(dropped, "expired");
   assert.equal(j.spentUsd(), 300);
+  // CA-M13: a buy counts at the most it may cost, its loss bound included, where the plan names it.
+  j.open({ kind: "buy", coin: "XRP", chain: "bsc", usd: 100, maxUsd: 101, amountIn: 1n }, {});
+  assert.equal(j.spentUsd(), 401);
   s.t += 86_400 + 1;
   assert.equal(j.spentUsd(), 0);
 });
@@ -158,4 +161,36 @@ test("PD-9: a round resumes every signed move before it takes any other step, so
   assert.deepEqual(journal.pending().map((m) => m.id), [redeem, receipt, swap, burn]);
   assert.deepEqual(resumeOrder(journal.pending()).map((m) => m.id), [swap, burn, redeem, receipt]);
   assert.deepEqual(resumeOrder([]), []);
+});
+
+test("CA-M12: the journal has one writer at a time, and a lock nobody holds is taken over", async () => {
+  const { lockJournal } = await import("../../restock/journal.mjs");
+  const { mkdtempSync, existsSync, writeFileSync, readFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const path = join(mkdtempSync(join(tmpdir(), "journal-")), "journal.json");
+  const lock = `${path}.lock`;
+  const alive = (pid) => pid === 111;
+
+  const release = lockJournal(path, { pid: 111, alive });
+  assert.equal(readFileSync(lock, "utf8").trim(), "111");
+  assert.throws(() => lockJournal(path, { pid: 222, alive }), /another restock process \(pid 111\) holds the journal/);
+  assert.equal(readFileSync(lock, "utf8").trim(), "111", "the second writer leaves the first's lock alone");
+  release();
+  assert.equal(existsSync(lock), false);
+
+  // A lock whose process is gone, one that names no process, and this very pid from an earlier run: all taken over.
+  for (const left of ["333", "not a pid", "222"]) {
+    writeFileSync(lock, `${left}\n`);
+    const again = lockJournal(path, { pid: 222, alive });
+    assert.equal(readFileSync(lock, "utf8").trim(), "222");
+    again();
+    assert.equal(existsSync(lock), false);
+  }
+
+  // A release never removes a lock another process has taken since.
+  const stale = lockJournal(path, { pid: 222, alive });
+  writeFileSync(lock, "111\n");
+  stale();
+  assert.equal(readFileSync(lock, "utf8").trim(), "111");
 });

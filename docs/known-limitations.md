@@ -13,7 +13,10 @@ What the contracts do not protect against, and what an app built on them has to 
   (`design/2026-11-10-oracle-free-rebalance.md`, sections 3 and 6). A fair price therefore needs a bidder, where a
   price feed gave one whoever filled. The owner or guardian can cap it for a proposal by starting it with a quote
   (`startRebalance(keepMask, prices, tolerance)`): a lone executor then keeps at most the tolerance of what it
-  trades. A stranger's start carries no quote, so the guardian replaces such a proposal within its six hours, and a
+  trades, counted at the quote's prices, which are fixed at the start. If the market moves afterwards, a fill the
+  quote accepts can be worth less to the index at the prices of its own block: the tolerance, and on top of it what
+  the coins it gives have gained on the coins it takes since the quote, never beyond what the bar itself allows
+  (CA-M5). A stranger's start carries no quote, so the guardian replaces such a proposal within its six hours, and a
   quote too tight for six hours of market lets its proposal expire unfilled. An index created off its weights
   carries its distance from its first day:
   units and weights are the creator's to name, and no contract can compare them without a price. A creator could name
@@ -90,7 +93,12 @@ What the contracts do not protect against, and what an app built on them has to 
   its balance, and the admins of H, PLUME, SNX and SYRUP can burn or move any holder's balance without a blacklist
   (`design/2026-10-18-token-source-reading.md`); the app names them. A paused component makes `redeem`, the zap and any fill that moves it revert; `redeemSkipping`, `claim`
   and the guardian's keep mask are the recourse, and a permanently frozen component needs the keep mask at every
-  rebalance. A destroyed balance is lost to the index's holders. Issue tests that the index can still send each leg it
+  rebalance. A destroyed balance is lost to the index's holders, and the loss is not shared out: the index pays
+  amounts, never a share of a balance, so redeems and claims on that leg are paid in full, first come, first served,
+  until what is left runs out, and the last to ask bear all of it. No part of the balance is set aside for the claims
+  recorded before the burn: an ordinary redeem takes from the same coins (CA-M3). A holder whose claim is larger than
+  what is left collects that with `claim(token, to, amount)` and keeps the rest recorded, where the whole claim could
+  only revert (CA-S01). Issue tests that the index can still send each leg it
   pulls, as a fill does (RX-12), since 2026-11-14 (RW-8; RZ-25 had left the check to the app): a deposit into a leg a
   sender-blocking blacklist has already frozen for the index reverts `CannotSendOut`, for a direct caller too, at
   about 4,600 gas a leg. A freeze that comes after a deposit still holds it until the issuer lifts it.
@@ -104,7 +112,12 @@ What the contracts do not protect against, and what an app built on them has to 
     should check `USDT.isBlackListed(requester)` before showing a USDT request to fillers, and warn the requester.
   - If an issuer blacklists `MintRequests` itself, every open escrow in that stablecoin waits with it. A Circle
     blacklist also stops fills of USDC redemptions, whose escrow is shares, although `cancel` still returns those.
-    Tether can go further and destroy the contract's USDT, leaving those requests open but unbacked for good. A new USDT
+    Tether can go further and destroy the contract's USDT, leaving those requests open but unbacked for good. While the
+    contract then holds less USDT than its open requests escrowed, every new USDT mint request reverts `Underbacked`:
+    taken in, its deposit would have paid the cancels and refunds of the requests whose own escrow was destroyed. So
+    USDT mint requests stay shut there until someone makes the balance whole or a new `MintRequests` is deployed; USDC
+    requests and redeem requests go on. The requests caught by the burn are refunded whole, first come, first
+    served, from whatever is sent in, or not at all: there is no partial refund (CA-H2). A new USDT
     mint request first sends the contract nothing, which fails while it is blacklisted or USDT is paused, so no
     deposit is taken into a contract that could not pay it out (SA-01).
   - All escrows share one contract, so an issuer's only lever over funds parked there by someone it has since
@@ -145,7 +158,10 @@ What the contracts do not protect against, and what an app built on them has to 
   call are booked to that call (RX-45); a token whose ledger two addresses write must never be listed, since the
   engine refuses a swap measured across the two (`SharedBalance`, RW-10) but a redeem of an index naming both would
   be credited twice; and an escrow owner's exit ignores a blacklist on that owner, so an issuer's
-  only lever over an escrow is freezing the whole builder (RX-51).
+  only lever over an escrow is freezing the whole builder (RX-51). If an issuer takes part of the builder's balance
+  of a token, the builder credits nothing more in that token until the balance covers `totalEscrow(token)` again:
+  a deposit, a bought leg or a redeemed leg reverts `Underbacked`, so a newcomer's coins do not pay the earlier
+  escrows. What is left of that token leaves by withdrawal, sale or mint, first come, first served (CA-H2).
 - **Airdrops, rewards and governance votes** that accrue to tokens held by an index cannot be claimed or used; by design
   there is no admin who could sweep them.
 - **A hooked V4 pool cannot be routed through.** The zap rejects any V4 route whose hops carry hooks or hook data, so a

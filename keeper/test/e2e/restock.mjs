@@ -261,11 +261,8 @@ const deployer = privateKeyToAccount(key("deployer")).address;
 const execOwner = privateKeyToAccount(key("owner")).address;
 const treasury = privateKeyToAccount(key("treasury"));
 for (const a of [deployer, execOwner, treasury.address]) await eth.test.setBalance({ address: a, value: 10n ** 21n });
-const factory = await deploy(eth, deployer, json(`${ROOT}out/WeightedIndexFactory.sol/WeightedIndexFactory.json`), [
-  execOwner,
-  deployer,
-  "0x4305FB66699C3B2702D4d05CF36551390A4c69C6",
-]);
+// The factory is the executor's constructor argument alone: owner and guardian, since the factory names no Pyth.
+const factory = await deploy(eth, deployer, json(`${ROOT}out/WeightedIndexFactory.sol/WeightedIndexFactory.json`), [execOwner, deployer]);
 const requests = await deploy(eth, deployer, json(`${ROOT}out/MintRequests.sol/MintRequests.json`), [factory, ETH_USDC, "0xdAC17F958D2ee523a2206206994597C13D831ec7"]);
 const executor = await deploy(eth, deployer, json(`${KEEPER_DIR}out/KeeperExecutor.sol/KeeperExecutor.json`), [
   "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",

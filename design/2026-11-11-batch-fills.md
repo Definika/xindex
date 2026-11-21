@@ -90,6 +90,15 @@ named, on the batch's index and in its stablecoin), and so is the gate when the 
 since the simulation costs those reads and not a basket (XS-6, mutants B5, B6). A batch that tolerated a failed
 fill was considered and refused: the share accounting above is exact only when every fill happens.
 
+**Corrected on 2026-11-21 (CA-H1, `audit/2026-11-21-consolidated-audit.md`).** One batch did not make every fill it
+counted. The redeem requests are filled only when their payments sum to more than zero, and a batch that named a
+redeem request and paid it nothing still counted its escrow as shares brought in. So the difference above came to
+zero, nothing was spent, and the whole share stock could be delivered or redeemed with the allowance at zero: the
+bound of this section did not hold for a stolen key. The count is still made and spent before anything moves, and is
+now held against the shares themselves: the executor's balance of the index's shares is read before the batch's first
+step and after its last, and the batch reverts `ShareStockShort` if it fell by more than was spent (mutant C15). The
+same day each fill came to carry the hash of the request, or requests, its keeper priced (CA-M6).
+
 ## Limits
 
 - **Not instant.** A request waits until a batch pays. With a share stock a single request can be filled at once.

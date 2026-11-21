@@ -92,7 +92,8 @@ interface IIndexZap is IUniversalRouterSwaps {
     /// @notice The router sold less of `component` than the zap gave it, or already held some, and `amount` went to
     ///         `to` instead.
     ///         - `component` is the hop's input; on a multi-hop leg it can be a middle token.
-    ///         - `amount` is what the hop's sweep brought back and `to` received. It includes any balance of that
+    ///         - `amount` is what the hop's sweep brought back and the zap sent `to`, not measured at `to`: a middle
+    ///           token that charges on transfer delivers less (CA-S06). It includes any balance of that
     ///           token the router already held, which anyone could have swept, unless `to` could not receive it: that
     ///           part then stays in the zap, and only what the hop did not sell is sent.
     ///         Unsold `tokenOut` raises the payout instead, and is not reported here.

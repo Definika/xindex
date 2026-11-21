@@ -15,6 +15,10 @@ import { cctpFields } from "./attestations.mjs";
 /// How often a move asks Circle to sign its message again while the old signature does not verify.
 export const REATTEST_EVERY_SECONDS = 3600;
 
+/// What a move says when its completing transaction was mined and the other side still does not show it completed.
+/// The move stays where it was and is completed again at the next round (CA-M10).
+export const NOT_COMPLETED = "its completing transaction was mined, but the receiving side does not show it completed: tried again next round";
+
 /// `deps`: the journal; `eth` and `homes` (chain adapters, `restock/evm.mjs` and the signer homes); `wormholescan` and
 /// `iris`; `redeemIn(vaa, copy)`, the executor's `redeemBridged` sent by the treasury; `coinOf(symbol)`; `log`; and
 /// `now()`, the clock in seconds.
@@ -79,6 +83,10 @@ export function createAdvance({ journal, eth, homes, wormholescan, iris, redeemI
         // was on its way is still redeemed (RZ-18).
         if (into) await redeemIn(vaa, move.copy ?? coinOf(move.coin).copy);
         else await to.redeem(vaa);
+        // A transaction was mined on the redeeming nonce; whether it completed this transfer is read back from the
+        // bridge. One that replaced the redeem, a cancel among them, is mined as well and completes nothing: taken
+        // for the redeem, it settled the move with its coins still at the bridge (CA-M10).
+        if (!(await to.transferCompleted(vaa))) throw new Error(NOT_COMPLETED);
       }
       journal.advance(move.id, "redeemed");
       return log(`move ${move.id}`, `${move.kind} of ${move.coin} landed`);
@@ -108,6 +116,7 @@ export function createAdvance({ journal, eth, homes, wormholescan, iris, redeemI
         signed = m;
       }
       await to.receive(signed.message, signed.attestation);
+      if (!(await to.cctpReceived(signed.message))) throw new Error(NOT_COMPLETED);
     }
     journal.advance(move.id, "received");
     log(`move ${move.id}`, `${move.kind} of ${Number(move.amount) / 1e6} USDC landed on ${funding ? move.chain : "ethereum"}`);

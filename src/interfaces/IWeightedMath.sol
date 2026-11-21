@@ -4,7 +4,9 @@ pragma solidity 0.8.28;
 /// @title IWeightedMath
 /// @notice The settlement arithmetic of a weighted index: pure functions over the arrays the hub passes in.
 ///         `WeightedHub` calls it by STATICCALL, at an address the factory fixed when it deployed both. So it is as
-///         fixed as the hub's own code. It holds nothing and reads nothing, and no price enters it.
+///         fixed as the hub's own code. It holds nothing and reads nothing. No price enters the gain; the one place
+///         one enters is {quoteCheck}, which takes the prices the owner or guardian posted with a start and can only
+///         refuse a fill the gain accepted.
 /// @dev The rule. The executor names each component's new units. With `x_i = (new_i − current_i) / current_i`,
 ///      rounded down, and `L(x) = x − x²/2 + x³/3 − 3x⁴/10`, rounded down, a fill is accepted when every leg stays
 ///      inside its unit caps and
@@ -52,7 +54,10 @@ interface IWeightedMath {
     ///         unit, the units the fill adds must be worth at least the units it takes, less `tolerance` (1e18 =
     ///         100%), rounded up. Reverts `IWeightedHub.BelowQuote` otherwise. A component whose units do not change
     ///         counts for nothing, whatever its price.
-    /// @dev The caller keeps every price under 2^128 and every unit within uint96, so the sums cannot overflow.
+    /// @dev The caller keeps every price under 2^128 and every unit within uint96, so the sums cannot overflow, and
+    ///      passes one entry per component in each array, as the hub does: the lengths are the caller's to match.
+    ///      {settlement} checks `newUnits` against `currentUnits` and reads `weights` by position, without checking
+    ///      its length.
     function quoteCheck(
         uint256[] memory currentUnits,
         uint256[] memory newUnits,

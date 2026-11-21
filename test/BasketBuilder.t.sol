@@ -16,7 +16,7 @@ import {IWeightedHub} from "../src/interfaces/IWeightedHub.sol";
 import {IWeightedIndexFactory} from "../src/interfaces/IWeightedIndexFactory.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
-import {MockFeeToken} from "./mocks/MockFeeToken.sol";
+import {MockFeeToken, MockFlatFeeToken} from "./mocks/MockFeeToken.sol";
 import {MockHookToken, ITokenReceiverHook} from "./mocks/MockHookToken.sol";
 import {MockMarket} from "./mocks/MockMarket.sol";
 import {MockTwoAddressToken} from "./mocks/MockTwoAddressToken.sol";
@@ -239,6 +239,11 @@ contract BasketBuilderTest is XindexTest {
             IERC20(token).balanceOf(address(builder)),
             builder.escrowOf(alice, token) + builder.escrowOf(bob, token),
             "the builder holds every escrow"
+        );
+        assertEq(
+            builder.totalEscrow(token),
+            builder.escrowOf(alice, token) + builder.escrowOf(bob, token),
+            "and its total of them is their sum (CA-H2)"
         );
     }
 
@@ -1144,6 +1149,173 @@ contract BasketBuilderTest is XindexTest {
     // ---------------------------------------------------------------------
     // Reentrancy
     // ---------------------------------------------------------------------
+
+    // ---------------------------------------------------------------------
+    // The escrows' total, the token as a recipient, a deposit of nothing (the audit of 2026-11-21)
+    // ---------------------------------------------------------------------
+
+    /// @dev CA-H2: every user's escrow of a token sits in one balance, and nothing compared that balance with the
+    ///      escrows. After the token's issuer burned part of the builder's balance, a newcomer's deposit, bought leg
+    ///      or redeemed leg passed every check, and an earlier user's withdrawal took it. Each credit is now refused
+    ///      while the balance is below the escrows, not one unit short. What is left still leaves, first come, first
+    ///      served; another token goes on as before; and made whole, the builder credits again.
+    function test_CAH2_nothingIsCreditedIntoAnUncoveredEscrow() public {
+        _depositFor(alice, link, 10e18);
+        link.burn(address(builder), 4e18);
+        bytes4 short = IXindexErrors.Underbacked.selector;
+
+        link.mint(bob, 5e18);
+        usdc.mint(bob, 200e6);
+        _issueTo(bob, 1e18);
+        uint256 bought = index.previewIssue(1e18)[2];
+        uint256 redeemed = index.previewRedeem(1e18)[2];
+        IBasketBuilder.BuyParams memory buy = _buyParams(index, 1e18, address(usdc), 200e6, _one(2));
+        vm.startPrank(bob);
+        link.approve(address(builder), 5e18);
+        usdc.approve(address(builder), 200e6);
+        index.approve(address(builder), 1e18);
+        vm.expectRevert(abi.encodeWithSelector(short, address(link), 6e18 + 5e18, 10e18 + 5e18));
+        builder.deposit(address(link), 5e18);
+        vm.expectRevert(abi.encodeWithSelector(short, address(link), 6e18 + bought, 10e18 + bought));
+        builder.buy(buy);
+        vm.expectRevert(abi.encodeWithSelector(short, address(link), 6e18 + redeemed, 10e18 + redeemed));
+        builder.redeem(address(index), 1e18);
+        vm.stopPrank();
+        assertEq(link.balanceOf(bob), 5e18, "the newcomer keeps its coins");
+        assertEq(index.balanceOf(bob), 1e18, "and its shares");
+
+        _depositFor(bob, weth, 1e18);
+        assertEq(builder.escrowOf(bob, address(weth)), 1e18, "another token is another balance");
+
+        vm.prank(alice);
+        builder.withdraw(address(link), 6e18, alice);
+        assertEq(link.balanceOf(address(builder)), 0, "what was left went to the first to ask");
+        assertEq(builder.totalEscrow(address(link)), 4e18, "and the rest of her escrow is still owed");
+
+        link.mint(address(builder), 4e18 - 1);
+        vm.prank(bob);
+        vm.expectRevert(abi.encodeWithSelector(short, address(link), 4e18 - 1 + 5e18, 4e18 + 5e18));
+        builder.deposit(address(link), 5e18);
+
+        link.mint(address(builder), 1);
+        vm.prank(bob);
+        builder.deposit(address(link), 5e18);
+        vm.prank(alice);
+        builder.withdraw(address(link), 0, alice);
+        vm.prank(bob);
+        builder.withdraw(address(link), 0, bob);
+        assertEq(link.balanceOf(alice), 10e18, "made whole, the earlier escrow is paid from its own coins");
+        assertEq(link.balanceOf(bob), 5e18, "and the newcomer's from its own");
+        _assertCovered(address(link));
+    }
+
+    /// @dev CA-H2: the total of a token is its escrows and nothing else, through every credit and every debit: a
+    ///      deposit, a buy, a mint, a redeem, a sale with part of it unsold, and a withdrawal.
+    function test_CAH2_theTotalIsTheEscrows() public {
+        _depositFor(alice, weth, 3e18);
+        _assertTotals();
+        _buyFor(bob, 2e18, 400e6, _all());
+        _assertTotals();
+        vm.prank(bob);
+        builder.mint(address(index), 1e18, bob, address(0), block.timestamp);
+        _assertTotals();
+        _redeemFor(bob, 1e18);
+        _assertTotals();
+
+        // The router sells half of bob's WETH and sweeps the rest back, which returns to his escrow.
+        router.setMode(MockUniversalRouter.Mode.PartialFirstHop);
+        IBasketBuilder.SellParams memory p = _sellParams(address(usdc), 1, _one(address(weth)), bob);
+        vm.prank(bob);
+        builder.sell(p);
+        router.setMode(MockUniversalRouter.Mode.Normal);
+        assertGt(builder.escrowOf(bob, address(weth)), 0, "the unsold half came back");
+        _assertTotals();
+
+        vm.prank(alice);
+        builder.withdraw(address(weth), 1e18, alice);
+        _assertTotals();
+        assertEq(builder.totalEscrow(address(weth)), 2e18 + builder.escrowOf(bob, address(weth)));
+    }
+
+    function _assertTotals() internal view {
+        _assertCovered(address(wbtc));
+        _assertCovered(address(weth));
+        _assertCovered(address(link));
+    }
+
+    /// @dev CA-H2: a leg that is the paying stablecoin itself is credited while the call's unspent stablecoin still
+    ///      stands in the builder's balance, which hid a shortfall from the check made at the credit. The check is
+    ///      made again once the refund has left, and reads the balance the escrows are really left with.
+    function test_CAH2_aPassThroughLegIsCheckedOnceTheRefundHasLeft() public {
+        _depositFor(alice, usdc, 100e6);
+        usdc.burn(address(builder), 40e6);
+        uint256 need = stableIndex.previewIssue(1e18)[1];
+        IBasketBuilder.BuyParams memory p = _buyParams(stableIndex, 1e18, address(usdc), 200e6, _one(1));
+        p.legs[0] = _mintLeg("");
+
+        usdc.mint(bob, 200e6);
+        vm.startPrank(bob);
+        usdc.approve(address(builder), 200e6);
+        vm.expectRevert(
+            abi.encodeWithSelector(IXindexErrors.Underbacked.selector, address(usdc), 60e6 + need, 100e6 + need)
+        );
+        builder.buy(p);
+        vm.stopPrank();
+
+        usdc.mint(address(builder), 40e6);
+        vm.prank(bob);
+        builder.buy(p);
+        assertEq(builder.escrowOf(bob, address(usdc)), need, "made whole, the leg is credited");
+        assertEq(usdc.balanceOf(address(builder)), 100e6 + need);
+        _assertCovered(address(usdc));
+    }
+
+    /// @dev CA-R2-15: a withdrawal or a sale paid to the very token it pays out left the escrow debited and the coins
+    ///      in a contract nobody can move them from, a mistake the zap already refuses for a payout (RY-1). Any other
+    ///      contract is an ordinary recipient.
+    function test_CAR215_theTokenPaidOutIsNoRecipient() public {
+        _depositFor(alice, weth, 2e18);
+        IBasketBuilder.SellParams memory p = _sellParams(address(usdc), 1, _one(address(weth)), address(usdc));
+        vm.startPrank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, address(weth)));
+        builder.withdraw(address(weth), 1e18, address(weth));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, address(usdc)));
+        builder.sell(p);
+        assertEq(builder.escrowOf(alice, address(weth)), 2e18, "nothing left the escrow");
+
+        builder.withdraw(address(weth), 1e18, address(link));
+        assertEq(weth.balanceOf(address(link)), 1e18, "another token's contract is a recipient like any other");
+        p.to = address(weth);
+        uint256 paid = builder.sell(p);
+        vm.stopPrank();
+        assertEq(usdc.balanceOf(address(weth)), paid);
+    }
+
+    /// @dev CA-R2-16: a deposit credits what arrived, and arriving nothing was no error: with a token that takes a flat
+    ///      fee, a deposit no larger than the fee succeeded, credited nothing and announced a deposit of zero, as long
+    ///      as the builder already held enough of the token for its own probe. It reverts now, as MintRequests does.
+    function test_CAR216_aDepositThatDeliversNothingIsRefused() public {
+        MockFlatFeeToken flat = new MockFlatFeeToken();
+        uint256 fee = flat.FLAT_FEE();
+        flat.mint(bob, 100);
+        flat.mint(alice, 100);
+        vm.startPrank(bob);
+        flat.approve(address(builder), 100);
+        builder.deposit(address(flat), 100);
+        vm.stopPrank();
+        assertEq(builder.escrowOf(bob, address(flat)), 100 - fee, "a larger deposit credits what arrived");
+
+        vm.startPrank(alice);
+        flat.approve(address(builder), 100);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.TransferShortfall.selector, address(flat)));
+        builder.deposit(address(flat), fee);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.TransferShortfall.selector, address(flat)));
+        builder.deposit(address(flat), fee - 1);
+        builder.deposit(address(flat), fee + 1);
+        vm.stopPrank();
+        assertEq(builder.escrowOf(alice, address(flat)), 1, "one unit past the fee is one unit credited");
+        assertEq(flat.balanceOf(address(builder)), builder.totalEscrow(address(flat)));
+    }
 
     function test_theGuardHoldsThroughAWithdrawal() public {
         MockHookToken hook = new MockHookToken();

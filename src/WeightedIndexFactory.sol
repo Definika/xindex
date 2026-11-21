@@ -29,7 +29,9 @@ import {WeightedMath} from "./WeightedMath.sol";
 ///      Prices
 ///      - There are none: neither the factory nor an index reads a price, and a listing carries no feed.
 ///      - A listing records the token's decimals, which only bound the units an index may start with. An index's
-///        components, units and weights are fixed at creation, so no later listing or delisting reaches it.
+///        components and weights are fixed at creation, so no later listing or delisting reaches it. Its units are
+///        the creator's at creation and move afterwards: a settlement writes new ones, and a streaming fee scales
+///        them down, so the units to value an index at are the hub's `components()`, never the creation's.
 ///
 ///      Addresses
 ///      - Each index is deployed with CREATE2. The salt covers the creator, the name, the symbol, every component's
