@@ -400,12 +400,27 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
     }
 
     /// @dev As the test's own executor: it brings what the index needs from inventory, as a market maker would.
+    /// @dev The executor's callback: pays the index what it asks, dealing itself only what it lacks (a test funds it
+    ///      first with `_prefund`, since `deal` searches a proxied token's storage at length, and two hundred searches
+    ///      inside one fill outrun its gas).
     function onXindexRebalance(uint256[] calldata, uint256[] calldata amountsIn, bytes calldata) external {
         address[] memory tokens = IWeightedHub(msg.sender).componentTokens();
         for (uint256 i = 0; i < tokens.length; ++i) {
             if (amountsIn[i] == 0) continue;
-            deal(tokens[i], address(this), IERC20(tokens[i]).balanceOf(address(this)) + amountsIn[i]);
+            uint256 have = IERC20(tokens[i]).balanceOf(address(this));
+            if (have < amountsIn[i]) deal(tokens[i], address(this), amountsIn[i]);
             IERC20(tokens[i]).safeTransfer(msg.sender, amountsIn[i]);
+        }
+    }
+
+    /// @dev Funds this executor with what the fill of `newUnits` will ask of each token, before the fill.
+    function _prefund(WeightedHub index, uint256[] memory newUnits) internal {
+        (,,, uint256[] memory amountsIn) = index.previewRebalance(newUnits);
+        address[] memory tokens = index.componentTokens();
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            if (amountsIn[i] != 0) {
+                deal(tokens[i], address(this), IERC20(tokens[i]).balanceOf(address(this)) + amountsIn[i]);
+            }
         }
     }
 
@@ -471,6 +486,7 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         }
         _openAuction(index, 0, index.AUCTION_DURATION() / 2);
         uint256[] memory fill = _fillUnits(index, picked, moves, 0);
+        _prefund(index, fill);
         uint256 gasBefore = gasleft();
         index.executeRebalance(fill, "");
         console2.log("gas for a fill of", picked.length, "real tokens:", gasBefore - gasleft());

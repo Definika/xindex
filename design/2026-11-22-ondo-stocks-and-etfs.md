@@ -20,8 +20,8 @@ on Ethereum and on BNB Chain. The listing of 2026-11-19 was built that day and c
   funds (SQQQ, PSQ, SOXS).
 - **What one token is.** An Ondo token's balance never changes; each tracks a number of shares through a multiplier
   (`sValue`) that reinvested dividends raise and a split multiplies (CF-3). No contract prices it.
-- **The keeper.** It cannot read `sValue`, so it values only the 11 Ondo tokens Pyth prices directly (NVDA, AAPL,
-  GOOGL, MSFT, TSLA, T, HOOD, MSTR, COIN, CRCL, LI) and leaves the other 341 alone (`SHARE_PRICED_IDS`, RX-2): it
+- **The keeper.** It cannot read `sValue`, so it values only the 9 Ondo tokens Pyth prices directly (NVDA, AAPL,
+  GOOGL, MSFT, TSLA, HOOD, MSTR, COIN, CRCL) and leaves the other 343 alone (`SHARE_PRICED_IDS`, RX-2): it
   names no new units for them, delivers none from stock and fills no request priced at them. Those legs mint in kind
   or through `MintRequests`, and a rebalance moves them only through an executor that values them itself.
 - **Liquidity.** Ondo's tokens trade mostly on centralized exchanges and through Ondo's own mint and redeem desk, which
@@ -44,6 +44,16 @@ on Ethereum and on BNB Chain. The listing of 2026-11-19 was built that day and c
   and `Security.fork`'s two tests on mainnet Tether.
 - No contract under `src/` changed, and the release hashes did not move.
 
+## Two feeds corrected the same day
+
+Moving the web app to this build showed two of the eleven Ondo tokens the listing of 2026-11-19 priced at "the
+token's own feed" priced at a namesake's: AT&T's (`Ton`) at Crypto.TON/USD, Toncoin's, and Li Auto's (`LIon`) at
+Crypto.LION/USD, a token called Loaded Lions. Pyth's own Ondo feeds are nine (each "... ONDO TOKENIZED STOCK"). Both
+are now priced at their share's feed (Equity.US.T/USD and Equity.US.LI/USD) and are share-priced legs the keeper
+leaves alone, so the keeper values 9 and leaves 343. No contract reads a price, so no index was at risk; the keeper
+would have valued those two legs at another asset's price. `keeper/test/unit/config.test.mjs` now requires every
+"own feed" to be Pyth's feed of that Ondo token.
+
 ## Who holds what
 
 Each chain's Ondo tokens are one `GMToken` implementation behind one beacon (Ethereum's
@@ -57,6 +67,6 @@ corporate action at least 24 hours ahead, around which the guardian keeps an aff
 
 - The app: its asset list, Ondo's logos and the asset classes (commodities among them) follow when it moves to this
   build.
-- A keeper that reads `sValue` (Ondo's app API gives `sharesMultiplier` per asset), so the 341 can be valued and
+- A keeper that reads `sValue` (Ondo's app API gives `sharesMultiplier` per asset), so the 343 can be valued and
   filled; until then an operator adds their stock by hand.
 - Ondo's 127 stocks and ETFs without a Pyth feed, which join as Pyth publishes one.

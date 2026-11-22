@@ -265,8 +265,8 @@ In order:
 - An issuer's corporate action is not accounted for (CF-3), and after an issuer's burn redeems and claims are paid
   first come, first served (CA-M3).
 - Wrapped legs rest on their bridge or issuer: Wormhole for its copies, Ondo for every stock and ETF. An Ondo token
-  tracks a number of shares its balance does not show (`sValue`), so the keeper values only the 11 Pyth prices
-  directly and leaves the other 341 alone (RX-2).
+  tracks a number of shares its balance does not show (`sValue`), so the keeper values only the 9 Pyth prices
+  directly and leaves the other 343 alone (RX-2).
 - Small indexes rarely rebalance; an exit sent during an auction can be overtaken by the fill (RT-02); a request's
   surplus goes to the fastest filler; a minter can name itself referrer (RY-3, RW-4); a holder can top an index up
   through a fill (RW-5).
@@ -341,4 +341,4 @@ Still open:
 What has not been done: an external audit; a formal proof of the hub or of `WeightedMath` itself; a deployment of
 this candidate on a testnet; a mainnet deployment; the keeper on BNB Chain and on Base; a reading of who mints
 Base's USDT and can replace its code; the web app's move to this candidate; a keeper that reads Ondo's `sValue`, so
-the 341 Ondo legs Pyth prices by the share can be valued.
+the 343 Ondo legs Pyth prices by the share can be valued.

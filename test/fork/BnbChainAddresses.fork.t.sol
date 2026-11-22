@@ -587,7 +587,8 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
     function testFork_everyBnbTokenPassesTheCheck() public {
         CheckToken checker = new CheckToken();
         address[] memory list = new ConfigureWeighted().bnbList();
-        for (uint256 i = 0; i < list.length; ++i) {
+        // the list's twelve coins; its Ondo stocks and ETFs are checked below, a hundred a test
+        for (uint256 i = 0; i < 12; ++i) {
             CheckToken.Report memory r = checker.check(list[i], address(0), checker.markets());
             checker.log(r);
             assertEq(uint8(r.transfers), uint8(CheckToken.Transfers.Exact), r.symbol);
@@ -601,6 +602,37 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
         CheckToken.Report memory stable = checker.check(B.STABLE, address(0), checker.markets());
         assertEq(stable.powers & checker.UPGRADE(), checker.UPGRADE());
         assertEq(uint8(stable.owner.kind), uint8(CheckToken.Kind.Safe), "STABLE is upgraded through a Safe");
+    }
+
+    /// @dev Ondo's stocks and ETFs of the BNB Chain list, after its twelve coins: each passes the check as listable, its
+    ///      transfers exact. A hundred a test, since a check reads each token's code and pools at length.
+    function testFork_theOndoTokensPassTheCheck_0to99() public {
+        _checkOndo(12, 112);
+    }
+
+    function testFork_theOndoTokensPassTheCheck_100to199() public {
+        _checkOndo(112, 212);
+    }
+
+    function testFork_theOndoTokensPassTheCheck_200to299() public {
+        _checkOndo(212, 312);
+    }
+
+    function testFork_theOndoTokensPassTheCheck_300toTheEnd() public {
+        _checkOndo(312, type(uint256).max);
+    }
+
+    function _checkOndo(uint256 from, uint256 to) internal {
+        CheckToken checker = new CheckToken();
+        address[] memory list = new ConfigureWeighted().bnbList();
+        assertEq(list.length, 12 + 352);
+        if (to > list.length) to = list.length;
+        for (uint256 i = from; i < to; ++i) {
+            CheckToken.Report memory r = checker.check(list[i], address(0), checker.markets());
+            assertEq(uint8(r.transfers), uint8(CheckToken.Transfers.Exact), r.symbol);
+            assertEq(uint8(r.verdict), uint8(CheckToken.Verdict.Listable), r.symbol);
+            assertEq(uint8(B.tierOf(list[i])), uint8(Listings.Tier.Custodial), r.symbol);
+        }
     }
 
     /// @dev The three coins the list leaves out for their proxy: one externally owned key can replace the code of

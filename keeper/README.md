@@ -157,8 +157,8 @@ held move with the index: that risk is the operator's, and the default holds non
 demand; an operator who wants some sends the executor shares. An index holding a share-priced Ondo leg has shares the
 bot cannot value, so it keeps and delivers none of them.
 
-The 341 Ondo legs priced at their share's feed (every listed Ondo stock and ETF but the 11 Pyth prices directly, NVDA,
-AAPL, GOOGL, MSFT, TSLA, T, HOOD, MSTR, COIN, CRCL and LI; `SHARE_PRICED_IDS` in `bot/config.mjs`) are worth sValue
+The 343 Ondo legs priced at their share's feed (every listed Ondo stock and ETF but the 9 Pyth prices directly, NVDA,
+AAPL, GOOGL, MSFT, TSLA, HOOD, MSTR, COIN and CRCL; `SHARE_PRICED_IDS` in `bot/config.mjs`) are worth sValue
 shares, which the bot cannot read. Keep
 their stock allowance at **zero**: the bot refuses any fill that would deliver them from stock, and counts any it keeps
 as worth nothing (RX-2). After a split or a reverse split the share's feed is off by the ratio. The bot logs `restock <coins>` and does not start or fill an

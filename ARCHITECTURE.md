@@ -786,8 +786,9 @@ with every component skipped, which writes two slots a component, needed a limit
 2026-10-26, commit `20ed37a`, not merged), so about 46M at 200, three quarters of Ethereum's block of 60M. A keep mask is one word, so no build of these contracts holds more than 256. More than that, 500
 or 1,000, needs creation, issue, redeem and the fill each spread over several transactions: another design.
 
-Real tokens transfer dearer than mocks. On a fork of Ethereum at block 26,033,838, with 170 of the 171 listed coins
-in one index, the 109 wrapped xStocks among them, `issue` in kind cost 10.4M and `redeem` 6.9M, every account cold
+Real tokens transfer dearer than mocks. On a fork of Ethereum at block 26,464,080, with 200 of the 414 listed coins
+in one index (the first 200 a test can fund, Ondo's stocks and ETFs among them), `issue` in kind cost 14.7M, a fill
+14.2M and `redeem` 9.6M, every account cold
 (`testFork_everyCoinIssuesRebalancesAndRedeems`, which requires both to fit a transaction). An index's creator
 simulates its own `issue` first: one too wide to issue with its real tokens can be created and never minted. The hub
 is 21,627 bytes, 2,949 under EIP-170.

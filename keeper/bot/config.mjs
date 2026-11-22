@@ -85,7 +85,7 @@ export const FRESH_SECONDS = 60n;
 /// The widest confidence interval a price the bot values anything at may carry, in basis points of the price (RX-1).
 export const MAX_CONF_BPS = 200n;
 
-/// The 341 Ondo legs whose Pyth feed prices the share, while each token is worth sValue shares (script/PythIds.sol,
+/// The 343 Ondo legs whose Pyth feed prices the share, while each token is worth sValue shares (script/PythIds.sol,
 /// CF-3). The bot cannot read sValue, so it never values these at Pyth: it names no new units for them, delivers none
 /// from stock and counts any it keeps as nothing (RX-2). `test/unit/config.test.mjs` pins the list against PythIds.sol.
 export const SHARE_PRICED_IDS = Object.freeze(
@@ -226,6 +226,8 @@ export const SHARE_PRICED_IDS = Object.freeze(
     "0xaf9f76555c0147ec660100ff1639eb128e48c4f16b0aec229b736c04e082de23", // DASHon, Equity.US.DASH/USD
     "0x40176a5dd12a53bb1f31e848c9363863dd6f8e755f35ef56d2182fc7f1d03853", // APOon, Equity.US.APO/USD
     "0x5c149158ad0cca240ab13e45d93f43d7eb747a25acf5a9313b5b03c0aa87251b", // MELIon, Equity.US.MELI/USD
+    "0x63e9f918ab91507c3574cca011da4dccda30cf54d46124d03b70279142ff81f3", // Ton (AT&T), Equity.US.T/USD
+    "0xb10d624c07226d795e9211c9ac95baf43b4a4234ac89cd319e3c72b20de92f99", // LIon, Equity.US.LI/USD
     "0x664fc65e3f9ffb458e7144959ed8d5c86e923eb7ca283efeadb79bd6c1e4b9ce", // NTESon, Equity.US.NTES/USD
     "0x069b87074893c37fd250990df7409d7e19cd649bea8e28904a0fd49915f4e53a", // HPEon, Equity.US.HPE/USD
     "0x5cbf183213af0c63f896b908770e684cb0dfb6634e42bd6e8ea7b273eb61a342", // TELon, Equity.US.TEL/USD

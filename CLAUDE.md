@@ -418,6 +418,11 @@ built on it and found in it.
   ondo". Every xStock address, id, test, keeper path (`keeper/bot/rates.mjs`, `MAINNET_WRAPPED`, `WRAPPED_TOKENS`,
   `M.atRate`), mutant (X1 to X16) and the design record went; all are recoverable at `7a1d9c2`. The keeper's fixes made
   beside it stay: RZ-13, RZ-15 and RZ-16, the request batch in its end-to-end test, and `Security.fork`'s two Tether tests.
+  The fork suites passed on archive RPCs that day: `MainnetAddresses.fork` 8 of 8 (every one of the 414 read on
+  chain), `CheckToken.fork` 10 of 10 (the wide list a hundred a test), `IndexZap.fork` 12 of 12, `Security.fork` 11
+  of 11, `WeightedHub.fork` 6 of 6 at block 26,464,080 (200 of the 414 in one index: `issue` 14.7M, a fill 14.2M,
+  `redeem` 9.6M, the test's executor funded before the fill), and BNB Chain's 17 of 17 (all 352 Ondo tokens through
+  `CheckToken`). Not run on it: the mutation gate and the keeper's end-to-end test.
 - **The release candidate of 2026-11-21** (branch `release/2026-11-21-candidate`;
   `audit/2026-11-21-external-audit-package.md` is its brief for external auditors, and replaces the package of
   2026-11-02, which described the Pyth-priced build). The owner's ask that day: "I need complete Xindex with all
@@ -1388,8 +1393,8 @@ Pyth publishes one), including the oil, gold, silver, platinum and copper funds 
 Backed's wrapped xStocks, listed on 2026-11-21 in place of Ondo's 17 stocks ("use xstock 100 percent and delte ondo"),
 are gone, and the call of 2026-11-19 to list every Ondo stock and ETF stands again. Said to the owner before it: Ondo
 covers about three times as much (87 of the 109 xStocks are on both; 22, Berkshire among them, are on xStocks alone);
-an Ondo token tracks shares through a multiplier its balance never shows, so the keeper values only the 11 with a feed
-of their own and leaves the other 341 alone (RX-2): they mint in kind or through `MintRequests`; Ondo's mint and redeem
+an Ondo token tracks shares through a multiplier its balance never shows, so the keeper values only the 9 with a feed
+of their own and leaves the other 343 alone (RX-2): they mint in kind or through `MintRequests`; Ondo's mint and redeem
 desk serves eligible non-US users only; and the collaboration the team planned with Backed was the reason for the call
 of 2026-11-21 (`design/2026-11-22-ondo-stocks-and-etfs.md`).
 

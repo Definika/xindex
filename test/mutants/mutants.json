@@ -2896,5 +2896,19 @@
         "new": "        if (isCoinbaseWrapped(token)) return Listings.Tier.Custodial;"
       }
     ]
+  },
+  {
+    "id": "O1",
+    "what": "Ondo's AT&T token priced at Toncoin's feed, as the listing of 2026-11-19 had it",
+    "origin": "design/2026-11-22-ondo-stocks-and-etfs.md",
+    "file": "script/PythIds.sol",
+    "test": "keeper/test/unit/config.test.mjs",
+    "edits": [
+      {
+        "old": "    /// @dev Corrected 2026-11-22: the listing of 2026-11-19 took Crypto.TON/USD, Toncoin's, for this token's own feed.\n    ///      AT&T INC / US DOLLAR (Equity.US.T/USD): US market hours only.\n    bytes32 internal constant TON = 0x63e9f918ab91507c3574cca011da4dccda30cf54d46124d03b70279142ff81f3;",
+        "new": "    /// @dev TONCOIN / US DOLLAR (Crypto.TON/USD): the Ondo token's own feed.\n    bytes32 internal constant TON = 0x8963217838ab4cf5cadc172203c1f0b763fbaa45f346d8ee50ba994bbcac3026;"
+      }
+    ],
+    "runner": "node"
   }
 ]

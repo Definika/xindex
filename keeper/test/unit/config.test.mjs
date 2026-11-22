@@ -110,8 +110,21 @@ test("RX-2: the share-priced ids are PythIds.sol's", async () => {
   const { readFileSync } = await import("node:fs");
   const source = readFileSync(new URL("../../../script/PythIds.sol", import.meta.url), "utf8");
   const share = [...source.matchAll(/\((Equity\.(?:US|Index)\.)[^)]*\)[^\n]*\n\s*bytes32 internal constant \w+ = (0x[0-9a-f]{64})/g)].map((m) => m[2]);
-  assert.equal(share.length, 341);
+  assert.equal(share.length, 343);
   assert.deepEqual([...SHARE_PRICED_IDS].sort(), share.sort());
+});
+
+test("an Ondo token priced at a feed of its own is priced at Pyth's feed of that Ondo token, never a namesake's", async () => {
+  // On 2026-11-19 Ondo's AT&T (Ton) and Li Auto (LIon) were priced at Crypto.TON/USD and Crypto.LION/USD, Toncoin's and a
+  // token called Loaded Lions: a symbol match, not the Ondo token. Pyth names its own Ondo feeds "... ONDO TOKENIZED".
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(new URL("../../../script/PythIds.sol", import.meta.url), "utf8");
+  const own = [...source.matchAll(/\/\/\/ @dev ([^\n]*)\(Crypto\.(\w+)\/USD\): the Ondo token's own feed\.\n\s*bytes32 internal constant (\w+) =/g)];
+  assert.equal(own.length, 9, "NVDA, AAPL, GOOGL, MSFT, TSLA, HOOD, MSTR, COIN and CRCL");
+  for (const [, description, symbol, name] of own) {
+    assert.match(description, /ONDO TOKENIZED/, `${name} is priced at ${symbol}, which is not an Ondo token's feed`);
+    assert.equal(symbol, name, `${name}'s feed is the Ondo token's own`);
+  }
 });
 
 test("the keeper values a chain's own coins, and PRICE_IDS adds to them or changes one", () => {
