@@ -260,8 +260,8 @@ library PythIds {
     bytes32 internal constant PFEON = 0x0704ad7547b3dfee329266ee53276349d48e4587cb08264a2818288f356efd1d;
     /// @dev SALESFORCE INC / US DOLLAR (Equity.US.CRM/USD): US market hours only.
     bytes32 internal constant CRMON = 0xfeff234600320f4d6bb5a01d02570a9725c1e424977f2b823f7231e6857bdae8;
-    /// @dev Corrected 2026-11-22: the listing of 2026-11-19 took Crypto.TON/USD, Toncoin's, for this token's own feed.
-    ///      AT&T INC / US DOLLAR (Equity.US.T/USD): US market hours only.
+    // Corrected 2026-11-22: the listing of 2026-11-19 took Crypto.TON/USD, Toncoin's, for this token's own feed.
+    /// @dev AT&T INC / US DOLLAR (Equity.US.T/USD): US market hours only.
     bytes32 internal constant TON = 0x63e9f918ab91507c3574cca011da4dccda30cf54d46124d03b70279142ff81f3;
     /// @dev INTUITIVE SURGICAL INC / US DOLLAR (Equity.US.ISRG/USD): US market hours only.
     bytes32 internal constant ISRGON = 0xad4dc1db82c47e0822afef9d9eca7bf693cdad20dd61fcd5aa1b6895b1b90190;
@@ -574,9 +574,9 @@ library PythIds {
     bytes32 internal constant HIION = 0x659c675091db659251f2077293bf9e71aef2c978dd729c2be66cec0d41c1d671;
     /// @dev IONQ INC (Equity.US.IONQ/USD): US market hours only.
     bytes32 internal constant IONQON = 0x6af68a227de372e5d19183679911e468e06d85c013f56c376a78a4d942f8f269;
-    /// @dev Corrected 2026-11-22: the listing of 2026-11-19 took Crypto.LION/USD, a token called Loaded Lions, for
-    ///      this token's own feed.
-    ///      LI AUTO INC SPONSORED ADS / US DOLLAR (Equity.US.LI/USD): US market hours only.
+    // Corrected 2026-11-22: the listing of 2026-11-19 took Crypto.LION/USD, a token called Loaded Lions, for this
+    // token's own feed.
+    /// @dev LI AUTO INC SPONSORED ADS / US DOLLAR (Equity.US.LI/USD): US market hours only.
     bytes32 internal constant LION = 0xb10d624c07226d795e9211c9ac95baf43b4a4234ac89cd319e3c72b20de92f99;
     /// @dev ALBEMARLE CORPORATION / US DOLLAR (Equity.US.ALB/USD): US market hours only.
     bytes32 internal constant ALBON = 0x4db91e379e36addcdb1cc75dcb03022bd95d5d95148c41d268348d12cbd27c18;
