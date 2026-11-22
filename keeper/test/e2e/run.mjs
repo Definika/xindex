@@ -7,7 +7,7 @@
 //   forge build && forge build --root keeper        # at the repo root
 //   MAINNET_RPC_URL=https://... npm run e2e          # in keeper/; FORK_BLOCK optional (default: head - 8)
 //
-// Six indexes, each a scenario:
+// Five indexes, each a scenario:
 //   LQ   WETH/WBTC/LINK/UNI. LINK's own pool is pushed up 12%. Started, then filled only once the bar has fallen far
 //        enough for the fill to pay, through routes that include a two-hop buy. Later the guardian starts it again
 //        keeping UNI, and the keeper's fill leaves UNI's units alone.
@@ -21,10 +21,6 @@
 //   ADV  WETH/SOL. SOL's price up 20% while its own pool stays where mainnet has it, far below: the SOL a fill would
 //        keep counts at what that pool pays, not at the keeper's price (XS-5), so the auction never pays and is never
 //        started.
-//   WRP  WETH/wGOOGLx, Backed's wrapper of an xStock, whose feed prices one xStock while one wrapper redeems for
-//        `convertToAssets` of them: 78.9 when this was written. Its feed up 20%: the index sells the wrapper, which
-//        no pool trades, and the keeper counts what it keeps at the feed times the rate it reads from the wrapper
-//        (bot/rates.mjs). At the feed alone the fill would never pay.
 // One fill is mined a slot late on purpose: it must revert cheaply (Expired) and be sent again.
 //
 // Then requests, on LQ: a buyer escrows USDC for shares and a seller shares for USDC, each bound to the basket it
@@ -79,9 +75,6 @@ const T = {
   NVDAON: { a: "0x2D1F7226Bd1F780AF6B9A49DCC0aE00E8Df4bDEE", id: "0x207ddea2a443d30b7e13a7c88a9e3f106765deb97049afc65a18cede50fffc82", d: 18, usd: 100 },
   APT: { a: "0x8CDf7AF57E4c8B930e1B23c477c22f076530585e", id: "0x03ae4db29ed4ae33d323568895aa00337e658e348b37509f5372ae51f0af00d5", d: 8, usd: 5 },
   JUP: { a: "0x8687a10BCa6F139B25eb31020FCABB5782214764", id: "0x0a0408d619e9380abad35060f9192039ed5042fa6f82301d0e48bb52be830996", d: 6, usd: 0.5 },
-  // Backed's wrapper of GOOGLx, in the keeper's catalogue with its xStock's own feed: `usd` is one xStock, and one
-  // wrapper is worth `rate` of them, read from the wrapper once the fork is up.
-  WGOOGLX: { a: "0x1630F08370917E79df0B7572395a5e907508bBBc", id: "0xb911b0329028cd0283e4259c33809d62942bd2716a58084e5f31d64c00b5424e", d: 18, usd: 300, rate: 1, wraps: true },
 };
 
 const erc20 = parseAbi([
@@ -89,13 +82,6 @@ const erc20 = parseAbi([
   "function approve(address, uint256) returns (bool)",
   "function decimals() view returns (uint8)",
 ]);
-const vault = parseAbi([
-  "function convertToAssets(uint256) view returns (uint256)",
-  "function asset() view returns (address)",
-  "function previewMint(uint256 shares) view returns (uint256)",
-  "function mint(uint256 shares, address receiver) returns (uint256)",
-]);
-const xstock = parseAbi(["function minter() view returns (address)", "function mint(address account, uint256 amount)"]);
 const v3 = parseAbi(["function getPool(address, address, uint24) view returns (address)"]);
 const pool = parseAbi([
   "function slot0() view returns (uint160 sqrtPriceX96, int24, uint16, uint16, uint16, uint8, bool)",
@@ -167,19 +153,6 @@ const read = (address, abi, functionName, args = []) => pub.readContract({ addre
 const now = async () => (await pub.getBlock({ blockTag: "latest" })).timestamp;
 const deal = (token, who, amount) =>
   test.request({ method: "anvil_dealERC20", params: [who, token, numberToHex(amount)] });
-/// Puts `amount` of `coin` in `who`'s hands. A plain coin is dealt. A wrapper is wrapped, as anyone gets one: its
-/// xStock's minter mints the xStock, twice what the wrapper asks so a multiplier above one leaves no shortfall, and
-/// `who` deposits it. anvil's deal does not find the wrapper's balances, and a dealt balance would redeem for nothing.
-async function fund(coin, who, amount) {
-  if (!coin.wraps) return deal(coin.a, who, amount);
-  const asset = await read(coin.a, vault, "asset");
-  const minter = await read(asset, xstock, "minter");
-  const assets = 2n * (await read(coin.a, vault, "previewMint", [amount]));
-  await test.setBalance({ address: minter, value: 10n ** 20n });
-  await send(minter, asset, xstock, "mint", [who, assets]);
-  await send(who, asset, erc20, "approve", [coin.a, assets]);
-  await send(who, coin.a, vault, "mint", [amount, who]);
-}
 
 // ---------------------------------------------------------------------
 // Fork
@@ -270,10 +243,7 @@ const usdOf = (coin) => Number(prices.get(coin.id.slice(2).toLowerCase()).price)
 const ethUsd = (await mid(T.WETH.a, USDC, 18, 6)).perToken;
 setUsd(T.WETH, ethUsd);
 for (const c of ["WBTC", "LINK", "UNI"]) setUsd(T[c], (await mid(T[c].a, T.WETH.a, T[c].d, 18)).perToken * ethUsd);
-for (const c of ["SOL", "NVDAON", "APT", "JUP", "WGOOGLX"]) setUsd(T[c], T[c].usd);
-// What one wrapper redeems for, which nothing in this test changes: the keeper reads the same from the wrapper.
-T.WGOOGLX.rate = Number(await read(T.WGOOGLX.a, vault, "convertToAssets", [10n ** 18n])) / 1e18;
-console.log(`  one wGOOGLx redeems for ${T.WGOOGLX.rate} GOOGLx`);
+for (const c of ["SOL", "NVDAON", "APT", "JUP"]) setUsd(T[c], T[c].usd);
 
 hermesServer = http
   .createServer(async (req, res) => {
@@ -331,7 +301,7 @@ async function createIndex(name, coins, weights, value, shares) {
   const specs = coins.map((c, i) => ({
     token: c.a,
     weight: BigInt(weights[i]),
-    units: BigInt(Math.max(10_000, Math.ceil(((weights[i] / 1e4) * value * 10 ** c.d) / (usdOf(c) * (c.rate ?? 1))))),
+    units: BigInt(Math.max(10_000, Math.ceil(((weights[i] / 1e4) * value * 10 ** c.d) / usdOf(c)))),
   }));
   // No creator fee, any platform fee the policy charges, the shortest interval, open and listed.
   const params = {
@@ -355,7 +325,7 @@ async function createIndex(name, coins, weights, value, shares) {
     .find((e) => e?.eventName === "IndexCreated").args.index;
   const need = await read(index, HUB, "previewIssue", [shares]);
   for (let i = 0; i < coins.length; i++) {
-    await fund(coins[i], creator, need[i]);
+    await deal(coins[i].a, creator, need[i]);
     await send(creator, coins[i].a, erc20, "approve", [index, need[i]]);
   }
   await send(creator, index, HUB, "issue", [shares, creator]);
@@ -366,9 +336,7 @@ const MIX = await createIndex("MIX", [T.WETH, T.JUP, T.NVDAON], [5000, 2500, 250
 const DRY = await createIndex("DRY", [T.WETH, T.APT], [5000, 5000], 1000, 100n * 10n ** 18n);
 const SHR = await createIndex("SHR", [T.WETH, T.JUP], [5000, 5000], 1000, 100n * 10n ** 18n);
 const ADV = await createIndex("ADV", [T.WETH, T.SOL], [5000, 5000], 1000, 100n * 10n ** 18n);
-// The smallest, so the start checks, which judge the four richest ready indexes a round, reach it last.
-const WRP = await createIndex("WRP", [T.WETH, T.WGOOGLX], [5000, 5000], 800, 100n * 10n ** 18n);
-const names = { [LQ]: "LQ", [MIX]: "MIX", [DRY]: "DRY", [SHR]: "SHR", [ADV]: "ADV", [WRP]: "WRP" };
+const names = { [LQ]: "LQ", [MIX]: "MIX", [DRY]: "DRY", [SHR]: "SHR", [ADV]: "ADV" };
 console.log(`  factory ${factory}; LQ ${LQ}, MIX ${MIX}, DRY ${DRY}, SHR ${SHR}`);
 
 const requestsHash = await wallet.deployContract({
@@ -404,9 +372,8 @@ async function pushLink(factor) {
   setUsd(T.LINK, linkNow * ethUsd);
 }
 
-// The market moves: LINK's own pool up 12% (and the keeper's price with it), SOL, JUP and GOOGLx up 20%, APT down 20%.
+// The market moves: LINK's own pool up 12% (and the keeper's price with it), SOL and JUP up 20%, APT down 20%.
 await pushLink(1.12);
-setUsd(T.WGOOGLX, 360);
 setUsd(T.SOL, 180);
 setUsd(T.JUP, 0.6);
 setUsd(T.APT, 4);
@@ -525,7 +492,6 @@ for (let round = 0; round < 5; round++) await mineBlocks(25);
 ok((await proposals(LQ)) === 1n, "LQ started");
 ok((await proposals(SHR)) === 1n, "SHR started: its sold JUP is kept, its WETH bought");
 ok((await proposals(MIX)) === 1n, "MIX started from stock");
-ok((await proposals(WRP)) === 1n, "WRP started: the wrapper it sells is kept, valued at its feed times its rate");
 await mineBlocks(25);
 ok(
   onBoard(MIX, 1n, "notice", T.NVDAON),
@@ -543,10 +509,10 @@ ok(
 // ---------------------------------------------------------------------
 
 step("auctions: every block a step further; one fill mined a slot late on purpose");
-const etas = await Promise.all([LQ, MIX, SHR, WRP].map(async (index) => (await read(index, HUB, "pendingRebalance"))[0]));
+const etas = await Promise.all([LQ, MIX, SHR].map(async (index) => (await read(index, HUB, "pendingRebalance"))[0]));
 const firstEta = etas.reduce((a, b) => (a < b ? a : b));
 const balances = async (coins) => Promise.all(coins.map((c) => read(c.a, erc20, "balanceOf", [executor])));
-const [jup0, nvda0, wrapped0] = await balances([T.JUP, T.NVDAON, T.WGOOGLX]);
+const [jup0, nvda0] = await balances([T.JUP, T.NVDAON]);
 const usdc0 = await read(USDC, erc20, "balanceOf", [executor]);
 await test.request({ method: "evm_setAutomine", params: [false] });
 let lateHash = null;
@@ -566,7 +532,7 @@ for (let t = firstEta; t <= firstEta + 5n * 3600n && filled.size < 4; t += 600n)
     if (late) lateHash = hash;
     await mineAt(latest.timestamp + (late ? 24n : 12n));
   }
-  for (const index of [LQ, MIX, SHR, WRP]) if ((await nonceOf(index)) === 1n) filled.add(index);
+  for (const index of [LQ, MIX, SHR]) if ((await nonceOf(index)) === 1n) filled.add(index);
 }
 await test.request({ method: "evm_setAutomine", params: [true] });
 
@@ -576,7 +542,7 @@ ok(
   logged("mined past its deadline and reverted on it: not counted against it") && !logged("reverted on chain after its simulation passed (1 of 3)"),
   "and the keeper counts no strike for it: it reverted on its own deadline, which says nothing of the auction (RZ-15)",
 );
-for (const index of [LQ, MIX, SHR, WRP]) ok((await nonceOf(index)) === 1n, `${names[index]} filled`);
+for (const index of [LQ, MIX, SHR]) ok((await nonceOf(index)) === 1n, `${names[index]} filled`);
 ok((await nonceOf(DRY)) === 0n && (await proposals(DRY)) === 0n, "DRY never started");
 ok((await proposals(ADV)) === 0n, "ADV never started: a coin trading under its feed is not booked at the feed");
 
@@ -587,7 +553,7 @@ async function settlement(index) {
   const tx = await pub.getTransaction({ hash: event.transactionHash });
   return { ...event.args, from: tx.from, call: decodeFunctionData({ abi: EXECUTOR.abi, data: tx.input }) };
 }
-for (const index of [LQ, MIX, SHR, WRP]) {
+for (const index of [LQ, MIX, SHR]) {
   const s = await settlement(index);
   ok(
     s.from.toLowerCase() === keeperAccount.address.toLowerCase() && s.gain >= s.bar && s.bar < 10n ** 16n,
@@ -605,16 +571,6 @@ const shr = await settlement(SHR);
 const [jup1, nvda1] = await balances([T.JUP, T.NVDAON]);
 ok(jup1 - jup0 === shr.amountsOut[1] + mix.amountsOut[1], "SHR's and MIX's JUP are kept as stock");
 ok(nvda0 - nvda1 === mix.amountsIn[2], "MIX's NVDAon came out of stock");
-// The wrapper WRP sold is the executor's stock now, and the keeper booked it at the feed times the wrapper's rate:
-// at the feed alone it would have counted a seventy-ninth of it, and the fill, which pays WETH for it, would not pay.
-const wrp = await settlement(WRP);
-const [wrapped1] = await balances([T.WGOOGLX]);
-ok(wrp.amountsOut[1] > 0n && wrapped1 - wrapped0 === wrp.amountsOut[1], "WRP's wrapped xStock is kept as stock");
-const wrpLine = logLines.find((l) => l.includes("WRP filling at a bar of"));
-const booked = Number(wrpLine?.match(/stock (-?[\d.]+),/)?.[1]);
-const worth = (Number(wrp.amountsOut[1]) / 1e18) * usdOf(T.WGOOGLX) * T.WGOOGLX.rate;
-ok(Math.abs(booked - worth) <= worth * 0.01, `the keeper booked that stock at ${booked} USD: its feed times its rate, ${worth.toFixed(2)}`);
-ok(T.WGOOGLX.rate > 1.5 || T.WGOOGLX.rate < 0.67, `the rate, ${T.WGOOGLX.rate}, is far enough from one for that to tell the two apart`);
 const usdc1 = await read(USDC, erc20, "balanceOf", [executor]);
 console.log(`  executor USDC float ${Number(usdc0) / 1e6} -> ${Number(usdc1) / 1e6}`);
 

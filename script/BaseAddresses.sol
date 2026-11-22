@@ -21,10 +21,9 @@ import {MainnetAddresses} from "./MainnetAddresses.sol";
 ///      - Thirteen coins pass: UNI, AAVE, MORPHO, FET, CRV, VIRTUAL, PENDLE, PEPE, GRT, COMP, SNX, 1INCH and RSR.
 ///      - SHIB and EIGEN have a balance in the bridge on Ethereum and no copy was found for them: not listed.
 ///      - LINK on Base is Chainlink's own cross-chain token, not the bridge's copy: not listed.
-///      - No wrapped xStock is listed: Backed has deployed no xStock on Base, and none of Ethereum's 109 wrappers
-///        has code at its address there. Its wrapper factory has deployed four wrappers of its older tokens (wbCOIN,
-///        wbMSTR, wbNVDA, wbTSLA), which Ethereum's list leaves out too: no Pyth feed names their tokens. The header
-///        of 2026-11-21 said Backed had deployed no wrapper there at all, which was wrong.
+///      - No Ondo stock is listed: Ondo's list of 2026-11-22 is Ethereum's and BNB Chain's. Backed's wrapper factory
+///        has deployed four wrappers of its older tokens here (wbCOIN, wbMSTR, wbNVDA, wbTSLA), which no list holds:
+///        no Pyth feed names their tokens.
 ///      - The stocks a Base index holds are Coinbase's ten, and cbBTC, refused on 2026-11-21 as a custodian the lists
 ///        did not have, is listed with the other Coinbase Wrapped coins (the owner's call of 2026-11-22).
 library BaseAddresses {

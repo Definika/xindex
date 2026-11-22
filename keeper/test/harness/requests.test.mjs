@@ -11,7 +11,6 @@ import assert from "node:assert/strict";
 import { decodeFunctionData } from "viem";
 import { ABI } from "../../bot/chain.mjs";
 import { priceKey } from "../../bot/hermes.mjs";
-import { createRates } from "../../bot/rates.mjs";
 import { batchHash, createRequestFiller, requestHash } from "../../bot/requests.mjs";
 
 const addr = (byte) => `0x${byte.repeat(20)}`;
@@ -29,17 +28,14 @@ const UNITS = [10n ** 16n, 50_000n];
 const DECIMALS = [18, 8];
 const PRICES = [2000, 60_000];
 
-/// With `wrapped`, BTC is a wrapper of eight decimals over an asset of eight, worth `rate(blockNumber)` of it, in 1e18.
-function world({ shareStockUsd = 0, minProfitUsd = 5, stock = () => 0n, unrouted = [], unreadable = [], indexes = [INDEX], wrapped = false, rate = () => 10n ** 18n } = {}) {
+function world({ shareStockUsd = 0, minProfitUsd = 5, stock = () => 0n, unrouted = [], unreadable = [], indexes = [INDEX] } = {}) {
   const requests = new Map();
   const state = { shares: 0n, shareAllowance: 0n, reverting: new Set(), calls: [], now: 1_000_000n };
-  // A chain past the rates' look-back when a leg is wrapped: a younger one values no wrapper.
-  const L = () => ({ number: wrapped ? 1_000n : 100n, timestamp: state.now, baseFeePerGas: 10n ** 8n, gasUsed: 15_000_000n, gasLimit: 30_000_000n });
+  const L = () => ({ number: 100n, timestamp: state.now, baseFeePerGas: 10n ** 8n, gasUsed: 15_000_000n, gasLimit: 30_000_000n });
   const basket = (shares) => UNITS.map((u) => (shares * u) / SHARE);
   const worth = (shares) => (Number(shares) / 1e18) * 50;
 
-  const answer = ({ address, functionName, args = [] }, blockNumber) => {
-    if (functionName === "convertToAssets") return (args[0] * rate(blockNumber)) / 10n ** 18n;
+  const answer = ({ address, functionName, args = [] }) => {
     if (functionName === "getRequest") return { ...requests.get(args[0]) }; // a read is a copy, as a node's is
     if (functionName === "requestCount") return BigInt(requests.size);
     if (functionName === "feeTerms") return [true];
@@ -72,7 +68,7 @@ function world({ shareStockUsd = 0, minProfitUsd = 5, stock = () => 0n, unrouted
 
   const chain = {
     read: async (address, abi, functionName, args) => answer({ address, functionName, args }),
-    multicall: async (calls, blockNumber) => calls.map((c) => ({ status: "success", result: answer(c, blockNumber) })),
+    multicall: async (calls) => calls.map((c) => ({ status: "success", result: answer(c) })),
     call: async ({ functionName, args }) => settle(functionName, args),
     isRevert: (error) => error?.reverted === true,
   };
@@ -97,12 +93,11 @@ function world({ shareStockUsd = 0, minProfitUsd = 5, stock = () => 0n, unrouted
     cfg: { executor: EXECUTOR, factory: addr("fa"), chain: { usdc: USDC }, slippageBps: 30, minProfitUsd, shareStockUsd },
     hermes,
     routes,
-    rates: createRates({ chain, abi: ABI.vault }),
     requests: REQUESTS,
     pyth: addr("b7"),
     staticsOf: async (index) => {
       if (unreadable.includes(index)) throw new Error("a decimals read failed");
-      return { tokens: [ETH, BTC], ids: IDS, decimals: DECIMALS, assetDecimals: wrapped ? [null, 8] : [null, null], shared: [false, false] };
+      return { tokens: [ETH, BTC], ids: IDS, decimals: DECIMALS };
     },
     log: (...line) => logs.push(line.join(" ")),
     needs,
@@ -338,57 +333,6 @@ test("CA-R2-04: an index whose tokens cannot be read is left unpriced, and the o
   const pick = await w.best();
   assert.equal(pick?.id, fine, "the healthy index's request is priced and picked");
   assert.ok(w.logs.some((l) => l.includes(`request ${stuck} not simulated: no Pyth value for its index yet`)), w.logs.join("\n"));
-});
-
-test("a wrapped leg is valued at its feed times the wrapper's rate, read from the wrapper", async () => {
-  // One share redeemed: its ETH is sold and its BTC, which has no route, is kept as stock, at $30 of the feed.
-  const plain = world({ unrouted: [BTC] });
-  plain.redeem(1, 10);
-  await plain.scan();
-  assert.equal((await plain.best()).inventoryUsd.toFixed(6), "30.000000");
-
-  // The same leg as a wrapper worth half of what its feed prices: the stock kept is worth $15.
-  const half = () => 5n * 10n ** 17n;
-  const w = world({ unrouted: [BTC], wrapped: true, rate: half });
-  w.redeem(1, 10);
-  await w.scan();
-  assert.equal((await w.best()).inventoryUsd.toFixed(6), "15.000000");
-
-  // And a share of it is worth $35, not the $50 of its feeds: a redeem request asking $40 a share is not worth filling.
-  const cheap = world({ wrapped: true, rate: half });
-  const id = cheap.redeem(1, 40);
-  await cheap.scan();
-  assert.equal(await cheap.best(), null);
-  assert.ok(cheap.logs.some((l) => l.includes(`request ${id} not simulated: its limit, worth 40.00 USD, is above its escrow's 35.00 USD`)), cheap.logs.join("\n"));
-});
-
-test("a wrapper whose rate has just moved prices nothing: its index's requests wait", async () => {
-  // The rate reads 1.5 at the round's block, 1,000, and 1 a hundred blocks before it.
-  const w = world({ wrapped: true, rate: (blockNumber) => (blockNumber === 1_000n ? 15n * 10n ** 17n : 10n ** 18n) });
-  const id = w.redeem(1, 10);
-  await w.scan();
-  assert.equal(await w.best(), null);
-  assert.ok(w.logs.some((l) => l.includes(`request ${id} not simulated: no Pyth value for its index yet`)), w.logs.join("\n"));
-  assert.equal(w.state.calls.length, 0, "and no fill of it was simulated");
-});
-
-test("the share stock of an index holding a wrapper is counted at the wrapper's rate", async () => {
-  // A share is worth $35 with its wrapped leg at half its feed, not $50: four shares kept are $140 of stock, less
-  // slippage, where the feeds alone would have booked $200 against the $120 paid for them.
-  const w = world({ shareStockUsd: 1000, wrapped: true, rate: () => 5n * 10n ** 17n });
-  const sell = w.redeem(4, 120);
-  await w.scan();
-  const kept = await w.best();
-  assert.deepEqual(kept.ids, [sell]);
-  assert.equal(sent(kept).args[0].redeem, 0n, "under the target: all kept");
-  assert.equal(kept.usdcDelta, -usd(120));
-  assert.ok(kept.inventoryUsd > 139 && kept.inventoryUsd < 140, String(kept.inventoryUsd));
-
-  // While the wrapper's rate has just moved the index's shares have no value: none is kept or delivered.
-  const moved = world({ shareStockUsd: 1000, wrapped: true, rate: (blockNumber) => (blockNumber === 1_000n ? 5n * 10n ** 17n : 10n ** 18n) });
-  moved.redeem(4, 120);
-  await moved.scan();
-  assert.equal(await moved.best(), null);
 });
 
 test("RZ-13: a request forgotten on its fill's receipt is read once more, and comes back if a re-org dropped the fill", async () => {

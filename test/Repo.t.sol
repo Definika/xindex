@@ -151,7 +151,7 @@ contract RepoTest is Test {
             "**Wrapped legs rest on Wormhole.**",
             "**A collapsing coin is still bought.**",
             "**An issuer's corporate action is not accounted for.**",
-            "**A wrapped xStock is not one share.**",
+            "**A Coinbase stock token is not one share.**",
             "**Rebalances clear only when the distance pays for the fill.**",
             "**An index one holder owns can be walked.**",
             "**An exit sent during the auction can be overtaken by the fill.**",

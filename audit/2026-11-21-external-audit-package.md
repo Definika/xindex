@@ -12,8 +12,10 @@ Every earlier review in this repository is internal, the work of agents and of t
 
 The candidate is the branch `release/2026-11-21-candidate` at `e2508f71d98209ae2db5422bc1d50cd1bb9da903`. It is
 `main` at `5b7635f` with five things on top: the fixes of the audit of 2026-11-21
-(`audit/2026-11-21-consolidated-audit.md`), which changed all four deployed contracts; the listing of Backed's
-wrapped xStocks (`design/2026-11-21-xstocks.md`), which changed no contract; `MAX_COMPONENTS` raised from 100 to
+(`audit/2026-11-21-consolidated-audit.md`), which changed all four deployed contracts; the listing of every Ondo
+stock and ETF Pyth has a feed for, 352 on Ethereum and on BNB Chain (`design/2026-11-22-ondo-stocks-and-etfs.md`,
+in place of Backed's wrapped xStocks, listed on 2026-11-21 and removed on 2026-11-22), which changed no contract;
+`MAX_COMPONENTS` raised from 100 to
 200, which moved the factory's release hash; OP's Wormhole copy off Ethereum's list; and a third deployment, on
 Base (`design/2026-11-21-base-deployment.md`), an address book, a list, deploy checks and a fork suite, which
 changed no contract either, with Coinbase's coins and stock tokens on its list since 2026-11-22
@@ -84,7 +86,7 @@ Deployed sizes: `WeightedHub` 21,627 bytes (2,949 under EIP-170), `BasketBuilder
 | File | Why |
 |---|---|
 | `script/DeployWeighted.s.sol`, `script/DeployChecks.sol` | Refuse a weak owner (a Safe below 3 signatures, with a module, an EIP-7702 account), a guardian that is not a Safe of at least 2 signatures (CA-M4), overlapping roles, a market contract as a role, any market address but the chain's own book on chains 1, 56 and 8453, and any build but the released one |
-| `script/MainnetAddresses.sol`, `script/BnbChainAddresses.sol`, `script/BaseAddresses.sol`, `script/Listings.sol` | The three address books and the lists: 171 coins on Ethereum, 116 on BNB Chain, thirty-two on Base. `test_CRL08_theListsAreTheReleaseRecord`, `test_CRL08_theBnbListIsTheReleaseRecord` and `test_CRL08_theBaseListIsTheReleaseRecord` pin them against tables written independently |
+| `script/MainnetAddresses.sol`, `script/BnbChainAddresses.sol`, `script/BaseAddresses.sol`, `script/Listings.sol` | The three address books and the lists: 414 on Ethereum, 364 on BNB Chain, thirty-two on Base. `test_CRL08_theListsAreTheReleaseRecord`, `test_CRL08_theBnbListIsTheReleaseRecord` and `test_CRL08_theBaseListIsTheReleaseRecord` pin them against tables written independently |
 | `script/ConfigureWeighted.s.sol` | Proposes and executes the listings through the owner's Safe |
 
 ### Optional: the keeper's executor
@@ -161,10 +163,10 @@ Ethereum, BNB Chain and Base, each under its own Safes, each holding its own cha
 | Approved creator | Create an index of listed coins, naming its units, weights, rates and interval within the caps | Anything on an index that exists; an approval is read at creation alone |
 | Creator of an index | Gate minting to an allowlist and open it for good; hand the role on in two steps; earn its fees | Change components, weights, rates, or anyone's shares |
 | Executor (anyone) | Fill an auction at units of its own naming that clear the caps, the bar and any quote, and choose the block | Take beyond what the bar allows: the index's distance from its weights at the market's prices |
-| Wormhole's guardians (13 of 19) | Mint a wrapped copy's token or upgrade its bridge: the whole value of that leg (3 of Ethereum's 171 listings: SOL, AVAX, AERO) | Reach any other leg |
+| Wormhole's guardians (13 of 19) | Mint a wrapped copy's token or upgrade its bridge: the whole value of that leg (3 of Ethereum's 414 listings: SOL, AVAX, AERO) | Reach any other leg |
 | Coinbase | Mint, pause and block an address on each of its sixteen tokens on Base, upgrade the five coins it issues there (one account each), move a stock token's balance a policy does not exempt, and set each stock's multiplier, which values the leg | Reach any other leg |
 | Base's bridge, and the keys that upgrade Base | Mint a copy, burn it out of any holder's balance, or upgrade either half of the bridge: the whole value of that leg (13 of Base's 32 listings, and cbETH) | Reach any other leg, or anything on Ethereum or BNB Chain |
-| Backed | Reprice every wrapped xStock (one key sets each xStock's multiplier), upgrade every wrapper and xStock (a 2-of-3 Safe), pause both layers (a 2-of-4 Safe), refuse sanctioned addresses: the whole value of those legs (109 of Ethereum's listings, 104 of BNB Chain's 116) | Reach any other leg |
+| Ondo | Block and burn a holder's tokens (its compliance contract and burner role), pause them (its pause manager, RX-55), upgrade every one of a chain's tokens through that chain's beacon, and change the shares a token tracks (`sValue`, CF-3): the whole value of those legs (352 of Ethereum's 414 listings, 352 of BNB Chain's 364) | Reach any other leg |
 | Other token issuers | Pause, blacklist, and for some burn a holder's balance (WBTC, Tether Gold, every Binance-Peg coin on BNB Chain and others, labelled in the app) | Reach other legs: `redeemSkipping` leaves the frozen one behind |
 
 There is no keeper or bot role, no pause, no upgrade, no sweep and no renounce. `CLAUDE.md` ("No admin power over
@@ -236,8 +238,8 @@ In order:
    nonce (CA-M1) and the fill bound to a request's hash (RW-7).
 8. **Factory lifecycle**: listing proposals and their windows, delisting, the guardian change, the approval to
    create, clone initialization (only initialized clones issue, redeem or rebalance), CREATE2 salt collisions.
-9. **The tokens the lists hold**: ERC-4626 wrappers whose transfers read a sanctions list and can be paused, USDT's
-   fee switch, tokens that refuse or charge a transfer to oneself, and a ledger two addresses write.
+9. **The tokens the lists hold**: Ondo's beacon proxies, whose transfers pass a compliance check and can be paused,
+   USDT's fee switch, tokens that refuse or charge a transfer to oneself, and a ledger two addresses write.
 10. **Gas at `MAX_COMPONENTS`, 200** (100 until 2026-11-21), under EIP-7825's 2^24 cap, on mock tokens
     (`test_theMostComponentsFitOneTransaction`): `createIndex` about 13.3M, which grows with the square of the
     count and bounds it, `redeemSkipping` with every component skipped 10.2M, `issue` 8.9M, a fill under a quote
@@ -262,8 +264,9 @@ In order:
 - Fixed weights keep buying a collapsing coin until the guardian keeps it.
 - An issuer's corporate action is not accounted for (CF-3), and after an issuer's burn redeems and claims are paid
   first come, first served (CA-M3).
-- Wrapped legs rest on their bridge or issuer: Wormhole for four copies, Backed for every stock. A wrapped xStock is
-  not one share: its rate differs by wrapper and one key of Backed's moves it.
+- Wrapped legs rest on their bridge or issuer: Wormhole for its copies, Ondo for every stock and ETF. An Ondo token
+  tracks a number of shares its balance does not show (`sValue`), so the keeper values only the 11 Pyth prices
+  directly and leaves the other 341 alone (RX-2).
 - Small indexes rarely rebalance; an exit sent during an auction can be overtaken by the fill (RT-02); a request's
   surplus goes to the fastest filler; a minter can name itself referrer (RY-3, RW-4); a holder can top an index up
   through a fill (RW-5).
@@ -328,13 +331,14 @@ Still open:
 - **Static analysis.** `forge lint` with notes denied, Wake (`wake detect all src`) and Aderyn report nothing on
   `src/`; each suppression carries its reason where it stands.
 - **End to end.** The keeper as its own process on an anvil fork of Ethereum, its prices confirmed by Pyth's real
-  contract against updates signed by keys the test installs: 42 checks pass, among them four auctions started and
-  filled on the bar, one on an index holding a wrapped xStock, a fill mined a slot late, a guardian's keep mask, and
+  contract against updates signed by keys the test installs: 42 checks passed on 2026-11-21, before the keeper's
+  fixes of that day and the xStocks' removal (not run since), among them auctions started and filled on the bar, a
+  fill mined a slot late, a guardian's keep mask, and
   two requests filled in one batch against real pools.
 - **Deployment rehearsal.** `main` at `5b7635f` has run on Sepolia since 2026-11-18. This candidate has not been
   deployed anywhere.
 
 What has not been done: an external audit; a formal proof of the hub or of `WeightedMath` itself; a deployment of
 this candidate on a testnet; a mainnet deployment; the keeper on BNB Chain and on Base; a reading of who mints
-Base's USDT and can replace its code; the web app's move to this candidate,
-which must value a wrapped xStock at its feed times its rate before any index holding one is created.
+Base's USDT and can replace its code; the web app's move to this candidate; a keeper that reads Ondo's `sValue`, so
+the 341 Ondo legs Pyth prices by the share can be valued.

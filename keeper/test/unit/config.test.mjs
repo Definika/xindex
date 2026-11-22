@@ -105,46 +105,25 @@ test("INDEXES is lowercased and deduplicated", () => {
   assert.deepEqual(c.indexes, [a.toLowerCase()]);
 });
 
-test("RX-2: the share-priced ids are PythIds.sol's: the Ondo legs at the share's feed and every wrapped xStock's", async () => {
+test("RX-2: the share-priced ids are PythIds.sol's", async () => {
   const { SHARE_PRICED_IDS } = await import("../../bot/config.mjs");
   const { readFileSync } = await import("node:fs");
   const source = readFileSync(new URL("../../../script/PythIds.sol", import.meta.url), "utf8");
-  const ondo = [...source.matchAll(/\((Equity\.(?:US|Index)\.)[^)]*\)[^\n]*\n\s*bytes32 internal constant \w+ON = (0x[0-9a-f]{64})/g)].map((m) => m[2]);
-  const wrapped = [...source.matchAll(/\/\/\/ @dev w[\w.]+x: [^\n]*\n(?:\s*\/\/\/[^\n]*\n)?\s*bytes32 internal constant W\w+X = (0x[0-9a-f]{64})/g)].map((m) => m[1]);
-  assert.equal(ondo.length, 12);
-  assert.equal(wrapped.length, 109);
-  const share = [...ondo, ...wrapped];
+  const share = [...source.matchAll(/\((Equity\.(?:US|Index)\.)[^)]*\)[^\n]*\n\s*bytes32 internal constant \w+ = (0x[0-9a-f]{64})/g)].map((m) => m[2]);
+  assert.equal(share.length, 341);
   assert.deepEqual([...SHARE_PRICED_IDS].sort(), share.sort());
-});
-
-test("the wrapped coins are the chain's own, lowercased, each with a feed, and WRAPPED_TOKENS adds to them", async () => {
-  const { MAINNET_WRAPPED } = await import("../../bot/price-ids.mjs");
-  const c = parseConfig(VALID);
-  assert.equal(c.wrapped.size, 109);
-  assert.deepEqual([...c.wrapped], MAINNET_WRAPPED.map((t) => t.toLowerCase()));
-  for (const token of c.wrapped) assert.ok(c.priceIds[token], `${token} has a feed`);
-  assert.equal(parseConfig({ ...VALID, CHAIN_ID: "11155111" }).wrapped.size, 0, "Sepolia's test market wraps nothing");
-
-  // A wrapper the catalogue does not hold is named with the feed of what it wraps.
-  const token = `0x${"Cd".repeat(20)}`;
-  const id = `0x${"ab".repeat(32)}`;
-  const more = parseConfig({ ...VALID, PRICE_IDS: `${token}=${id}`, WRAPPED_TOKENS: ` ${token} ` });
-  assert.equal(more.wrapped.size, 110);
-  assert.ok(more.wrapped.has(token.toLowerCase()));
-  assert.throws(() => parseConfig({ ...VALID, WRAPPED_TOKENS: token }), /WRAPPED_TOKENS names 0xCdCd.* which has no price id/);
-  assert.throws(() => parseConfig({ ...VALID, WRAPPED_TOKENS: "0x12" }), /WRAPPED_TOKENS has an entry that is not an address: 0x12/);
 });
 
 test("the keeper values a chain's own coins, and PRICE_IDS adds to them or changes one", () => {
   const token = `0x${"Cd".repeat(20)}`;
   const id = `0x${"ab".repeat(32)}`;
   const weth = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2";
-  assert.equal(Object.keys(parseConfig(VALID).priceIds).length, 171);
+  assert.equal(Object.keys(parseConfig(VALID).priceIds).length, 414);
   assert.equal(parseConfig(VALID).priceIds[weth], "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace");
   const c = parseConfig({ ...VALID, PRICE_IDS: `${token}=${id}, ${weth}=${id}` });
   assert.equal(c.priceIds[token.toLowerCase()], id);
   assert.equal(c.priceIds[weth], id, "an entry replaces the catalogue's");
-  assert.equal(Object.keys(c.priceIds).length, 172);
+  assert.equal(Object.keys(c.priceIds).length, 415);
   assert.equal(Object.keys(parseConfig({ ...VALID, CHAIN_ID: "11155111" }).priceIds).length, 4, "Sepolia's test tokens");
   for (const bad of ["junk", `${token}`, `${token}=0x12`, `${token}=${id}=${id}`, `0x12=${id}`]) {
     assert.throws(() => parseConfig({ ...VALID, PRICE_IDS: bad }), /PRICE_IDS has an entry that is not token=id/, bad);

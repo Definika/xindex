@@ -263,41 +263,6 @@ test("RY-8: an auction asks for stock only when its settlement at its best price
   assert.ok(M.settlementMarginUsd({ out: [0n, 0n, 0n], need, decimals, prices }) < 0, "a settlement that only takes pays nothing");
 });
 
-test("a wrapper's rate is what one whole wrapper redeems for, in 1e18, whatever its asset's decimals", () => {
-  assert.equal(M.rateWad(10n ** 18n, 18), 10n ** 18n);
-  assert.equal(M.rateWad(1_002_405_464_113_933_032n, 18), 1_002_405_464_113_933_032n, "wAAPLx on 2026-11-21");
-  assert.equal(M.rateWad(1_500_000n, 6), 15n * 10n ** 17n, "an asset of six decimals");
-  assert.equal(M.rateWad(0n, 18), 0n);
-});
-
-test("a rate is steady within MAX_RATE_MOVE_BPS of the earlier one, either way, and never at zero", () => {
-  const was = 10n ** 18n;
-  assert.equal(M.rateSteady(was, was, 100n), true);
-  assert.equal(M.rateSteady((was * 101n) / 100n, was, 100n), true, "exactly the bound, up");
-  assert.equal(M.rateSteady((was * 101n) / 100n + 1n, was, 100n), false, "one past it, up");
-  assert.equal(M.rateSteady((was * 99n) / 100n, was, 100n), true, "exactly the bound, down");
-  assert.equal(M.rateSteady((was * 99n) / 100n - 1n, was, 100n), false, "one past it, down");
-  assert.equal(M.rateSteady(was * 10n, was, 100n), false, "a split's factor");
-  assert.equal(M.rateSteady(0n, was, 100n), false, "no rate now");
-  assert.equal(M.rateSteady(was, 0n, 100n), false, "no rate before");
-  assert.equal(M.rateSteady(0n, 0n, 100n), false);
-});
-
-test("a feed's price at a wrapper's rate: the price down, the confidence up, and none without a steady rate", () => {
-  const p = { price: 14_235_001n, conf: 7_001n, expo: -5, publishTime: 1_000n, ema: { price: 1n } };
-  assert.equal(M.atRate(p, undefined), p, "a plain coin is priced at its feed");
-  assert.equal(M.atRate(p, null), null, "a wrapper without a steady rate has no price");
-  assert.equal(M.atRate(undefined, 10n ** 18n), null);
-  assert.equal(M.atRate(null, undefined), null);
-  assert.deepEqual(M.atRate(p, 10n ** 18n), { price: 14_235_001n, conf: 7_001n, expo: -5, publishTime: 1_000n });
-  // 14,235,001 x 1.5 = 21,352,501.5 and 7,001 x 1.5 = 10,501.5: the price rounds down and the confidence up.
-  assert.deepEqual(M.atRate(p, 15n * 10n ** 17n), { price: 21_352_501n, conf: 10_502n, expo: -5, publishTime: 1_000n });
-  assert.equal(M.priceUsd(M.atRate(p, 2n * 10n ** 18n)), 2 * M.priceUsd(p));
-  assert.equal(M.atRate({ ...p, price: 1n }, 10n ** 17n), null, "a rate that leaves no price is no price");
-  // A wrapper's value is the feed's at its rate: 3 wrappers of 18 decimals at $142.35001 and a rate of 1.5.
-  assert.equal(M.amountUsd(3n * 10n ** 18n, 18, M.atRate(p, 15n * 10n ** 17n)).toFixed(4), "640.5750");
-});
-
 test("RZ-16: a subsidised fill is charged what its floor lets it lose, not what it simulated", () => {
   // A fill simulated at a float change of -40 USDC, with $30 of stock and $5 of gas: -$15. It trades $20,000 through
   // routes at 30 bps of slippage, so its floor lets the float end $60 lower still.

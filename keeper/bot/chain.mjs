@@ -38,8 +38,6 @@ export const ABI = {
     "function symbol() view returns (string)",
     "function decimals() view returns (uint8)",
   ]),
-  // An ERC-4626 wrapper, as far as the keeper reads one: what it wraps, and what one wrapper redeems for (bot/rates.mjs).
-  vault: parseAbi(["function asset() view returns (address)", "function convertToAssets(uint256 shares) view returns (uint256)"]),
   multicall3: parseAbi(["function getCurrentBlockTimestamp() view returns (uint256)"]),
   quoter: parseAbi([
     "function quoteExactInput(bytes path, uint256 amountIn) returns (uint256 amountOut, uint160[], uint32[], uint256)",

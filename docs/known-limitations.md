@@ -48,23 +48,16 @@ What the contracts do not protect against, and what an app built on them has to 
   cannot keep one, since a keep mask must leave two moving. Holders redeem in kind throughout.
 - **An issuer's corporate action is not accounted for.** An index holds fixed units per share and pays out only those.
   If an issuer mints tokens to every holder, as a stock split paid in tokens would, the index's new tokens belong to no
-  share; if it burns them, that leg falls below its backing. That is why a bare xStock is never listed: Backed
-  reports its balance as shares times a multiplier that dividends raise and a fee or a reverse split lowers. The list
-  holds Backed's wrapper of each xStock instead, an ERC-4626 vault whose balances never change, so a dividend raises
-  what a wrapper redeems for (`convertToAssets`) and reaches the holders as value. No contract prices a wrapper, so
-  nothing misprices it. One key of Backed's sets every multiplier, to any value above zero, and so reprices every
-  wrapped leg; nothing on chain bounds it (CF-3, `design/2026-11-21-xstocks.md`, section 5).
-- **A wrapped xStock is not one share.** One wrapper redeems for `convertToAssets` xStocks, and that rate differs
-  by wrapper: 1.0024 for wAAPLx, 0.9918 for wNVDAx, 78.9 for wGOOGLx and 1,001 for wMETAx on 2026-11-21. Whoever
-  values a wrapped leg multiplies its feed by that rate: the keeper does, the app must, and a new index's units are
-  named from it. An empty wrapper's rate is anyone's to raise, by leaving it a few raw units of the xStock; a
-  wrapper that holds deposits moves only by a gift to its holders or by the multiplier. The keeper leaves a wrapper
-  alone for about twenty minutes after its rate moves more than 1%, and then takes the new rate: a wait for its
-  operator, not a bound (`design/2026-11-21-xstocks.md`, section 8). On Base, Coinbase's stock tokens are the same
-  case: one token redeems for its `multiplier()` shares, 1.0005 for NVDAc and 8 for SNDKc on 2026-11-22, which a
-  dividend raises and a split multiplies while balances stay fixed. Each is a precompile of Base that an EVM without
-  Base's precompiles cannot execute, so its evidence is a simulation run by Base's node, not a local fork test
-  (`design/2026-11-22-coinbase-on-base.md`).
+  share; if it burns them, that leg falls below its backing. Ondo does neither: its token's balance never changes,
+  and each token tracks a multiplier of shares (`sValue`) that reinvested dividends raise and a split multiplies. No
+  contract prices an Ondo token, so nothing misprices it: executors price the token the market trades. The guardian
+  still keeps an affected leg out of any rebalance around a corporate action, which Ondo announces at least 24 hours
+  ahead (CF-3, `design/2026-10-18-pre-mainnet-readings.md`, section 2).
+- **A Coinbase stock token is not one share.** On Base, one of Coinbase's stock tokens redeems for its
+  `multiplier()` shares, 1.0005 for NVDAc and 8 for SNDKc on 2026-11-22, which a dividend raises and a split
+  multiplies while balances stay fixed: whoever values such a leg multiplies its feed by that multiplier, and a new
+  index's units are named from it. Each is a precompile of Base that an EVM without Base's precompiles cannot execute,
+  so its evidence is a simulation run by Base's node, not a local fork test (`design/2026-11-22-coinbase-on-base.md`).
 - **Rebalances clear only when the distance pays for the fill.** An executor fills when the index's distance from its
   weights covers its gas and its swaps, so small indexes on mainnet rarely rebalance, and a
   fresh index cannot rebalance until its own interval, 7 to 91 days, has passed since its creation. An unfilled auction expires, and for `REBALANCE_DELAY`
@@ -96,14 +89,13 @@ What the contracts do not protect against, and what an app built on them has to 
   keep-mask proposals, and monitors alert on `RebalanceStarted` with a non-zero `keepMask` (RT-07). The owner has only
   `REBALANCE_DELAY`, 2 hours, to cancel one before the guardian's own executor can fill it at `eta`.
 - **Issuers can freeze components, and some can burn them.** WBTC can be paused by its custodian, and so can MANA,
-  CHZ, SENT, FLUID, GALA, FET, SNX, PLUME and the wrapped xStocks (both the wrapper and its xStock, through Backed's
-  pausing Safe) by theirs (RX-55). After an
+  CHZ, SENT, FLUID, GALA, FET, SNX, PLUME and the Ondo tokens (through Ondo's pause manager) by theirs (RX-55). After an
   issuer burns an index's balance, issue refuses until the leg is topped up, so no deposit refills the hole for earlier
   holders (RX-8). A token that blocks only its sender, as Tether Gold's does, cannot have a fill buy into a leg the index
-  can no longer send: the fill reverts `CannotSendOut` and the guardian keeps the leg (RX-12). Tether Gold can
-  blacklist a holder, an index included, and destroy its balance; a wrapped xStock refuses any address Chainalysis'
-  sanctions oracle lists, and a wrapper's owner (one key of Backed's for 53 of Ethereum's) can name another list. The
-  admins of H, PLUME, SNX and SYRUP can burn or move any holder's balance without a blacklist
+  can no longer send: the fill reverts `CannotSendOut` and the guardian keeps the leg (RX-12). Ondo can end a stock
+  token by an issuer redemption paid only to KYC'd redeemers, on at least 30 business days' notice: holders still in at
+  the date lose that leg, so the app tells them to exit first (RX-29). Tether Gold and Ondo's stocks can blacklist a holder, an index included, and destroy
+  its balance, and the admins of H, PLUME, SNX and SYRUP can burn or move any holder's balance without a blacklist
   (`design/2026-10-18-token-source-reading.md`); the app names them. A paused component makes `redeem`, the zap and any fill that moves it revert; `redeemSkipping`, `claim`
   and the guardian's keep mask are the recourse, and a permanently frozen component needs the keep mask at every
   rebalance. A destroyed balance is lost to the index's holders, and the loss is not shared out: the index pays

@@ -40,4 +40,8 @@ library ForkAddresses {
     /// @dev Block the fork tests pin to. Bump deliberately; a pinned block keeps quotes deterministic
     ///      and lets the RPC cache.
     uint256 internal constant FORK_BLOCK = 26033838;
+    /// @dev Block the suites that read the whole list pin to (`MainnetAddresses.fork`, `CheckToken.fork`,
+    ///      `WeightedHub.fork`): 2026-11-21's, after Ondo had deployed every stock and ETF the list names (read on chain
+    ///      at block 26,450,299 on 2026-11-19); FORK_BLOCK predates many of them. FORK_BLOCK overrides it too.
+    uint256 internal constant LIST_FORK_BLOCK = 26_464_080;
 }

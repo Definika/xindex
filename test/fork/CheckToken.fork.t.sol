@@ -12,10 +12,6 @@ import {ForkAddresses as A} from "./ForkAddresses.sol";
 ///         recorded, and WhiteBIT's WBT, which the WBT rule keeps off, is refused by it. Skips when MAINNET_RPC_URL is
 ///         unset.
 contract CheckTokenForkTest is Test {
-    /// @dev The wide list's coins before its wrapped xStocks: the 171 listed less the default four and the 109
-    ///      wrappers.
-    uint256 constant WIDE_COINS = 58;
-
     CheckToken checker;
 
     function setUp() public {
@@ -24,7 +20,7 @@ contract CheckTokenForkTest is Test {
             vm.skip(true);
             return;
         }
-        uint256 forkBlock = vm.envOr("FORK_BLOCK", A.FORK_BLOCK);
+        uint256 forkBlock = vm.envOr("FORK_BLOCK", A.LIST_FORK_BLOCK);
         try vm.createSelectFork(url, forkBlock) returns (uint256) {}
         catch {
             revert(
@@ -78,17 +74,27 @@ contract CheckTokenForkTest is Test {
     ///      2026-10-10 regardless, is pinned as refused. GALA goes to review: the source reading of 2026-10-18 (CF-4)
     ///      added its `blocklist`, which sits beside a `burnFrom` that spends an allowance
     ///      (design/2026-10-18-token-source-reading.md), and the owner kept it.
-    function testFork_everyWideTokenPassesTheCheck() public {
-        _checkWide(0, WIDE_COINS);
+    ///      The list is checked a hundred tokens a test, since a check reads each token's code and pools at length and
+    ///      410 of them in one test outrun a test's gas.
+    function testFork_theWideTokensPassTheCheck_0to99() public {
+        _checkWide(0, 100);
     }
 
-    /// @dev The wide list from `from` up to `to`, each entry as the test above says. A wrapped xStock passes as
-    ///      listable with its one power the check reads, the upgrade of its proxy, behind Backed's implementation.
-    ///      The wrappers are checked in two halves, since a check costs about twelve million gas and the whole list
-    ///      would pass a test's limit of 2^30.
+    function testFork_theWideTokensPassTheCheck_100to199() public {
+        _checkWide(100, 200);
+    }
+
+    function testFork_theWideTokensPassTheCheck_200to299() public {
+        _checkWide(200, 300);
+    }
+
+    function testFork_theWideTokensPassTheCheck_300toTheEnd() public {
+        _checkWide(300, type(uint256).max);
+    }
+
     function _checkWide(uint256 from, uint256 to) internal {
         address[] memory list = new ConfigureWeighted().wideMainnetList();
-        assertEq(list.length, WIDE_COINS + 109);
+        if (to > list.length) to = list.length;
         for (uint256 i = from; i < to; ++i) {
             CheckToken.Report memory r = _check(list[i]);
             assertEq(uint8(r.transfers), uint8(CheckToken.Transfers.Exact), r.symbol);
@@ -96,19 +102,7 @@ contract CheckTokenForkTest is Test {
             if (list[i] == MainnetAddresses.XAUT) expected = CheckToken.Verdict.Refused;
             if (list[i] == MainnetAddresses.GALA) expected = CheckToken.Verdict.Review;
             assertEq(uint8(r.verdict), uint8(expected), r.symbol);
-            if (i >= WIDE_COINS) {
-                assertEq(r.implementation, 0x14f37168AB9eAFCD94d5b142a00E6e9B261Bad48, r.symbol);
-                assertEq(r.powers & checker.UPGRADE(), checker.UPGRADE(), r.symbol);
-            }
         }
-    }
-
-    function testFork_theFirstWrappedXStocksPassTheCheck() public {
-        _checkWide(WIDE_COINS, WIDE_COINS + 55);
-    }
-
-    function testFork_theOtherWrappedXStocksPassTheCheck() public {
-        _checkWide(WIDE_COINS + 55, WIDE_COINS + 109);
     }
 
     /// @dev CF-4: SAND goes to review with its admin named. The audit of 2026-10-13 added The Sandbox's

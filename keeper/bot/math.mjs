@@ -23,34 +23,6 @@ export const priceUsd = (p) => Number(p.price) * 10 ** Number(p.expo);
 /// The dollar value of `amount` raw units of a token with `decimals`, at Pyth price `p`.
 export const amountUsd = (amount, decimals, p) => (Number(amount) / 10 ** Number(decimals)) * priceUsd(p);
 
-const WAD = 10n ** 18n;
-
-/// A wrapped coin's rate, in 1e18: how many whole units of the coin its feed prices one whole wrapper redeems for.
-/// `assets` is the wrapper's `convertToAssets` of one whole wrapper, in the raw units of an asset of `assetDecimals`.
-/// A wrapped xStock's feed prices one xStock, and the wrapper is worth this many of them (script/PythIds.sol).
-export const rateWad = (assets, assetDecimals) => (assets * WAD) / 10n ** BigInt(assetDecimals);
-
-/// Whether a rate read `now` is one to value anything at: above zero, and within `maxMoveBps` of the rate read
-/// `before`, some blocks earlier. A wrapper's rate moves by a dividend at a time; one key of its issuer can set it to
-/// anything, and a split moves it by the split's factor at a moment the share's feed need not share. A rate that
-/// has just moved further than that values nothing until the move is as old as the look-back (config.mjs).
-export const rateSteady = (now, before, maxMoveBps) => {
-  if (now <= 0n || before <= 0n) return false;
-  const moved = now > before ? now - before : before - now;
-  return moved * BPS <= before * BigInt(maxMoveBps);
-};
-
-/// Price `p` of a feed as the price of the token itself: `p` for a plain coin, whose `rate` is undefined; for a
-/// wrapped one `p` times its rate, the price rounded down and the confidence up; and null when the rate is null,
-/// read as unsteady or not read at all, or leaves no price. The keeper values a wrapper at nothing but this.
-export function atRate(p, rate) {
-  if (!p || rate === undefined) return p ?? null;
-  if (rate === null) return null;
-  const price = (BigInt(p.price) * rate) / WAD;
-  if (price <= 0n) return null;
-  return { price, conf: ceilDiv(BigInt(p.conf) * rate, WAD), expo: p.expo, publishTime: p.publishTime };
-}
-
 /// An index's dollar value: `supply` shares, each backed by `units[i]` raw units of component i per 1e18 shares, at
 /// the Pyth prices `prices` (one per component, in component order). A component with no price counts as nothing.
 export function tvlUsd({ supply, units, decimals, prices }) {
@@ -87,9 +59,8 @@ export const keptUsd = (pythUsd, quoteUsdc) =>
 
 /// The dollar change one leg makes to the executor's stock: a coin the index sends out and no route sells is kept, at
 /// {keptUsd}, and a coin the index needs comes out of stock first, at Pyth price `price`. `quoteUsdc` is the best
-/// quote for selling `out`, or null. A share-priced leg kept counts as nothing: its feed prices a share, not the token,
-/// which is worth a number of shares the bot does not read (RX-2). A wrapped xStock is not one: `price` is then its
-/// feed's at the wrapper's rate ({atRate}).
+/// quote for selling `out`, or null. A share-priced Ondo leg kept counts as nothing: its feed prices a share, not the
+/// token, which is worth sValue shares the bot cannot read (RX-2).
 export function stockChangeUsd({ out, in: need, held, routed, decimals, price, quoteUsdc = null, sharePriced = false }) {
   const delivered = amountUsd(inventoryDelta({ out: 0n, in: need, held, routed }), decimals, price);
   const kept = routed ? 0n : out;
@@ -97,7 +68,7 @@ export function stockChangeUsd({ out, in: need, held, routed, decimals, price, q
   return delivered + keptUsd(amountUsd(kept, decimals, price), quoteUsdc);
 }
 
-/// Whether a leg would hand over share-priced stock: the executor delivers from stock first, within the owner's
+/// Whether a leg would hand over share-priced Ondo stock: the executor delivers from stock first, within the owner's
 /// allowance, and the bot cannot value that stock (RX-2). Such a fill waits until the owner sets that coin's stock
 /// allowance to zero, so the leg is bought instead.
 export const deliversSharePricedStock = ({ need, held, sharePriced }) => sharePriced && need > 0n && held > 0n;

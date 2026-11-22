@@ -95,7 +95,7 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
             vm.skip(true);
             return;
         }
-        uint256 forkBlock = vm.envOr("FORK_BLOCK", A.FORK_BLOCK);
+        uint256 forkBlock = vm.envOr("FORK_BLOCK", A.LIST_FORK_BLOCK);
         try vm.createSelectFork(url, forkBlock) returns (uint256) {}
         catch {
             revert(
@@ -335,7 +335,7 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
     }
 
     /// @dev An in-kind path over `legs` real tokens must fit one transaction: a mock transfers for less than the
-    ///      listed tokens do, a wrapped xStock above all, so the unit suite's figures at MAX_COMPONENTS are a floor.
+    ///      listed tokens do, a proxied stock token above all, so the unit suite's figures at MAX_COMPONENTS are a floor.
     function _fitsATransaction(string memory path, uint256 legs, uint256 used) internal pure {
         console2.log(path, "of real tokens, legs and gas:", legs, used);
         assertLt(used, TX_GAS_CAP, path);
@@ -409,18 +409,24 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         }
     }
 
-    /// @dev The coins `keep` accepts, in the table's order, and at most an index's `MAX_COMPONENTS` of them: the table
-    ///      holds more since the wrapped xStocks joined on 2026-11-21, and they come last.
     function _pick(function(Coin storage) view returns (bool) keep) internal view returns (Coin[] memory picked) {
-        uint256 most = factory.MAX_COMPONENTS();
         uint256 count = 0;
-        for (uint256 i = 0; i < coins.length && count < most; ++i) {
+        for (uint256 i = 0; i < coins.length; ++i) {
             if (keep(coins[i])) ++count;
         }
         picked = new Coin[](count);
         uint256 k = 0;
-        for (uint256 i = 0; i < coins.length && k < count; ++i) {
+        for (uint256 i = 0; i < coins.length; ++i) {
             if (keep(coins[i])) picked[k++] = coins[i];
+        }
+    }
+
+    /// @dev The first `n` of `all`, or all of them when there are no more.
+    function _first(Coin[] memory all, uint256 n) internal pure returns (Coin[] memory some) {
+        if (all.length <= n) return all;
+        some = new Coin[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            some[i] = all[i];
         }
     }
 
@@ -448,7 +454,9 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
     function testFork_everyCoinIssuesRebalancesAndRedeems() public {
         _discover(Listings.COUNT);
         _report();
-        Coin[] memory picked = _pick(_dealable);
+        // the list holds more than one index may (its Ondo stocks and ETFs, since 2026-11-22): the first MAX_COMPONENTS
+        // that `deal` can fund, every coin among them
+        Coin[] memory picked = _first(_pick(_dealable), factory.MAX_COMPONENTS());
         console2.log("coins in the index:", picked.length, "of", coins.length);
         assertGe(picked.length, 25, "most of the list can be funded on the fork");
 

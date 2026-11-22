@@ -29,7 +29,6 @@ import { createHermes, priceKey } from "./bot/hermes.mjs";
 import * as M from "./bot/math.mjs";
 import { createNeeds } from "./bot/needs.mjs";
 import { TxTracker } from "./bot/nonce.mjs";
-import { assetDecimalsOf, createRates, sharePricedLegs } from "./bot/rates.mjs";
 import { createRequestFiller } from "./bot/requests.mjs";
 import { createRoutes, marketOf } from "./bot/routes.mjs";
 import * as U from "./bot/units.mjs";
@@ -50,7 +49,6 @@ const cfg = parseConfig(process.env);
 const chain = createChain(cfg);
 const hermes = createHermes({ url: cfg.hermesUrl, apiKey: cfg.pythApiKey });
 const routes = createRoutes(chain, cfg, ABI, marketOf(cfg.chain));
-const rates = createRates({ chain, abi: ABI.vault, log });
 const tip = M.gweiToWei(cfg.priorityFeeGwei);
 const feeCap = M.gweiToWei(cfg.maxFeeGwei);
 const tracker = new TxTracker(chain.txIo, log, { feeCap });
@@ -65,14 +63,13 @@ const needs = cfg.needsFile
     })
   : createNeeds({ write: () => {} });
 const isUsdc = (token) => token.toLowerCase() === cfg.chain.usdc.toLowerCase();
+const sharePriced = (id) => SHARE_PRICED_IDS.includes(id.toLowerCase());
 const kept = (keepMask, i) => ((keepMask >> BigInt(i)) & 1n) === 1n;
 const tokensOf = (short) => short.map((s) => s.token).join(", ");
 let subsidies = []; // {at, usd}: fills sent below zero profit, for SUBSIDY_BUDGET_USD's rolling day (RX-16)
 let startKeys = []; // route keys of the last start round, kept until the next (RX-34)
 
-// index -> {tokens, ids, decimals, assetDecimals, shared, weights}: `ids` null where the keeper has no price id,
-// `assetDecimals` null for a coin that wraps nothing, `shared` true for a share-priced leg (RX-2)
-const statics = new Map();
+const statics = new Map(); // index -> {tokens, ids, decimals, weights}: `ids` null where the keeper has no price id
 const started = new Map(); // index -> timestamp of a start of ours not yet filled
 const said = new Map(); // index -> the last reason logged, so a waiting index is not logged every block
 const worth = new Map(); // `index:proposal` -> {supply, tvl, block}: an open auction's index, valued every 25 blocks
@@ -92,9 +89,7 @@ function say(index, reason) {
 }
 
 /// What never changes about `index`: its tokens, each one's decimals, read from the token, and the Pyth id the keeper
-/// values it at, null for a coin outside its catalogue, which it leaves alone. A wrapped coin also has the decimals of
-/// what it wraps, which its rate is read in (bot/rates.mjs); a share-priced leg is one whose feed prices a share the
-/// token is not, and that wraps nothing the bot reads (RX-2).
+/// values it at, null for a coin outside its catalogue, which it leaves alone.
 async function staticsOf(index, blockNumber) {
   if (!statics.has(index)) {
     const tokens = await chain.read(index, ABI.hub, "componentTokens", [], blockNumber);
@@ -104,9 +99,7 @@ async function staticsOf(index, blockNumber) {
     );
     if (decimals.some((r) => r.status !== "success")) throw new Error("a decimals read failed");
     const ids = tokens.map((t) => cfg.priceIds[t.toLowerCase()] ?? null);
-    const assetDecimals = await assetDecimalsOf({ chain, abi: ABI.vault, erc20: ABI.erc20, wrapped: cfg.wrapped }, tokens, blockNumber);
-    const shared = sharePricedLegs(ids, assetDecimals, SHARE_PRICED_IDS);
-    statics.set(index, { tokens, ids, decimals: decimals.map((r) => Number(r.result)), assetDecimals, shared, weights: null });
+    statics.set(index, { tokens, ids, decimals: decimals.map((r) => Number(r.result)), weights: null });
   }
   return statics.get(index);
 }
@@ -134,9 +127,8 @@ async function weightsOf(index, st, blockNumber) {
   return st.weights;
 }
 
-/// The Hermes prices of `st`'s legs as each token's own price at block L, with none for a coin without an id or for
-/// a wrapped one whose rate cannot be read or has just moved (bot/rates.mjs).
-const pricesFrom = (latest, st, L) => rates.priced(st, st.ids.map((id) => (id ? latest.get(priceKey(id)) : undefined)), L.number);
+/// The Hermes prices of `ids`, with none for a coin without an id.
+const pricesFrom = (latest, ids) => ids.map((id) => (id ? latest.get(priceKey(id)) : undefined));
 
 async function refresh(L) {
   if (cfg.indexes) indexes = cfg.indexes.map((a) => getAddress(a));
@@ -165,18 +157,16 @@ async function refresh(L) {
 const pythChain = (L) => ({ read: chain.read, call: chain.call, pyth: setup.pyth, abi: ABI.pyth, blockNumber: L.number });
 
 /// The keeper's price of each leg of `st` it may move, as Pyth's {price, expo}, and null for the rest: a kept leg, a
-/// coin without an id, a share-priced leg, which the bot cannot value (RX-2), a price that is not Hermes' signed one as
-/// Pyth's contract parses it, or is stale or wide (RX-1, RX-9, RY-7), and a wrapped coin whose rate cannot be read or
-/// has just moved. A wrapped coin's price is its feed's at the rate read from the wrapper at L (bot/rates.mjs).
+/// coin without an id, a share-priced Ondo leg, which the bot cannot value (RX-2), and a price that is not Hermes'
+/// signed one as Pyth's contract parses it, or is stale or wide (RX-1, RX-9, RY-7).
 async function pricesOf(st, L, keepMask) {
-  const wanted = st.ids.map((id, i) => (id && !st.shared[i] && !kept(keepMask, i) ? id : null));
+  const wanted = st.ids.map((id, i) => (id && !sharePriced(id) && !kept(keepMask, i) ? id : null));
   const ids = wanted.filter(Boolean);
   const trusted = ids.length ? await hermes.trusted(ids, Date.now() + HERMES_MS, pythChain(L)) : new Map();
-  const feeds = wanted.map((id) => {
+  return wanted.map((id) => {
     const p = id ? trusted.get(priceKey(id)) : null;
     return p && M.freshPrice(p, L.timestamp, FRESH_SECONDS, MAX_CONF_BPS) ? p : null;
   });
-  return rates.priced(st, feeds, L.number);
 }
 
 /// The fill of `index` the keeper would send for block L+1: the units it names at its own prices to clear the bar
@@ -393,7 +383,7 @@ async function worthChecking(open, L) {
       const latest = ids.size ? await hermes.latest([...ids], Date.now() + HERMES_MS) : new Map();
       for (const r of readable) {
         const st = statics.get(r.index);
-        const prices = await pricesFrom(latest, st, L);
+        const prices = pricesFrom(latest, st.ids);
         worth.set(keyOf(r.index), { supply: r.supply, tvl: M.tvlUsd({ supply: r.supply, units: r.units, decimals: st.decimals, prices }), block: L.number });
       }
     }
@@ -534,7 +524,7 @@ async function startChecks(L, open) {
   const worthyAhead = [];
   for (const r of readable) {
     const st = statics.get(r.index);
-    const tvl = M.tvlUsd({ supply: r.supply, units: r.units, decimals: st.decimals, prices: await pricesFrom(latest, st, L) });
+    const tvl = M.tvlUsd({ supply: r.supply, units: r.units, decimals: st.decimals, prices: pricesFrom(latest, st.ids) });
     if (tvl < cfg.minTvlUsd) {
       if (r.stage === "ready") say(r.index, `not starting: worth ${tvl.toFixed(0)} USD, below MIN_TVL_USD`);
       continue;
@@ -718,7 +708,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => (stopping =
 
 setup = await chain.checkSetup();
 if (cfg.fillRequests) {
-  filler = createRequestFiller({ chain, cfg, hermes, routes, rates, requests: setup.requests, pyth: setup.pyth, staticsOf, log, needs });
+  filler = createRequestFiller({ chain, cfg, hermes, routes, requests: setup.requests, pyth: setup.pyth, staticsOf, log, needs });
 }
 log(`keeper ${chain.account.address} on ${cfg.chain.name}, executor ${cfg.executor}, factory ${cfg.factory}, auctions ${cfg.fillAuctions ? "on" : "off"}, requests ${cfg.fillRequests ? setup.requests : "off"}`);
 let last = -1n;

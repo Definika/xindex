@@ -19,7 +19,7 @@ Ethereum's. Base lists thirty-two tokens: WETH and AERO, issued there, ZRO, thir
 of coins on Ethereum's list, the six Coinbase Wrapped coins, and Coinbase's ten stock tokens, which are precompiles
 of Base and are tested on Base's node (`design/2026-11-22-coinbase-on-base.md`).
 
-**On Ethereum one index holds up to 200 coins (100 until 2026-11-21), of the top 300 and of Backed's stocks** (the owner's decision of
+**On Ethereum one index holds up to 200 coins (100 until 2026-11-21), of the top 300 and of Ondo's stocks and ETFs** (the owner's decision of
 2026-10-10, `design/2026-10-10-one-index-wormhole-legs.md`). An index holds Ethereum ERC-20s in kind: the issuer's own
 contract where Ethereum has one, and otherwise the copy Wormhole's token bridge wraps from the chain that has it.
 Nothing crosses a chain inside a protocol contract: the app and the fillers bridge, the keeper's own executor among
@@ -237,7 +237,7 @@ which returned the zap to its earlier Uniswap-only build. The zap types its call
   command inputs carry an extra per-hop price array; `POOL_MANAGER` is read from the router's own `poolManager()`.
 - **Scale.** The zap costs 265k to 430k gas per component (v3's fork measurement at 20 components, CR-I08), so
   EIP-7825's 2^24-gas cap stops it at 39 to 63 components; the app offers it up to about 35. Larger indexes, and coins
-  without a route (most Wormhole copies, Tether Gold, the wrapped xStocks), are minted and redeemed in kind, through
+  without a route (most Wormhole copies, Tether Gold, Ondo's stocks), are minted and redeemed in kind, through
   `MintRequests`, or through the basket builder.
 
 ### BasketBuilder (`src/BasketBuilder.sol`)
@@ -757,8 +757,8 @@ SOL, listed first, 12 added on 2026-10-10, and BNB and SUI, whose copies the cou
 2026-10-18; a 13th of 2026-10-10, DOGE's, left on 2026-10-14 on the owner's call, since Pyth, which then priced the
 rebalance, prices DOGE and not the copy. SAND and RLB left on 2026-10-18 after the source reading, and on 2026-10-19 BTT
 and SEI's copy, added with BNB's and SUI's, their bridges closed or closing (RX-28, RX-32), the owner's calls; ZK is
-tiered Bridged, ZKsync's bridge copy of a token issued on ZKsync Era (RX-19). Tether Gold and the 109 wrapped xStocks
-(since 2026-11-21, in place of the 17 Ondo stocks) do not count toward the hundred, so 61 coins of the top 300 are listed; 26 more copies await an attestation on Wormhole's
+tiered Bridged, ZKsync's bridge copy of a token issued on ZKsync Era (RX-19). Tether Gold and the 352 Ondo stocks and
+ETFs do not count toward the hundred, so 61 coins of the top 300 are listed; 26 more copies await an attestation on Wormhole's
 Portal, each of which, without an Ethereum pool or a restock that has run from its home chain, would meet the same bar
 as the five, and FIL's waits for a reading of its Binance-Peg source (`design/2026-10-10-one-index-wormhole-legs.md`, section
 2a, and `design/2026-10-18-pre-mainnet-readings.md`, section 3).
@@ -821,8 +821,8 @@ components (section 2).
     its bridge redeems for nothing (RX-28, RX-32). Their reach is the whole of every wrapped leg, and through a fill
     the bounded share of the rest that a worthless coin can draw (section 3.7), so the app shows every index's wrapped
     share of value. Redeem always pays the copies out; turning them into the coin needs Wormhole live.
-  - The whitelisted tokens and their issuers, each labelled in the app: BitGo for WBTC, Tether for Tether Gold, Backed
-    for every wrapped xStock, and both Binance and Wormhole for a copy wrapped from a Binance-Peg coin.
+  - The whitelisted tokens and their issuers, each labelled in the app: BitGo for WBTC, Tether for Tether Gold, Ondo
+    for every stock token, and both Binance and Wormhole for a copy wrapped from a Binance-Peg coin.
   - For the zap only: Uniswap's Universal Router and the V4 PoolManager.
 
   Executors and the account that starts a rebalance are untrusted. Users trust no one with custody.
@@ -865,8 +865,7 @@ components (section 2).
   token whose ledger a second address also writes (RW-10). Stables are mint currencies, not components.
   The admission check is
   `script/CheckToken.s.sol`, whose default WBT rule refuses a token that can both blacklist a holder and destroy its
-  balance; on 2026-10-10 the owner admitted Tether Gold and Ondo's stocks over that rule. A token whose balances move
-  without a transfer is not a component: Backed's xStocks are listed only as their wrappers (2026-11-21).
+  balance; on 2026-10-10 the owner admitted Tether Gold and Ondo's stocks over that rule.
 - **Arithmetic.** Units below `2^96` (`SafeCast`), and at most `maxUnitsOf(token)`, never above `MAX_UNITS`, at
   creation. A leg's change `x` lies in `[−0.2, 1]` at 1e18 once the caps hold, so the score's numerator stays below
   7e73, inside `int256`, and two hundred weighted scores fit with room to spare. Every product of shares and units, and

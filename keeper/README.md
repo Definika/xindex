@@ -27,10 +27,9 @@ Every block L, with T = L's timestamp + 12 (the one block a fill sent now can la
      word and replayed against the contracts' vectors, before anything is asked of the chain.
    - When the owner or guardian posted a quote with the proposal (`rebalanceQuote()`), the units named must hold it
      too: the bot gives the index as much more as the quote asks, and names nothing it would have to give away.
-   - A leg it cannot value keeps its units: a kept leg, a coin outside the catalogue, a share-priced leg (RX-2), a
-     coin whose price is not the signed one, is older than a minute or carries a confidence interval wider than 2%
-     (RX-1, RX-9), and a wrapped xStock whose rate cannot be read or has just moved (below). A leg within
-     `TRADE_COST_BPS` of its weight is not traded for its own sake.
+   - A leg it cannot value keeps its units: a kept leg, a coin outside the catalogue, a share-priced Ondo leg
+     (RX-2), and a coin whose price is not the signed one, is older than a minute or carries a confidence interval
+     wider than 2% (RX-1, RX-9). A leg within `TRADE_COST_BPS` of its weight is not traded for its own sake.
    - It previews the settlement those units give and simulates the executor's whole fill exactly as block L+1 would
      run it (`eth_call` with block overrides), with the routes it quoted and the executor's stock. Profit = the USDC
      float's change + the stock's change valued at the keeper's prices − gas.
@@ -104,7 +103,7 @@ Every block L, with T = L's timestamp + 12 (the one block a fill sent now can la
 
 The executor swaps through Uniswap V3 (SwapRouter02) along a route per coin, chosen for each auction by quoting every
 `token→USDC` and `token→WETH→USDC` pool at the leg's own size; a route losing more than `ROUTE_MAX_LOSS_BPS` against
-Pyth is not used. A coin without a usable route (Wormhole copies, Tether Gold) is served from the
+Pyth is not used. A coin without a usable route (Wormhole copies, Ondo stocks, Tether Gold) is served from the
 executor's **stock**: a coin the index sells is kept, and a coin it needs is delivered from stock, which the restock
 service keeps filled for the Wormhole copies it serves ([Restock](#restock)), and the operator for the rest. A coin
 leaves stock only within the **stock allowance** `OWNER` sets for it (`setStockAllowance(token, amount)`), and what the
@@ -155,38 +154,14 @@ filled at once. Shares leave that stock only within the stock allowance `OWNER` 
 the executor acquires earn no allowance of their own. The bot counts a share coming in at what redeeming it would
 bring, less `SLIPPAGE_BPS`, and a share going out at what issuing it again would cost, plus `SLIPPAGE_BPS`. Shares
 held move with the index: that risk is the operator's, and the default holds none. The bot builds no stock ahead of
-demand; an operator who wants some sends the executor shares. An index holding a share-priced leg has shares the
-bot cannot value, so it keeps and delivers none of them; so has one holding a wrapped xStock while that wrapper's
-rate cannot be read or has just moved.
+demand; an operator who wants some sends the executor shares. An index holding a share-priced Ondo leg has shares the
+bot cannot value, so it keeps and delivers none of them.
 
-**A wrapped xStock is valued at its feed times its rate.** Its feed prices one xStock, and one wrapper redeems for
-`convertToAssets` of them: 1.0024 for wAAPLx, 0.9918 for wNVDAx, 78.9 for wGOOGLx and 1,001 for wMETAx, an empty
-wrapper someone left 1,000 raw units in, when read on 2026-11-21. The bot reads that rate from the wrapper at the
-block every other read of the round is pinned to (`bot/rates.mjs`; the wrappers are `MAINNET_WRAPPED` in
-`bot/price-ids.mjs`), and values a wrapper at nothing else: in the units it names, in the stock it delivers and
-keeps, in a request's worth and in an index's.
-
-It reads the rate a second time, `RATE_LOOKBACK_BLOCKS` (100, about twenty minutes) earlier, in two calls to
-the node for all of an index's wrappers. A rate that moved more
-than `MAX_RATE_MOVE_BPS` (1%) between the two, or that either read did not return, values nothing: that leg keeps
-its units, no request on an index holding it is filled, and the log says `not valued: its rate moved from … to …`.
-A dividend moves a rate by a percent or less. One key of Backed's can set an xStock's multiplier, and so its
-wrapper's rate, to anything, and a split moves it by the split's factor at a moment the share's feed need not
-share. The wait is time for the operator to look, and to set that coin's stock allowance to zero: once the move is
-twenty minutes old the bot values the wrapper at the new rate, right or wrong. Nothing bounds a rate that drifts
-slowly, and what the bot loses to a wrong one is bounded only by the allowances `OWNER` sets. An empty wrapper's
-rate is anyone's to raise, by leaving it a few raw units; that costs nothing and is the rate the next deposit
-mints at, so it is the wrapper's true rate.
-
-No Uniswap pool trades a wrapper, so every wrapped leg is served from the executor's stock, within its stock
-allowance, and the bot asks the needs board for what it is short of. Nothing here wraps or buys an xStock: an
-operator adds that stock.
-
-A share-priced leg is a token at a feed that prices a share or an xStock (`SHARE_PRICED_IDS` in `bot/config.mjs`:
-every wrapped xStock's feed, and the twelve Ondo legs', which left the list on 2026-11-21) whose rate the bot does
-not read: an Ondo leg, worth sValue shares, or a wrapper outside the catalogue that `WRAPPED_TOKENS` does not name.
-Keep their stock allowance at **zero**: the bot refuses any fill that would deliver them from stock, and
-counts any it keeps as worth nothing (RX-2). The bot logs `restock <coins>` and does not start or fill an
+The 341 Ondo legs priced at their share's feed (every listed Ondo stock and ETF but the 11 Pyth prices directly, NVDA,
+AAPL, GOOGL, MSFT, TSLA, T, HOOD, MSTR, COIN, CRCL and LI; `SHARE_PRICED_IDS` in `bot/config.mjs`) are worth sValue
+shares, which the bot cannot read. Keep
+their stock allowance at **zero**: the bot refuses any fill that would deliver them from stock, and counts any it keeps
+as worth nothing (RX-2). After a split or a reverse split the share's feed is off by the ratio. The bot logs `restock <coins>` and does not start or fill an
 auction its usable stock (the lower of the balance and the allowance) cannot cover. Usable stock comes first for a
 routed coin too; only the rest is bought. The executor's address must be able to hold and send every coin it stocks.
 
@@ -214,7 +189,7 @@ routed coin too; only the rest is bought. The executor's address must be able to
   search found, for at least the amount kept and at most 25 blocks old, so a coin trading under its feed (a depegged
   Wormhole or Binance-Peg copy) counts at what its pools pay. A coin whose pools exist but quote nothing, their sell
   side emptied as a depegged copy's is, counts as nothing; a quote the RPC failed to answer fails the check rather
-  than counting. Only a coin with no pool at all counts at Pyth: that is the Wormhole copies' and Tether
+  than counting. Only a coin with no pool at all counts at Pyth: that is the Wormhole copies', Ondo stocks' and Tether
   Gold's case, and a bridge incident or a copy trading under its coin's feed then turns float into a coin worth less
   than the bot booked. Only a wallet the factory's owner approved creates an index, so a stranger cannot build one to
   make the bot buy its other legs with the float; an index an approved creator built still can, up to the auction's
@@ -424,8 +399,7 @@ raising to what EIP-8037 allows (RX-36).
 | `EXECUTOR` | required | This bot's `KeeperExecutor`. |
 | `PYTH_API_KEY` | required | Hermes' API key, sent as `Authorization: Bearer`: the keeper's own price source. No contract reads a price. |
 | `HERMES_URL` | `https://pyth.dourolabs.app/hermes` | Hermes since 2026-08-26. |
-| `PRICE_IDS` | none | `token=id` pairs, comma-separated: Pyth ids for coins the catalogue (`bot/price-ids.mjs`, the 171 listed coins) does not hold, a testnet's for instance, or another feed for one it does. A coin without an id is left alone. The feed must price the token itself: a token that wraps what its feed prices is named in `WRAPPED_TOKENS` too, and one at a feed a wrapped xStock or an Ondo leg takes is left alone unless it is (RX-2). |
-| `WRAPPED_TOKENS` | none | Addresses, comma-separated: ERC-4626 wrappers the catalogue does not hold, each already given in `PRICE_IDS` the feed of what it wraps. The bot values such a token at that feed times `convertToAssets`, read from it every round, as it does the catalogue's 109 wrapped xStocks (`MAINNET_WRAPPED`). |
+| `PRICE_IDS` | none | `token=id` pairs, comma-separated: Pyth ids for coins the catalogue (`bot/price-ids.mjs`, the 414 listed coins) does not hold, a testnet's for instance, or another feed for one it does. A coin without an id is left alone. |
 | `TRADE_COST_BPS` | `30` | What trading a leg is taken to cost when the bot names a fill's units: a leg within this of its weight is not traded for its own sake. |
 | `INDEXES` | every index | Comma-separated indexes to serve. Only wallets the factory's owner approved create indexes, so the set is the team's; a list still caps the bot's work. |
 | `MIN_PROFIT_USD` | `5` | Least profit a fill or a start must promise; negative is a subsidy the operator accepts, for auctions only and within `SUBSIDY_BUDGET_USD`. |
@@ -524,11 +498,7 @@ of it, with WETH9's balance slot of the first index set to 5 wei, the next round
   contract confirming the keeper's prices against updates this test signs, and `keeper.mjs` as its own process. It
   covers plain starts, a start held back by missing stock, an index never started, fills only once the bar has fallen
   far enough to pay, stock kept and delivered, a two-hop buy, a fill mined a slot late reverting early and being sent
-  again, a guardian's keep-mask start whose fill leaves the kept coin's units alone, an index holding a wrapped
-  xStock, whose wrapper the keeper keeps as stock at its feed times its rate, and two requests, a buyer's and a
-  seller's, each bound to the basket it priced, filled in one batch at their limits. It refuses to start while
-  something answers on its port: a run that was killed leaves its anvil there, and the next would be checked
-  against that stale chain. On a cold RPC cache a start check can outlast
+  again, and a guardian's keep-mask start whose fill leaves the kept coin's units alone. On a cold RPC cache a start check can outlast
   the keeper's 15-second RPC timeout and the test then fails on timing; `FORK_BLOCK` at a block already run keeps the
   cache warm.
 - `MAINNET_RPC_URL=<archive> npm run e2e:restock` (in `keeper/`): anvil forks of Ethereum, BNB Chain, Base, Optimism and
