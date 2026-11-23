@@ -29,6 +29,8 @@ export class TxTracker {
     this.clearBelow = null;
     this.startupChecked = false;
     this.warned = false;
+    // The nonce last found held by a transaction this tracker is not following, so the refusal is logged once (RZ-8).
+    this.held = null;
   }
 
   _cap(x) {
@@ -44,15 +46,26 @@ export class TxTracker {
   }
 
   /// Sends `tx` (no nonce) on the next nonce, to land in block `targetBlock`. `deadline`, when the transaction
-  /// carries one, is the second after which it reverts, handed back with its outcome. Returns the hash, or null
-  /// when the nonce turned out to be taken.
+  /// carries one, is the second after which it reverts, handed back with its outcome. Returns the hash, or null when
+  /// nothing was sent: the nonce taken, or held by a pending transaction this tracker is not following.
   async send(tx, { label, targetBlock, deadline = null }) {
     if (this.inFlight) throw new Error("a transaction is already in flight");
     const nonce = await this.io.latestNonce();
+    // A pending transaction holds the nonce, one this bot did not send or may not clear (XS-12). Signed on that nonce,
+    // the fill replaced it whenever its fees were a tenth higher, or was refused as underpriced block after block while
+    // the log said it would be retried, which nothing did. Nothing is sent over it until it is mined or cleared (RZ-8).
+    if ((await this.io.pendingNonce()) > nonce) {
+      if (this.held !== nonce) {
+        this.held = nonce;
+        this.log(`nonce ${nonce} is held by a pending transaction this bot is not following: nothing is sent over it until it is mined or cleared (check the RPC, and what else signs with this key)`);
+      }
+      return null;
+    }
+    this.held = null;
     const full = { ...tx, nonce };
     let hash;
     try {
-      hash = await this._submit(full);
+      hash = await this._submit(full, { first: true });
     } catch (error) {
       // The node may hold it all the same (a timeout after it arrived), so a pending nonce of it may be cleared.
       this._mayClear(nonce + 1n);
@@ -159,15 +172,24 @@ export class TxTracker {
     return true;
   }
 
-  async _submit(tx) {
+  /// The node's answer to `tx`: its hash, or null when it took nothing. `first` is a transaction's first send, which
+  /// nothing retries; a replacement is retried higher at the next block.
+  async _submit(tx, { first = false } = {}) {
     try {
       return await this.io.send(tx);
     } catch (error) {
       const message = String(error?.message ?? error);
-      if (/nonce too low|nonce has already been used/i.test(message)) return null;
+      if (/nonce too low|nonce has already been used/i.test(message)) {
+        if (first) this.log(`nonce ${tx.nonce} already used: not sent`);
+        return null;
+      }
       if (/already known/i.test(message) && error.hash) return error.hash;
       if (/underpriced|fee too low/i.test(message)) {
-        this.log(`nonce ${tx.nonce}: replacement refused as underpriced; retrying higher next block`);
+        this.log(
+          first
+            ? `nonce ${tx.nonce}: refused as underpriced, another transaction holds it: not sent (RZ-8)`
+            : `nonce ${tx.nonce}: replacement refused as underpriced; retrying higher next block`,
+        );
         return null;
       }
       throw error;

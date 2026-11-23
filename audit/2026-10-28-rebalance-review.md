@@ -37,7 +37,7 @@ passed before now fail their tests.
 | RB-2 | Confirmed, test gap | The probe's balance re-read after its transfer (`WeightedHub._checkBacking`) had no test: dropped, every hub test passed | Fixed: `test_RB2_RX12_theProbeReadsTheBalanceAfterItsTransfer` in `test/WeightedHub.rebalance.t.sol`, on `MockSelfLosingToken` |
 | RB-3 | Confirmed, test gap | The hub's own `published < time` check (`WeightedHub._readPrices`) had no test: `MockPyth` tampered a late time, never an early one | Fixed: `Tamper.EarlyTime` in `test/mocks/MockPyth.sol`; `test_RB3_anUpdateBeforeThePinnedSecondIsRefused` |
 | RB-4 | Confirmed, documentation | `ARCHITECTURE.md` still named `startRebalance(keepMask)`; the signature takes the price update since RX-3 | Fixed in the line. No test |
-| RB-5 | Informational | The zap refuses as `to` only the index it mints or burns; the builder refuses every factory index (`FACTORY.isIndex(to)`), since no index can move a token or a share it receives (RT-21) | Open, the owner's call: a one-line hardening of `IndexZap._checkIndexCall` that moves the CF-5 release hashes. No test |
+| RB-5 | Informational | The zap refuses as `to` only the index it mints or burns; the builder refuses every factory index (`FACTORY.isIndex(to)`), since no index can move a token or a share it receives (RT-21) | Fixed on 2026-11-23, the owner's call ("Fix six findings"): `_checkIndexCall` refuses every factory index as the builder does. `test_RB5_noIndexIsAValidZapRecipient` in `test/IndexZap.t.sol`, mutant RB5; the zap's release hash moved |
 
 ## RB-1: the admission check never tried a self-transfer (confirmed, low)
 
@@ -88,7 +88,7 @@ mutant: the fill settles instead.
 `startRebalance(uint256 keepMask, bytes[] priceUpdate)`, payable, and reads every moving feed. The bot
 (`keeper/keeper.mjs`) and `abi/WeightedHub.json` already carry the new signature. Fixed in the line.
 
-## RB-5: the zap's recipient check admits another index (informational, open)
+## RB-5: the zap's recipient check admitted another index (informational, fixed 2026-11-23)
 
 `IndexZap._checkIndexCall` refuses as `to` the zap, the index of the call, the router, the pool manager and the
 factory (RT-21). `BasketBuilder._checkRecipient` refuses the same and, in place of the one index, every index the
@@ -97,6 +97,12 @@ stay there for good, and a burn paid to an index is a donation to its holders at
 only on a `to` the caller chose, as with any wrong address, so this is not a loss path. The two contracts differ where
 `AGENTS.md` says the builder's recipients "are checked as the zap's"; the stricter check is the builder's, and the
 zap could take it in one line, at the cost of moving the CF-5 release hashes and a fork run. Left to the owner.
+
+Fixed on 2026-11-23, when the owner asked for every open finding to be fixed: `IndexZap._checkIndexCall` refuses
+`FACTORY.isIndex(to)` in place of `to == index`, so the zap and the builder refuse the same recipients.
+`test_RB5_noIndexIsAValidZapRecipient` mints and burns to the index of the call and to another index, and expects
+`InvalidRecipient` for each; mutant RB5, the old check, fails it. The zap's ABI did not change; its release hash
+(`ZAP_INITCODE_HASH`) did.
 
 ## What was checked and found sound
 

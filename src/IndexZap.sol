@@ -284,11 +284,12 @@ contract IndexZap is ReentrancyGuard, UniversalRouterSwaps, IIndexZap {
         _checkNonce(index, expectedNonce);
         if (to == address(0)) revert ZeroAddress();
         // Each of these would lose what it is sent: anyone can sweep tokens left in the router, anything sent to the
-        // pool manager is a donation, and the factory and the index can never move a token they receive (RT-21).
-        if (to == address(this) || to == index || to == address(ROUTER) || to == POOL_MANAGER || to == address(FACTORY))
-        {
-            revert InvalidRecipient(to);
-        }
+        // pool manager is a donation, and the factory and every index it made can never move a token they receive
+        // (RT-21). Every index, not only the one of the call: the builder's rule, which the zap now shares (RB-5).
+        if (
+            to == address(this) || to == address(ROUTER) || to == POOL_MANAGER || to == address(FACTORY)
+                || FACTORY.isIndex(to)
+        ) revert InvalidRecipient(to);
     }
 
     /// @dev Reverts if a rebalance settled since the caller's quote, which changed the basket.

@@ -613,6 +613,11 @@ library MainnetAddresses {
     /// @dev Uniswap V3's factory, where `CheckToken` looks up a token's pools to record its depth before a listing. No
     ///      contract reads it. Its runtime code hash is pinned by `test/fork/MainnetAddresses.fork.t.sol`.
     address internal constant UNISWAP_V3_FACTORY = 0x1F98431c8aD98523631AE4a59f267346ea31F984;
+    /// @dev Pyth's price contract, a proxy, through which the factory's `PythPrices` reads the price a fill is checked
+    ///      against (the owner's call of 2026-11-22). A filler posts a fresh update to it in its own transaction. Read
+    ///      on chain that day: it answers `priceFeedExists` for ETH/USD, and `DeployChecks` resolves it as it does the
+    ///      router.
+    address internal constant PYTH = 0x4305FB66699C3B2702D4d05CF36551390A4c69C6;
 
     // ---------------------------------------------------------------------
     // Bridges. No contract calls one; the app and the fillers do.

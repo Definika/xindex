@@ -5,12 +5,16 @@ import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {WeightedIndexFactory} from "../../src/WeightedIndexFactory.sol";
+import {WeightedMath} from "../../src/WeightedMath.sol";
 import {IWeightedIndexFactory} from "../../src/interfaces/IWeightedIndexFactory.sol";
 import {IWeightedHub} from "../../src/interfaces/IWeightedHub.sol";
 import {IIndexHub} from "../../src/interfaces/IIndexHub.sol";
 import {IRebalanceExecutor} from "../../src/interfaces/IRebalanceExecutor.sol";
 import {Listings} from "../../script/Listings.sol";
 import {BaseAddresses as B} from "../../script/BaseAddresses.sol";
+import {PriceFeeds} from "../../script/PriceFeeds.sol";
+import {IPythPrices} from "../../src/interfaces/IPythPrices.sol";
+import {MockPyth} from "../mocks/MockPyth.sol";
 
 interface IWrappedEther {
     function deposit() external payable;
@@ -67,6 +71,12 @@ contract BaseStocksForkTest is Test {
     address constant CREATOR = address(uint160(uint256(keccak256("xindex.base-stocks.creator"))));
     address constant MINTER = address(uint160(uint256(keccak256("xindex.base-stocks.minter"))));
     address constant EXECUTOR_DEPLOYER = address(uint160(uint256(keccak256("xindex.base-stocks.executor-deployer"))));
+    address constant PYTH_DEPLOYER = address(uint160(uint256(keccak256("xindex.base-stocks.pyth-deployer"))));
+    address constant MATH_DEPLOYER = address(uint160(uint256(keccak256("xindex.base-stocks.math-deployer"))));
+    /// @dev The prices the simulation's Pyth answers, in dollars per whole token or share at 1e8: ether, and each share
+    ///      a Coinbase stock token stands for.
+    int64 constant ETH_PRICE = 2000e8;
+    int64 constant SHARE_PRICE = 100e8;
 
     struct Step {
         string what;
@@ -328,25 +338,45 @@ contract BaseStocksForkTest is Test {
     function _queueCreation() internal returns (address factory, uint256 created) {
         address[] memory legs = _legs();
         factory = vm.computeCreateAddress(DEPLOYER, vm.getNonce(DEPLOYER));
+        address pyth = vm.computeCreateAddress(PYTH_DEPLOYER, vm.getNonce(PYTH_DEPLOYER));
+        address math = vm.computeCreateAddress(MATH_DEPLOYER, vm.getNonce(MATH_DEPLOYER));
 
         times.push(block.timestamp + 12);
+        // A Pyth that answers every price as published at the block reading it: a filler's own update stands in for it,
+        // which this test cannot sign. The tokens, their multipliers and the reader are Base's and this build's.
+        _create("deploy a Pyth", PYTH_DEPLOYER, type(MockPyth).creationCode, WIDE_GAS);
+        for (uint256 i = 0; i < LEGS; ++i) {
+            bytes32 id = PriceFeeds.feedOf(B.CHAIN_ID, legs[i]).id;
+            int64 price = i == 0 ? ETH_PRICE : SHARE_PRICE;
+            _push("post a price", PYTH_DEPLOYER, pyth, abi.encodeCall(MockPyth.setLivePrice, (id, price, 0, -8)));
+        }
+        // The settlement arithmetic is deployed on its own, before the factory, as `DeployWeighted` deploys it.
+        _create("deploy the math", MATH_DEPLOYER, type(WeightedMath).creationCode, WIDE_GAS);
         _create(
             "deploy the factory",
             DEPLOYER,
-            abi.encodePacked(type(WeightedIndexFactory).creationCode, abi.encode(OWNER, address(0))),
+            abi.encodePacked(type(WeightedIndexFactory).creationCode, abi.encode(OWNER, address(0), pyth, math)),
             DEPLOY_GAS
         );
         for (uint256 i = 0; i < LEGS; ++i) {
             _wide("propose a listing", OWNER, factory, abi.encodeCall(IWeightedIndexFactory.proposeListing, (legs[i])));
+            IPythPrices.PriceFeed memory feed = PriceFeeds.feedOf(B.CHAIN_ID, legs[i]);
+            _wide(
+                "propose a feed",
+                OWNER,
+                factory,
+                abi.encodeCall(IWeightedIndexFactory.proposePriceFeed, (legs[i], feed))
+            );
         }
 
         times.push(times[0] + LISTING_DELAY + 1);
+        uint256[] memory weights = _weightsAtThePrices(legs);
         IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](LEGS);
         for (uint256 i = 0; i < LEGS; ++i) {
             _wide("execute a listing", OWNER, factory, abi.encodeCall(IWeightedIndexFactory.executeListing, (legs[i])));
-            // 900 for WETH and 910 for each of the ten stocks is 10,000.
+            _wide("execute a feed", OWNER, factory, abi.encodeCall(IWeightedIndexFactory.executePriceFeed, (legs[i])));
             specs[i] = IWeightedIndexFactory.ComponentSpec({
-                token: legs[i], weight: i == 0 ? 900 : 910, units: i == 0 ? U_WETH : U_STOCK
+                token: legs[i], weight: weights[i], units: i == 0 ? U_WETH : U_STOCK
             });
         }
         _push(
@@ -361,6 +391,30 @@ contract BaseStocksForkTest is Test {
             factory,
             abi.encodeCall(IWeightedIndexFactory.createIndex, ("Base Stocks", "BSTK", specs, _params()))
         );
+    }
+
+    /// @dev Each leg's share of a share's value, in basis points, at the simulation's prices: `createIndex` refuses a
+    ///      leg more than 5% off its weight. WETH's is U_WETH at ETH_PRICE; a stock's is U_STOCK at SHARE_PRICE times
+    ///      its multiplier, read from the node, eight for SNDKc. Each rounds down, and WETH takes what is left over, so
+    ///      every weight lies within a basis point of its leg's share.
+    function _weightsAtThePrices(address[] memory legs) internal returns (uint256[] memory weights) {
+        // Dollars a share at 1e18: 1e15 raw units of an 18-decimal ether at $2,000, and 1e6 raw units of an
+        // 8-decimal stock at $100 a share, times shares a token at 1e18.
+        uint256[] memory values = new uint256[](LEGS);
+        values[0] = U_WETH * uint256(int256(ETH_PRICE)) / 1e8;
+        uint256 total = values[0];
+        for (uint256 i = 1; i < LEGS; ++i) {
+            uint256 multiplier = abi.decode(_read(legs[i], abi.encodeWithSignature("multiplier()")), (uint256));
+            values[i] = U_STOCK * uint256(int256(SHARE_PRICE)) / 1e8 * multiplier / 1e8;
+            total += values[i];
+        }
+        weights = new uint256[](LEGS);
+        uint256 rest = 10_000;
+        for (uint256 i = 1; i < LEGS; ++i) {
+            weights[i] = values[i] * 10_000 / total;
+            rest -= weights[i];
+        }
+        weights[0] = rest;
     }
 
     /// @dev Queues `amount` of each stock sent to `to` by its holder.
@@ -402,6 +456,8 @@ contract BaseStocksForkTest is Test {
         uint256 supplyAfter;
         uint256 heldAfterRedeem;
         uint256 backAfterRedeem;
+        uint256 stockValue;
+        uint256 stockMultiplier;
     }
 
     Marks marks;
@@ -444,6 +500,14 @@ contract BaseStocksForkTest is Test {
         marks.paidToExecutor = _push("read the executor", MINTER, B.WETH, abi.encodeCall(IERC20.balanceOf, (executor)));
     }
 
+    /// @dev Queues the reader's value of one raw unit of SNDKc, which stood for eight shares that day, and its
+    ///      multiplier, read the same block.
+    function _queueValue(address factory) internal {
+        address prices = vm.computeCreateAddress(factory, 1);
+        marks.stockValue = _push("value SNDKc", MINTER, prices, abi.encodeCall(IPythPrices.valueOf, (B.SNDKC, true)));
+        marks.stockMultiplier = _push("read its multiplier", MINTER, B.SNDKC, abi.encodeWithSignature("multiplier()"));
+    }
+
     /// @dev Queues the exit: the minter redeems every share.
     function _queueExit(address index) internal {
         marks.redeemPreview =
@@ -455,18 +519,22 @@ contract BaseStocksForkTest is Test {
     }
 
     /// @dev The whole life of an index of WETH and Coinbase's ten stocks, run by Base's node on the real tokens.
-    ///      - The factory, deployed from this build's creation code, lists each token through its timelock; the
-    ///        proposal reads the token's decimals from the precompile.
+    ///      - The factory, deployed from this build's creation code with a Pyth that answers fresh prices, lists each
+    ///        token through its timelock, and sets each token's feed: the proposal reads the token's decimals from the
+    ///        precompile.
     ///      - An issue in kind pulls each stock from the minter and probes that the index can send it on (RW-8): a
     ///        contract the issuer never met receives a stock, sends itself one raw unit, and holds exactly what the
     ///        preview named.
     ///      - A fill takes WETH out and each stock in: the units are the ones the executor named, and every balance
     ///        moves by exactly the previewed amount, which is the probe that a bought leg can leave (RX-12) passing
     ///        on every stock.
+    ///      - The fill is checked against Pyth's prices too, each stock token valued as a `Multiplier`: its share's price
+    ///        times the multiplier `PythPrices` reads from the precompile, which the test reads back.
     ///      - The holder redeems everything at the new units, and the index is left with nothing it owes.
     function testFork_anIndexOfTheStocksLivesOnBasesNode() public {
         // A first run, to learn the index's address: creation is the same in the full run.
-        (, marks.created) = _queueCreation();
+        address factory;
+        (factory, marks.created) = _queueCreation();
         string memory json = _simulate();
         _assertAllSucceeded(json);
         address index = abi.decode(_answer(json, marks.created), (address));
@@ -474,6 +542,7 @@ contract BaseStocksForkTest is Test {
         _queueIssue(index);
         _queueRebalance(index);
         _queueExit(index);
+        _queueValue(factory);
         json = _simulate();
         _assertAllSucceeded(json);
         assertEq(abi.decode(_answer(json, marks.created), (address)), index, "the same index in both runs");
@@ -481,6 +550,10 @@ contract BaseStocksForkTest is Test {
         _assertIssued(json);
         _assertFilled(json);
         _assertRedeemed(json);
+        // Pyth's check read each stock at its share's price times its multiplier: $100 a share, eight shares a token.
+        uint256 multiplier = _uint(json, marks.stockMultiplier);
+        assertGt(multiplier, 1e18);
+        assertEq(_uint(json, marks.stockValue), uint256(uint64(SHARE_PRICE)) * 1e28 * multiplier / 1e26);
     }
 
     function _assertIssued(string memory json) internal view {

@@ -1,7 +1,9 @@
 // End-to-end test of the keeper on an anvil fork of Ethereum: real tokens and Uniswap V3 pools, the protocol's own
-// factory and hubs, which read no price, KeeperExecutor, and keeper.mjs running as its own process against a fake
-// Hermes this file serves. The keeper's prices are its own: it has the real Pyth contract confirm each one, against
-// five keys this test installs (see pnau.mjs).
+// factory and hubs, KeeperExecutor, and keeper.mjs running as its own process against a fake Hermes this file serves.
+// The factory is deployed with Pyth's real contract, so a creation must sit on its weights at Pyth's prices and every
+// fill must also bring in, at them, what the auction's tolerance asks; the keeper posts Pyth's update with each fill.
+// Every price, the keeper's own and the ones the hubs read, comes from updates Pyth's contract verifies against five
+// keys this test installs (see pnau.mjs).
 //
 // Opt-in, like the repo's fork suites: needs an archive RPC.
 //   forge build && forge build --root keeper        # at the repo root
@@ -43,6 +45,7 @@ import {
   numberToHex,
   parseAbi,
   toHex,
+  zeroAddress,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { mainnet } from "viem/chains";
@@ -65,6 +68,11 @@ const V3_FACTORY = "0x1F98431c8aD98523631AE4a59f267346ea31F984";
 const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
 const TOKEN_BRIDGE = "0x3ee18B2214AFF97000D974cf647E7C347E8fa585";
 const USDT = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
+const PYTH = "0x4305FB66699C3B2702D4d05CF36551390A4c69C6"; // Pyth's price contract on Ethereum (script/MainnetAddresses.sol)
+const pythAbi = parseAbi([
+  "function getUpdateFee(bytes[] updateData) view returns (uint256)",
+  "function updatePriceFeeds(bytes[] updateData) payable",
+]);
 const T = {
   WETH: { a: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", id: "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace", d: 18 },
   WBTC: { a: "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599", id: "0xc9d8b075a5c69303365ae23633d4e085199bf5c520a3b90fed1322a0342ffc33", d: 8 },
@@ -282,27 +290,67 @@ hermesServer = http
 // ---------------------------------------------------------------------
 
 step("protocol");
+// The settlement arithmetic is a contract of its own, which the factory's implementation calls. The factory is given
+// Pyth's contract, and deploys the price reader its hubs value fills through (`PythPrices`).
+const MATH = json(`${ROOT}out/WeightedMath.sol/WeightedMath.json`);
+const mathHash = await wallet.deployContract({ account: deployer, abi: MATH.abi, bytecode: MATH.bytecode.object, chain });
+const math = (await receiptOf(mathHash)).contractAddress;
 const factoryHash = await wallet.deployContract({
   account: deployer,
   abi: FACTORY.abi,
   bytecode: FACTORY.bytecode.object,
-  args: [owner, guardian],
+  args: [owner, guardian, PYTH, math],
   chain,
 });
 const factory = (await receiptOf(factoryHash)).contractAddress;
-for (const c of Object.values(T)) await send(owner, factory, FACTORY.abi, "proposeListing", [c.a]);
+ok((await read(factory, FACTORY.abi, "PRICES")) !== zeroAddress, "the factory has a price reader on Pyth's contract");
+// Every coin is listed, and given its Pyth feed, a plain token's (`FeedKind.Token`), both behind LISTING_DELAY.
+const TOKEN_FEED = 1;
+for (const c of Object.values(T)) {
+  await send(owner, factory, FACTORY.abi, "proposeListing", [c.a]);
+  await send(owner, factory, FACTORY.abi, "proposePriceFeed", [c.a, { id: c.id, kind: TOKEN_FEED }]);
+}
 await test.setNextBlockTimestamp({ timestamp: (await now()) + 2n * 86_400n + 1n });
 await test.mine({ blocks: 1 });
-for (const c of Object.values(T)) await send(owner, factory, FACTORY.abi, "executeListing", [c.a]);
+for (const c of Object.values(T)) {
+  await send(owner, factory, FACTORY.abi, "executeListing", [c.a]);
+  await send(owner, factory, FACTORY.abi, "executePriceFeed", [c.a]);
+}
 await send(owner, factory, FACTORY.abi, "setApprovedCreator", [creator, true]);
+
+/// Posts Pyth's update of `coins` at the test's prices, published now, as a creation or a fill must have it: the hubs
+/// read a price no older than MAX_PRICE_AGE. Anyone may post one, for Pyth's fee.
+async function postPrices(coins) {
+  const t = Number(await now());
+  const feeds = coins.map((c) => ({ id: c.id, ...prices.get(c.id.slice(2).toLowerCase()) }));
+  const update = [await encodeUpdate(feeds, t)];
+  const fee = await read(PYTH, pythAbi, "getUpdateFee", [update]);
+  const hash = await wallet.writeContract({ account: deployer, address: PYTH, abi: pythAbi, functionName: "updatePriceFeeds", args: [update], value: fee, chain });
+  if ((await receiptOf(hash)).status !== "success") throw new Error("Pyth refused the test's update");
+}
+
+/// The units of `coins` at `weights` (bps) for a share worth `value` dollars, at the test's prices.
+const unitsAt = (coins, weights, value) =>
+  coins.map((c, i) => BigInt(Math.max(10_000, Math.ceil(((weights[i] / 1e4) * value * 10 ** c.d) / usdOf(c)))));
+
+// A creation off its weights at Pyth's prices is refused: 90/10 by value for an index of 50/50 (OffWeights).
+{
+  const offUnits = unitsAt([T.WETH, T.UNI], [9000, 1000], 1000);
+  await postPrices([T.WETH, T.UNI]);
+  const specs = [T.WETH, T.UNI].map((c, i) => ({ token: c.a, weight: 5000n, units: offUnits[i] }));
+  const params = { creatorFeeBps: 0, creatorStreamingBps: 0, maxPlatformFeeBps: 25, maxPlatformStreamingBps: 100, rebalanceInterval: 7 * 24 * 3600, gated: false, listed: true };
+  const refused = await pub
+    .simulateContract({ account: creator, address: factory, abi: FACTORY.abi, functionName: "createIndex", args: ["OFF", "OFF", specs, params] })
+    .then(() => null, (error) => error);
+  ok(refused !== null && /OffWeights/.test(String(refused?.shortMessage ?? refused?.message ?? refused)), "a creation off its weights at Pyth's prices is refused (OffWeights)");
+}
 
 /// An index of `coins` with `weights` (bps), `shares` of it issued in kind, each share worth `value` dollars.
 async function createIndex(name, coins, weights, value, shares) {
-  const specs = coins.map((c, i) => ({
-    token: c.a,
-    weight: BigInt(weights[i]),
-    units: BigInt(Math.max(10_000, Math.ceil(((weights[i] / 1e4) * value * 10 ** c.d) / usdOf(c)))),
-  }));
+  const units = unitsAt(coins, weights, value);
+  const specs = coins.map((c, i) => ({ token: c.a, weight: BigInt(weights[i]), units: units[i] }));
+  // The creation reads every coin's price: on its weights within MAX_WEIGHT_DEVIATION, or refused.
+  await postPrices(coins);
   // No creator fee, any platform fee the policy charges, the shortest interval, open and listed.
   const params = {
     creatorFeeBps: 0,
@@ -551,7 +599,7 @@ async function settlement(index) {
   const logs = await pub.getContractEvents({ address: index, abi: HUB, eventName: "Rebalanced", fromBlock: BigInt(forkBlock) + 1n });
   const event = logs[logs.length - 1];
   const tx = await pub.getTransaction({ hash: event.transactionHash });
-  return { ...event.args, from: tx.from, call: decodeFunctionData({ abi: EXECUTOR.abi, data: tx.input }) };
+  return { ...event.args, from: tx.from, value: tx.value, call: decodeFunctionData({ abi: EXECUTOR.abi, data: tx.input }) };
 }
 for (const index of [LQ, MIX, SHR]) {
   const s = await settlement(index);
@@ -559,9 +607,15 @@ for (const index of [LQ, MIX, SHR]) {
     s.from.toLowerCase() === keeperAccount.address.toLowerCase() && s.gain >= s.bar && s.bar < 10n ** 16n,
     `${names[index]} filled by the keeper at a bar of ${Number(s.bar) / 1e18}, its gain ${Number(s.gain) / 1e18}`,
   );
+  // The hub valued the fill at Pyth's prices, read in the same transaction from the update the keeper posted.
+  ok(
+    s.call.functionName === "fill" && s.call.args[0].pythUpdate.length > 0 && s.value > 0n,
+    `${names[index]}'s fill carried Pyth's update and its fee (${s.value} wei)`,
+  );
 }
 const lq = await settlement(LQ);
-const [, , routes] = lq.call.args;
+// `fill(AuctionFill)` since the keeper posts Pyth's update with it (2026-11-23): one struct, its routes a field.
+const { routes } = lq.call.args[0];
 ok(
   routes.some((r, i) => lq.amountsIn[i] > 0n && (r.length - 2) / 2 === 66),
   "LQ's fill bought a coin along a two-hop route",

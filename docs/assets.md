@@ -16,9 +16,16 @@ waiver.
 ## What a listing records
 
 A listing records the token's decimals, read from the token when the listing is proposed, and nothing else. They only
-bound the units an index may start with (`maxUnitsOf`). No contract reads a price, so no listing carries a price id
-(since 2026-11-10). `script/PythIds.sol` still holds each coin's Pyth id with its feed's description, as the keeper's
-catalogue: the keeper prices its own trades off chain, and no contract or script reads the file.
+bound the units an index may start with (`maxUnitsOf`) and scale the token's price. A token's Pyth feed is set apart
+from its listing, since 2026-11-22: the owner proposes it (`proposePriceFeed(token, {id, kind})`), it takes effect
+after the same 2-day delay, and the guardian can cancel it. The kind says how the feed values the token: `Token`,
+the feed prices one whole token; `Vault`, the token is an ERC-4626 vault and the feed prices its asset; `Multiplier`,
+one token stands for `multiplier()` shares of what the feed prices. Unlike a listing, a feed reaches every index from
+the moment it is set, but it can only refuse: a token without a feed cannot be moved by a rebalance fill or put in a
+new index, and a wrong feed can do no more than pass a fill the units already accept
+([`design/2026-11-22-pyth-check.md`](../design/2026-11-22-pyth-check.md)). `script/PriceFeeds.sol` names each
+chain's feeds for `ConfigureWeighted`; `script/PythIds.sol` still holds each coin's Pyth id with its feed's
+description, as the keeper's own catalogue.
 
 ## Listing process
 
@@ -26,7 +33,8 @@ catalogue: the keeper prices its own trades off chain, and no contract or script
 - For the next 7 days (`PROPOSAL_WINDOW`) anyone can `executeListing`; after that the proposal expires.
 - Until it executes, the owner or guardian can `cancelListing`.
 - Either role can `delist` a token at any time. Delisting and relisting reach only indexes created afterwards: an
-  index's components and weights are fixed at its creation.
+  index's components are fixed at its creation, and its weights change only through its creator's proposal behind a
+  notice of 7 days.
 
 ## The list
 

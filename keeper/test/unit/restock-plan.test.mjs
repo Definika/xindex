@@ -57,9 +57,53 @@ test("usable stock and transfers already on their way count against the need", (
   const stock = new Map([[XRP.copy, { balance: 900n * E18, allowance: 600n * E18 }]]);
   const inflight = new Map([[XRP.copy, { in: 400n * E18, out: 0n }]]);
   assert.deepEqual(kinds(plan(round({ needs, stock, inflight }))), [], "600 usable and 400 coming cover it: the buffer is bought only with a shortfall");
-  const r = plan(round({ needs, stock: new Map([[XRP.copy, { balance: 900n * E18, allowance: 500n * E18 }]]), inflight }));
+  const r = plan(round({ needs, stock: new Map([[XRP.copy, { balance: 500n * E18, allowance: 500n * E18 }]]), inflight }));
   assert.deepEqual(kinds(r), ["buy"]);
   assert.equal(r.actions[0].usd, 400, "the 200 XRP missing is $400");
+});
+
+test("RZ-20: stock held beyond its stock allowance is not bought again: the owner is asked to raise the allowance", () => {
+  const needs = new Map([[XRP.copy, 800n * E18]]);
+  // 1,000 XRP in the executor, 200 of them deliverable: the coins are there, the allowance is not.
+  const held = plan(round({ needs, stock: new Map([[XRP.copy, { balance: 1_000n * E18, allowance: 200n * E18 }]]) }));
+  assert.deepEqual(kinds(held), [], "nothing bought, brought in or sent home");
+  assert.match(held.notes.join("\n"), new RegExp(`XRP: the executor holds 1600 USD of it beyond its stock allowance: the owner must raise it with setStockAllowance\\(${XRP.copy}`));
+  assert.doesNotMatch(held.notes.join("\n"), /setRestockAllowance/, "not the restock allowance, which only adds coins");
+  // The usual case: the coins arrived beyond the restock room, which is spent. The note named setRestockAllowance,
+  // and raising it bought coins the executor already held.
+  const spent = plan(
+    round({ needs, stock: new Map([[XRP.copy, { balance: 1_000n * E18, allowance: 200n * E18 }]]), restockAllowance: new Map([[XRP.copy, 0n]]) }),
+  );
+  assert.deepEqual(kinds(spent), []);
+  assert.match(spent.notes.join("\n"), /setStockAllowance/);
+  assert.doesNotMatch(spent.notes.join("\n"), /short|setRestockAllowance/);
+
+  // 300 held, 200 of them deliverable: only what the executor does not hold is bought, and the owner is told the rest.
+  const part = plan(round({ needs, stock: new Map([[XRP.copy, { balance: 300n * E18, allowance: 200n * E18 }]]) }));
+  assert.deepEqual(kinds(part), ["buy"]);
+  assert.equal(part.actions[0].amountOut, 580n * E18, "880 wanted less the 300 held, not less the 200 deliverable");
+  assert.match(part.notes.join("\n"), /XRP: the executor holds 200 USD of it beyond its stock allowance/);
+});
+
+test("RZ-21: coins at home worth less than RESTOCK_MIN_USD wait for the round's buy, to come in with its coins", () => {
+  const needs = new Map([[XRP.copy, 1_000n * E18]]);
+  const home = (n) => ({ ...round().home, coins: new Map([["XRP", n * E18]]) });
+  // 20 XRP at home, $40: the buy of the other 1,080 lands beside them, and the next round brings all 1,100 in at once.
+  const r = plan(round({ needs, home: home(20n) }));
+  assert.deepEqual(kinds(r), ["buy"], "no transfer, and an Ethereum redeem, for $40 on its own");
+  assert.equal(r.actions[0].amountOut, 1_080n * E18, "the buy still counts them");
+  assert.match(r.notes.join("\n"), /XRP: 40 USD at home waits to come in with the coins this round buys/);
+  const next = plan(round({ needs, home: home(1_100n) }));
+  assert.deepEqual(kinds(next), ["bridgeIn"]);
+  assert.equal(next.actions[0].amount, 1_100n * E18, "one transfer for both");
+
+  // With nothing to buy, what the home wallet holds comes in however small: it is what the fills wait for.
+  const small = plan(round({ needs: new Map([[XRP.copy, 10n * E18]]), home: home(20n) }));
+  assert.deepEqual(kinds(small), ["bridgeIn"]);
+  assert.equal(small.actions[0].amount, 11n * E18, "the need and its buffer, $22");
+  // A buy that waits for its float does not hold them back either.
+  const waiting = plan(round({ needs, home: { ...home(20n), floats: new Map([["bsc", 0n]]) } }));
+  assert.deepEqual(kinds(waiting), ["bridgeIn"]);
 });
 
 test("a small shortfall still buys RESTOCK_MIN_USD, so fees do not eat it", () => {

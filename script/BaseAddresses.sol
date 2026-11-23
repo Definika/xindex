@@ -167,6 +167,11 @@ library BaseAddresses {
     address internal constant POOL_MANAGER = 0x498581fF718922c3f8e6A244956aF099B2652b2b;
     /// @dev Uniswap V3's factory on Base, where `CheckToken` looks up a token's Uniswap pools.
     address internal constant UNISWAP_V3_FACTORY = 0x33128a8fC17869897dcE68Ed026d694621f6FDfD;
+    /// @dev Pyth's price contract, a proxy, through which the factory's `PythPrices` reads the price a fill is checked
+    ///      against (the owner's call of 2026-11-22). A filler posts a fresh update to it in its own transaction. Read
+    ///      on chain that day: it answers `priceFeedExists` for ETH/USD, and `DeployChecks` resolves it as it does the
+    ///      router.
+    address internal constant PYTH = 0x8250f4aF4B972684F7b336503E2D6dFeDeB1487a;
 
     /// @notice Every coin of the list: the two issued on Base, ZRO, the bridge's copies in the order Ethereum's list
     ///         holds their coins, the Coinbase Wrapped coins, then Coinbase's stocks.

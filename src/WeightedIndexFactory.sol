@@ -3,13 +3,15 @@ pragma solidity 0.8.28;
 
 import {Ownable, Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IWeightedIndexFactory} from "./interfaces/IWeightedIndexFactory.sol";
 import {IWeightedHub} from "./interfaces/IWeightedHub.sol";
+import {IPythPrices} from "./interfaces/IPythPrices.sol";
 import {WeightedHub} from "./WeightedHub.sol";
-import {WeightedMath} from "./WeightedMath.sol";
+import {PythPrices} from "./PythPrices.sol";
 
 /// @title WeightedIndexFactory
 /// @notice An account the owner approved creates an index here, choosing each component's weight. Components come
@@ -23,11 +25,19 @@ import {WeightedMath} from "./WeightedMath.sol";
 ///        It can cancel its own removal, but the owner can still replace it with another address.
 ///      - Owner and guardian can cancel a pending rebalance on any index, and start one that leaves chosen components
 ///        untouched.
-///      - Neither role can pause, upgrade, set units or weights, or touch funds held by any index. Ownership cannot
+///      - Either role can pause the issue of new shares, on one index or on all, and only the owner resumes it: the
+///        brake for an index or a build found to have a fault. It is read by an issue and by nothing else, so no
+///        redeem, claim, transfer or rebalance can be paused, by anyone.
+///      - Neither role can pause an exit, upgrade, set units or weights, or touch funds held by any index. Ownership cannot
 ///        be renounced.
 ///
 ///      Prices
-///      - There are none: neither the factory nor an index reads a price, and a listing carries no feed.
+///      - No issue, redeem or claim reads one. A rebalance fill is checked against Pyth's prices through `PRICES`,
+///        which the constructor deploys with the chain's Pyth contract, at the feed {priceFeedOf} names for each
+///        token, and that check can only refuse a fill the units accept.
+///      - The owner sets a token's feed behind LISTING_DELAY, as a listing, and the guardian can cancel it. A feed
+///        reaches every index from the moment it is set, unlike a listing: a wrong one can only stop fills that move
+///        the token, or let one through that the units already accept, never take anything the units forbid.
 ///      - A listing records the token's decimals, which only bound the units an index may start with. An index's
 ///        components and weights are fixed at creation, so no later listing or delisting reaches it. Its units are
 ///        the creator's at creation and move afterwards: a settlement writes new ones, and a streaming fee scales
@@ -40,6 +50,11 @@ import {WeightedMath} from "./WeightedMath.sol";
 ///      - So an address can never hold a different basket or different terms, even after a re-org. An app can show
 ///        the address before the transaction confirms, unless a policy change lands first: it changes the salt, and
 ///        the index deploys at another address (RZ-28).
+///      - A creation may carry the index's first issue: creating the index is then buying it. The new index pulls
+///        the basket from the creator, who approved that address before it existed. Only this factory can deploy
+///        there, and only for that creator, since the salt names it, so nobody else can spend such an approval. The
+///        first issue's shares and recipient are not terms of the index and not in the salt. The factory itself
+///        still calls no token.
 ///
 ///      Fees
 ///      - The owner sets a policy: the platform's fee, the referrer's share of it, the recipient, and a creation fee
@@ -81,6 +96,10 @@ import {WeightedMath} from "./WeightedMath.sol";
 contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, ReentrancyGuard {
     uint256 public constant MIN_COMPONENTS = 2;
     uint256 public constant MAX_COMPONENTS = 200;
+    /// @inheritdoc IWeightedIndexFactory
+    uint256 public constant MAX_WEIGHT_DEVIATION = 0.05e18;
+    /// @inheritdoc IWeightedIndexFactory
+    uint256 public constant WEIGHTS_DELAY = 7 days;
     uint256 public constant TOTAL_WEIGHT = 1e4;
     uint256 public constant MIN_RAW_UNITS = 1e4;
     uint256 public constant MAX_UNITS = type(uint96).max >> 10;
@@ -95,6 +114,8 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
     uint256 public constant MIN_REBALANCE_INTERVAL = 7 days;
     uint256 public constant MAX_REBALANCE_INTERVAL = 91 days;
     address public immutable IMPLEMENTATION;
+    /// @inheritdoc IWeightedIndexFactory
+    address public immutable PRICES;
 
     uint8 private constant MAX_DECIMALS = 18;
     uint256 private constant BPS = 1e4;
@@ -113,6 +134,13 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
     mapping(address token => uint256 eta) public listingEta;
     /// @dev The decimals a pending listing read from its token when it was proposed.
     mapping(address token => uint8 decimals) private _pendingDecimals;
+    mapping(address token => IPythPrices.PriceFeed feed) private _priceFeeds;
+    /// @dev Each index's pending change of weights, and when it applies (`weightsEta`).
+    mapping(address index => uint256[] weights) private _pendingWeights;
+    /// @inheritdoc IWeightedIndexFactory
+    mapping(address index => uint256 eta) public weightsEta;
+    mapping(address token => IPythPrices.PriceFeed feed) private _pendingPriceFeeds;
+    mapping(address token => uint256 eta) private _priceFeedEta;
 
     /// @inheritdoc IWeightedIndexFactory
     mapping(address account => bool approved) public isApprovedCreator;
@@ -125,6 +153,8 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
     mapping(address index => bool gated) public isGated;
     /// @inheritdoc IWeightedIndexFactory
     mapping(address index => mapping(address account => bool allowed)) public isAllowedMinter;
+    /// @inheritdoc IWeightedIndexFactory
+    mapping(address index => bool paused) public mintingPaused;
 
     /// @inheritdoc IWeightedIndexFactory
     uint16 public platformFeeBps;
@@ -144,12 +174,20 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
 
     // A zero guardian is allowed on purpose: it means the factory starts without one.
     // forge-lint: disable-next-item(missing-zero-check)
-    constructor(address initialOwner, address initialGuardian) Ownable(initialOwner) {
+    /// @param pyth Pyth's price contract on this chain, or zero for a factory whose fills no price checks: the deploy
+    ///        script refuses zero, and any address but the chain's own, on every chain it pins.
+    constructor(address initialOwner, address initialGuardian, address pyth, address math) Ownable(initialOwner) {
         // A zero guardian is allowed on purpose, as above.
         // aderyn-fp-next-line(state-no-address-check)
         guardian = initialGuardian;
         emit GuardianSet(address(0), initialGuardian);
-        IMPLEMENTATION = address(new WeightedHub(address(new WeightedMath())));
+        // The math is deployed on its own, before the factory: deployed here as well, the factory's init code passed
+        // EIP-3860's 49,152 bytes once weights could change (2026-11-23). It is stateless, and the deploy script and
+        // `checkDeployment` pin its code as they pin the factory's.
+        if (math.code.length == 0) revert NotAContract(math);
+        address prices = pyth == address(0) ? address(0) : address(new PythPrices(pyth));
+        PRICES = prices;
+        IMPLEMENTATION = address(new WeightedHub(math, prices));
     }
 
     // ---------------------------------------------------------------------
@@ -163,15 +201,52 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         ComponentSpec[] calldata components,
         IndexParams calldata params
     ) external payable nonReentrant returns (address index) {
+        _checkApprovedCreator();
+        return _createIndex(name, symbol, components, params, IWeightedHub.FirstIssue(address(0), 0, address(0)));
+    }
+
+    /// @inheritdoc IWeightedIndexFactory
+    function createAndIssue(
+        string calldata name,
+        string calldata symbol,
+        ComponentSpec[] calldata components,
+        IndexParams calldata params,
+        uint256 shares,
+        address to
+    ) external payable nonReentrant returns (address index) {
+        _checkApprovedCreator();
+        // Zero shares would create the index with none, which is {createIndex}'s to say.
+        if (shares == 0) revert IWeightedHub.ZeroShares();
+        // The payer is the caller and nobody else: the index pulls the first basket from the account named here.
+        return _createIndex(name, symbol, components, params, IWeightedHub.FirstIssue(msg.sender, shares, to));
+    }
+
+    /// @dev Reverts unless the caller is an account the owner approved to create indexes. Both creation entry points
+    ///      call it first.
+    function _checkApprovedCreator() private view {
         if (!isApprovedCreator[msg.sender]) revert CreatorNotApproved(msg.sender);
-        // The reentrancy guard covers the creation fee's transfer at the end: the only call here into an address the
-        // factory did not deploy. Validation only reads storage, and initializing our own clone makes no external call.
+    }
+
+    /// @dev Creates an index for the caller, an approved creator, and, when `first` names shares, has the index issue
+    ///      them in its initializer.
+    function _createIndex(
+        string calldata name,
+        string calldata symbol,
+        ComponentSpec[] calldata components,
+        IndexParams calldata params,
+        IWeightedHub.FirstIssue memory first
+    ) private returns (address index) {
+        // The reentrancy guard covers the two calls here into addresses the factory did not deploy: the creation
+        // fee's transfer at the end, and, in a creation with a first issue, the components the new index pulls from
+        // the creator. The factory itself calls no token. Validation only reads storage and Pyth's prices, and every
+        // write of this creation is made before the clone is initialized.
         if (bytes(name).length == 0 || bytes(symbol).length == 0) revert EmptyString();
         if (msg.value != creationFee) revert WrongCreationFee(msg.value, creationFee);
         // Read before the clone is initialized, so no factory state is read after an external call.
         address recipient = platformFeeRecipient;
         IWeightedHub.ComponentInit[] memory inits = _componentInits(components);
         _validateComponents(components, inits);
+        if (PRICES != address(0)) _checkOnWeights(inits);
         IWeightedHub.Config memory config = _checkedConfig(params);
 
         bytes32 salt = _salt(msg.sender, keccak256(bytes(name)), keccak256(bytes(symbol)), _contentsHash(inits, config));
@@ -182,7 +257,7 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         // forge-lint: disable-next-line(reentrancy-events)
         emit IndexCreated(index, msg.sender, name, symbol, inits, config, params.listed);
 
-        _initializeIndex(index, salt, name, symbol, inits, config);
+        _initializeIndex(index, salt, name, symbol, inits, config, first);
 
         // Last, and only if the policy charges a fee. The owner picks the recipient. One that refuses ether
         // (OpenZeppelin's FailedCall) blocks only creation, until the owner names another.
@@ -279,6 +354,14 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         // CreatorTransferred, on the next line, records the offer taken.
         // forge-lint: disable-next-line(missing-events-access-control)
         delete pendingCreatorOf[index];
+        // A change of weights the outgoing creator proposed goes with the role: left pending, it would take effect
+        // under the new creator, who never proposed it and would have to notice it to cancel it (HK-16).
+        if (weightsEta[index] != 0) {
+            delete weightsEta[index];
+            delete _pendingWeights[index];
+            // forge-lint: disable-next-line(reentrancy-events)
+            emit WeightsCancelled(index);
+        }
         // Only the accrual on this factory's own clone precedes it, and that runs no other account's code.
         // forge-lint: disable-next-line(reentrancy-events)
         emit CreatorTransferred(index, previous, msg.sender);
@@ -299,6 +382,20 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         emit MintingOpened(index);
     }
 
+    /// @inheritdoc IWeightedIndexFactory
+    function pauseMinting(address index) external onlyOwnerOrGuardian {
+        // Zero names every index; anything else must be one of them, so a mistyped address pauses nothing unseen.
+        if (index != address(0) && !isIndex[index]) revert NotIndex(index);
+        mintingPaused[index] = true;
+        emit MintingPaused(index, msg.sender);
+    }
+
+    /// @inheritdoc IWeightedIndexFactory
+    function resumeMinting(address index) external onlyOwner {
+        mintingPaused[index] = false;
+        emit MintingResumed(index);
+    }
+
     /// @dev Reverts unless the caller is `index`'s creator. An address the factory did not deploy has no creator, so it
     ///      is refused first.
     function _checkCreator(address index) private view {
@@ -313,8 +410,10 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         returns (bool allowed, address creator, address platform)
     {
         creator = creatorOf[index];
-        // A gated index's creator mints it without an allowlist entry, which it could give itself anyway.
-        allowed = !isGated[index] || to == creator || isAllowedMinter[index][to];
+        // No index issues while minting is paused, on it or on every index. A gated index's creator mints it without
+        // an allowlist entry, which it could give itself anyway.
+        allowed = !mintingPaused[address(0)] && !mintingPaused[index]
+            && (!isGated[index] || to == creator || isAllowedMinter[index][to]);
         platform = platformFeeRecipient;
     }
 
@@ -345,20 +444,23 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         return IMPLEMENTATION;
     }
 
-    /// @dev Initializes a fresh clone. The salt is unused here; it is kept for an override that records it.
+    /// @dev Initializes a fresh clone, which issues `first`'s shares if it names any. The salt is unused here; it is
+    ///      kept for an override that records it.
     function _initializeIndex(
         address index,
         bytes32,
         string calldata name,
         string calldata symbol,
         IWeightedHub.ComponentInit[] memory inits,
-        IWeightedHub.Config memory config
+        IWeightedHub.Config memory config,
+        IWeightedHub.FirstIssue memory first
     ) internal virtual {
         // Safe: `createIndex` is nonReentrant, the clone runs this factory's own implementation, and the only later
-        // interaction (the creation fee's transfer) reads no state. Wake's reentrancy detector does not model the
-        // guard.
+        // interaction (the creation fee's transfer) reads no state. A first issue has the clone call the components,
+        // under its own guard and after every write of the creation. Wake's reentrancy detector does not model the
+        // guards.
         // wake-disable-next-line reentrancy
-        IWeightedHub(index).initialize(name, symbol, inits, config);
+        IWeightedHub(index).initialize(name, symbol, inits, config, first);
     }
 
     /// @inheritdoc IWeightedIndexFactory
@@ -396,11 +498,11 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
     }
 
     /// @dev Validates `components` against the whitelist, the unit and weight bounds and the duplicate rule. The
-    ///      duplicate check compares `inits` in memory: comparing calldata structs cost 1.9M gas at a hundred
-    ///      components.
+    ///      duplicate check marks each token in transient storage (EIP-1153) and clears the marks before returning:
+    ///      one pass, where comparing every pair cost 2.7M gas at two hundred components, gas the creation's price
+    ///      check needs (MAX_WEIGHT_DEVIATION).
     function _validateComponents(ComponentSpec[] calldata components, IWeightedHub.ComponentInit[] memory inits)
         private
-        view
     {
         uint256 n = components.length;
         if (n < MIN_COMPONENTS || n > MAX_COMPONENTS) revert InvalidComponentCount(n);
@@ -416,11 +518,65 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
             }
             if (c.weight == 0 || c.weight > TOTAL_WEIGHT) revert InvalidWeights();
             total += c.weight;
-            for (uint256 j = 0; j < i; ++j) {
-                if (inits[j].token == token) revert DuplicateToken(token);
-            }
+            if (_seen(token)) revert DuplicateToken(token);
         }
         if (total != TOTAL_WEIGHT) revert InvalidWeights();
+        for (uint256 i = 0; i < n; ++i) {
+            _unsee(inits[i].token);
+        }
+    }
+
+    /// @dev Marks `token` as seen in this transaction and returns whether it already was. The mark lives in transient
+    ///      storage at the token's address as its key; nothing else here uses transient storage, a revert undoes the
+    ///      mark with the rest of the call, and {_unsee} clears it, so a second creation in one transaction starts
+    ///      with none.
+    function _seen(address token) private returns (bool already) {
+        // Transient storage has no Solidity mapping in 0.8.28: tload and tstore only, keyed by the token's address.
+        // forge-lint: disable-next-line(inline-assembly)
+        assembly ("memory-safe") {
+            already := tload(token)
+            tstore(token, 1)
+        }
+    }
+
+    /// @dev Clears {_seen}'s mark of `token`.
+    function _unsee(address token) private {
+        // As {_seen}: tstore, at the token's address.
+        // forge-lint: disable-next-line(inline-assembly)
+        assembly ("memory-safe") {
+            tstore(token, 0)
+        }
+    }
+
+    /// @dev Each component's share of the new index's value at Pyth's prices lies within MAX_WEIGHT_DEVIATION of its
+    ///      weight, relative to the weight, or the creation reverts OffWeights: the units the creator names start the
+    ///      index on its weights, as a price can show it. Each unit is valued as arriving, Pyth's price less its
+    ///      confidence; a stale or missing price reverts, so a creator posts Pyth's update first. Exact in integers:
+    ///      a value is at most 2^214 (MAX_UNITS times the reader's largest value), so the sums and products below fit.
+    function _checkOnWeights(IWeightedHub.ComponentInit[] memory inits) private view {
+        uint256 n = inits.length;
+        address[] memory tokens = new address[](n);
+        IPythPrices.PriceFeed[] memory feeds = new IPythPrices.PriceFeed[](n);
+        uint8[] memory decimals = new uint8[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            address token = inits[i].token;
+            (tokens[i], feeds[i], decimals[i]) = (token, _priceFeeds[token], decimalsOf[token]);
+        }
+        uint256[] memory values = IPythPrices(PRICES).valuesWith(tokens, feeds, decimals, false);
+        uint256 total = 0;
+        for (uint256 i = 0; i < n; ++i) {
+            values[i] *= inits[i].units;
+            total += values[i];
+        }
+        for (uint256 i = 0; i < n; ++i) {
+            uint256 share = values[i] * TOTAL_WEIGHT;
+            uint256 target = inits[i].weight * total;
+            uint256 gap = share > target ? share - target : target - share;
+            // the allowance rounds down, against the creator
+            if (gap > Math.mulDiv(target, MAX_WEIGHT_DEVIATION, 1e18)) {
+                revert OffWeights(inits[i].token, inits[i].weight, share / total);
+            }
+        }
     }
 
     /// @dev The most units a component of `decimals` may start with: MAX_WHOLE_TOKENS whole tokens per share, and never
@@ -535,6 +691,115 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         _whitelist.pop();
         delete _whitelistPos[token];
         emit TokenWhitelisted(token, false);
+    }
+
+    // ---------------------------------------------------------------------
+    // Changing an index's weights
+    // ---------------------------------------------------------------------
+
+    /// @inheritdoc IWeightedIndexFactory
+    function pendingWeights(address index) external view returns (uint256[] memory weights, uint256 eta) {
+        return (_pendingWeights[index], weightsEta[index]);
+    }
+
+    /// @inheritdoc IWeightedIndexFactory
+    /// @dev Only on a factory with an oracle: a change opens a distance between the units and the weights, which Pyth's
+    ///      check on every fill bounds to its tolerance; on units alone the creator could take that distance through
+    ///      its own auction (the design rule "An index is created on its weights").
+    function proposeWeights(address index, uint256[] calldata weights) external {
+        if (!isIndex[index]) revert NotIndex(index);
+        if (msg.sender != creatorOf[index]) revert Unauthorized(msg.sender);
+        if (PRICES == address(0)) revert NoOracle();
+        // A view on our own clone, by STATICCALL: nothing it reaches can change state, so nothing re-enters.
+        // aderyn-fp-next-line(reentrancy-state-change)
+        if (weights.length != IWeightedHub(index).componentWeights().length) revert InvalidWeights();
+        uint256 total = 0;
+        for (uint256 i = 0; i < weights.length; ++i) {
+            uint256 weight = weights[i];
+            if (weight == 0 || weight > TOTAL_WEIGHT) revert InvalidWeights();
+            total += weight;
+        }
+        if (total != TOTAL_WEIGHT) revert InvalidWeights();
+        uint256 eta = block.timestamp + WEIGHTS_DELAY;
+        _pendingWeights[index] = weights;
+        weightsEta[index] = eta;
+        emit WeightsProposed(index, weights, eta);
+    }
+
+    /// @inheritdoc IWeightedIndexFactory
+    function cancelWeights(address index) external {
+        if (msg.sender != creatorOf[index] && !isOwnerOrGuardian(msg.sender)) revert Unauthorized(msg.sender);
+        if (weightsEta[index] == 0) revert NoPendingWeights(index);
+        delete weightsEta[index];
+        delete _pendingWeights[index];
+        emit WeightsCancelled(index);
+    }
+
+    /// @inheritdoc IWeightedIndexFactory
+    // The index emits WeightsChanged in the same call, as the one place the weights change.
+    // aderyn-fp-next-line(state-change-without-event)
+    function executeWeights(address index) external nonReentrant {
+        uint256 eta = weightsEta[index];
+        if (eta == 0) revert NoPendingWeights(index);
+        if (block.timestamp < eta) revert WeightsNotReady(index, eta);
+        if (block.timestamp > eta + PROPOSAL_WINDOW) revert WeightsExpired(index, eta + PROPOSAL_WINDOW);
+        uint256[] memory weights = _pendingWeights[index];
+        delete weightsEta[index];
+        delete _pendingWeights[index];
+        IWeightedHub(index).setWeights(weights);
+    }
+
+    // ---------------------------------------------------------------------
+    // Price feeds
+    // ---------------------------------------------------------------------
+
+    /// @inheritdoc IWeightedIndexFactory
+    function priceFeedOf(address token) external view returns (IPythPrices.PriceFeed memory) {
+        return _priceFeeds[token];
+    }
+
+    /// @inheritdoc IWeightedIndexFactory
+    function pendingPriceFeed(address token) external view returns (IPythPrices.PriceFeed memory feed, uint256 eta) {
+        return (_pendingPriceFeeds[token], _priceFeedEta[token]);
+    }
+
+    /// @inheritdoc IWeightedIndexFactory
+    function proposePriceFeed(address token, IPythPrices.PriceFeed calldata feed) external onlyOwner {
+        address prices = PRICES;
+        if (prices == address(0)) revert NoOracle();
+        // Pyth's contract on a chain knows a feed only once someone has posted an update of it there, so the factory
+        // does not ask: on BNB Chain 343 of the 364 feeds had never been posted (2026-11-23), and a creation and a fill
+        // each post their own. A wrong id can only refuse, as a missing price does.
+        if ((feed.kind == IPythPrices.FeedKind.None) != (feed.id == bytes32(0))) revert InvalidPriceFeed(feed.id);
+        uint256 pending = _priceFeedEta[token];
+        if (pending != 0 && block.timestamp <= pending + PROPOSAL_WINDOW) revert PriceFeedPending(token, pending);
+
+        uint256 eta = block.timestamp + LISTING_DELAY;
+        _priceFeedEta[token] = eta;
+        _pendingPriceFeeds[token] = feed;
+        emit PriceFeedProposed(token, feed.id, feed.kind, eta);
+    }
+
+    /// @inheritdoc IWeightedIndexFactory
+    function cancelPriceFeed(address token) external onlyOwnerOrGuardian {
+        if (_priceFeedEta[token] == 0) revert NoPendingPriceFeed(token);
+        delete _priceFeedEta[token];
+        delete _pendingPriceFeeds[token];
+        emit PriceFeedCancelled(token);
+    }
+
+    /// @inheritdoc IWeightedIndexFactory
+    function executePriceFeed(address token) external {
+        uint256 eta = _priceFeedEta[token];
+        if (eta == 0) revert NoPendingPriceFeed(token);
+        if (block.timestamp < eta) revert PriceFeedNotReady(token, eta);
+        if (block.timestamp > eta + PROPOSAL_WINDOW) revert PriceFeedExpired(token, eta + PROPOSAL_WINDOW);
+
+        IPythPrices.PriceFeed memory feed = _pendingPriceFeeds[token];
+        delete _priceFeedEta[token];
+        delete _pendingPriceFeeds[token];
+        _priceFeeds[token] = feed;
+        emit PriceFeedSet(token, feed.id, feed.kind);
     }
 
     // ---------------------------------------------------------------------

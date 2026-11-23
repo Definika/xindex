@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { MAX_REQUEST_CHECKS, applyScan, fillableRequests, requestUsd, stableLeg } from "../../bot/math.mjs";
+import { MAX_REQUEST_CHECKS, MAX_SCAN_READS, applyScan, fillableRequests, requestUsd, scanIds, stableLeg } from "../../bot/math.mjs";
 import { parseConfig } from "../../bot/config.mjs";
 
 const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
@@ -107,6 +107,40 @@ test("XS-11: a failed read keeps what was known and holds the scan before it", (
   // An expired request is dropped like a closed one.
   const third = applyScan({ known, scanned: 6n, count: 6n, ids: [4n], results: [open({ deadline: 999n })], T: 1_000n });
   assert.deepEqual(third.closed, [4n]);
+});
+
+test("RZ-10: a scan reads at most MAX_SCAN_READS requests, and every known one again within a few scans", () => {
+  const range = (from, to) => Array.from({ length: Number(to - from) + 1 }, (_, k) => from + BigInt(k));
+  // Few requests: everything is read, the forgotten one first, then the new ids, then the known ones.
+  const few = new Map([[1n, request()], [2n, request()]]);
+  assert.deepEqual(scanIds({ known: few, recheck: new Set([7n]), scanned: 4n, count: 6n }).ids, [7n, 5n, 6n, 1n, 2n]);
+  assert.deepEqual(scanIds({ known: few, recheck: new Set([2n]), scanned: 2n, count: 2n }).ids, [1n, 2n], "a recheck still known is read as known");
+
+  // A stranger's 5,000 new requests: the scan stops at the budget, the known ones keeping their share of it, and the
+  // frontier moves over what it read, in order.
+  const known = new Map(range(1n, 10n).map((id) => [id, request()]));
+  const flood = scanIds({ known, scanned: 10n, count: 5_010n });
+  assert.equal(flood.ids.length, MAX_SCAN_READS, "never past the budget");
+  assert.deepEqual(flood.ids.slice(0, 990), range(11n, 1_000n), "the new ids from the frontier, in order");
+  assert.deepEqual(flood.ids.slice(990), range(1n, 10n), "and every known one");
+  // With more known requests than half the budget, the new ones get the other half.
+  const crowd = new Map(range(1n, 2_000n).map((id) => [id, request()]));
+  const half = scanIds({ known: crowd, scanned: 2_000n, count: 9_000n });
+  assert.deepEqual(half.ids.slice(0, 500), range(2_001n, 2_500n));
+  assert.equal(half.ids.length, MAX_SCAN_READS);
+
+  // 5,000 of them open and known, with ten new: the new ten, then the known ones round their list, scan after scan.
+  const many = new Map(range(1n, 5_000n).map((id) => [id, request()]));
+  let cursor = 0;
+  const reread = new Set();
+  for (let scan = 0; scan < 6; scan++) {
+    const s = scanIds({ known: many, scanned: 5_000n + BigInt(10 * scan), count: 5_010n + BigInt(10 * scan), cursor });
+    assert.ok(s.ids.length <= MAX_SCAN_READS, "never past the budget");
+    assert.deepEqual(s.ids.slice(0, 10), range(5_001n + BigInt(10 * scan), 5_010n + BigInt(10 * scan)), "the new requests first");
+    for (const id of s.ids.slice(10)) reread.add(id);
+    cursor = s.cursor;
+  }
+  assert.equal(reread.size, 5_000, "every known request read again within six scans");
 });
 
 test("a stablecoin other than USDC is sold for a mint and bought for a redeem", () => {

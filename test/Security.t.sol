@@ -102,6 +102,7 @@ interface IXindexCore is IWeightedIndexFactory, IWeightedHub {
     function MAX_COMPONENTS() external view override(IWeightedIndexFactory, IWeightedHub) returns (uint256);
     function TOTAL_WEIGHT() external view override(IWeightedIndexFactory, IWeightedHub) returns (uint256);
     function MIN_REBALANCE_INTERVAL() external view override(IWeightedIndexFactory, IWeightedHub) returns (uint256);
+    function PRICES() external view override(IWeightedIndexFactory, IWeightedHub) returns (address);
 }
 
 /// @notice One regression test per finding of the Xindex v1 security review and of the v2 rebalancing design review,

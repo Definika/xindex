@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
+import {WeightedMath} from "../src/WeightedMath.sol";
 import {Test} from "forge-std/Test.sol";
 import {WeightedIndexFactory} from "../src/WeightedIndexFactory.sol";
 import {WeightedHub} from "../src/WeightedHub.sol";
@@ -36,7 +37,7 @@ abstract contract WeightedTest is Test {
 
     function _deploy() internal {
         vm.warp(1_800_000_000);
-        factory = new WeightedIndexFactory(owner, guardian);
+        factory = new WeightedIndexFactory(owner, guardian, address(0), address(new WeightedMath()));
         _approveCreator(creator);
         eth = new MockERC20("Ether", "ETH", 18);
         btc = new MockERC20("Bitcoin", "BTC", 8);

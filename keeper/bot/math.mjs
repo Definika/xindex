@@ -152,9 +152,11 @@ export function startStage({ can, eta, earliest, T, lead }) {
   return null;
 }
 
-/// What a fill costs in dollars: its gas at the next block's base fee plus the tip. Nothing else is paid: no call of
-/// the hub takes ether.
-export const fillCostUsd = ({ used, nextBase, tip, ethUsd }) => (Number(used * (nextBase + tip)) / 1e18) * ethUsd;
+/// What a fill costs in dollars: its gas at the next block's base fee plus the tip, and `value`, the ether it
+/// carries, which is Pyth's fee for the update an auction fill posts on a factory with an oracle. No call of the hub
+/// takes ether.
+export const fillCostUsd = ({ used, nextBase, tip, ethUsd, value = 0n }) =>
+  (Number(used * (nextBase + tip) + value) / 1e18) * ethUsd;
 
 /// Calldata tokens as EIP-7623 counts them: a zero byte is one token, any other byte four.
 export function calldataTokens(hex) {
@@ -332,6 +334,33 @@ export function settledSince(r, at) {
 /// multicall entries, `count` the requests made so far and `scanned` the last id read before. A read that failed is
 /// unknown, not closed: a known request stays known, and `scanned` advances only past the ids from `scanned + 1` read
 /// without a gap, so a failed one is read again at the next scan. Returns `{scanned, failed, closed}`.
+/// The most requests one scan reads. `MintRequests` takes a request of one raw unit with a 30-day deadline from
+/// anyone, so without a bound a stranger's requests grew every scan's reads, and its RPC calls, with no limit (RZ-10).
+export const MAX_SCAN_READS = 1_000;
+
+/// The ids one scan reads, at most `budget` of them, in order: those a fill forgot, read once more (RZ-13); every id
+/// from `scanned + 1` on, known or not, so the scan's frontier moves over what it read; then the known open requests
+/// from `cursor` on, round their list, so each is read again within a few scans however many there are. The new ids
+/// leave at least half the budget to the known ones, so a request that closes while a stranger's arrive is still seen
+/// closed. Returns the ids, and the cursor the next scan starts the known ones at.
+export function scanIds({ known, recheck = [], scanned, count, cursor = 0, budget = MAX_SCAN_READS }) {
+  const ids = [];
+  const seen = new Set();
+  const take = (id) => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    ids.push(id);
+  };
+  for (const id of recheck) if (ids.length < budget && !known.has(id)) take(id);
+  const open = [...known.keys()];
+  const newLimit = budget - Math.min(open.length, Math.floor(budget / 2));
+  for (let id = scanned + 1n; id <= count && ids.length < newLimit; id++) take(id);
+  const start = open.length === 0 ? 0 : cursor % open.length;
+  let k = 0;
+  for (; k < open.length && ids.length < budget; k++) take(open[(start + k) % open.length]);
+  return { ids, cursor: open.length === 0 ? 0 : (start + k) % open.length };
+}
+
 export function applyScan({ known, scanned, count, ids, results, T }) {
   const read = new Set();
   const failed = [];

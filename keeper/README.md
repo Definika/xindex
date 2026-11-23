@@ -10,9 +10,11 @@ hold on chain.
 
 ## What it does
 
-No contract reads a price (since 2026-11-10). A fill names the units the index settles at, and the index accepts them
+No issue, redeem or claim reads a price. A fill names the units the index settles at, and the index accepts them
 when every leg is inside its unit caps and a weighted gain in units clears the auction's bar, which starts at a half
-and halves every twelve minutes for four hours (`design/2026-11-10-oracle-free-rebalance.md`). So the keeper prices its
+and halves every twelve minutes for four hours (`design/2026-11-10-oracle-free-rebalance.md`). On a factory with an
+oracle the index then checks the fill against Pyth's prices of the last minute, a check that can only refuse
+(`design/2026-11-22-pyth-check.md`); the keeper's fill posts those prices itself, below. So the keeper prices its
 own trades, off chain: Pyth's prices from Hermes, each kept only where Pyth's contract confirms the signed update that
 carries it, through the keeper's own catalogue of each coin's Pyth id (`bot/price-ids.mjs`, and `PRICE_IDS`).
 
@@ -27,6 +29,22 @@ Every block L, with T = L's timestamp + 12 (the one block a fill sent now can la
      word and replayed against the contracts' vectors, before anything is asked of the chain.
    - When the owner or guardian posted a quote with the proposal (`rebalanceQuote()`), the units named must hold it
      too: the bot gives the index as much more as the quote asks, and names nothing it would have to give away.
+   - On a factory with an oracle (`PRICES()` on the index is not zero) the fill must also hold Pyth's check: what
+     it brings in, at Pyth's prices, covers what it takes less a tolerance that rises from nothing to 2% over the
+     auction. A price reaches Pyth's contract only when someone posts it, so the fill carries Pyth's signed update
+     for the feeds the factory names (`priceFeedOf`) and the executor posts it first, in the same transaction, for
+     Pyth's fee, which the transaction carries exactly (`WrongPythFee`) and which is counted with the gas. Before
+     naming units the bot asks the hub's reader what each leg is worth once that update is posted, for a leg that
+     leaves and for one that arrives (one `eth_call` through Multicall3: the update, then the questions), and names
+     only units that hold the check at the tolerance of second T (`oracleOf`, replayed against the contracts' 85
+     oracle vectors). The hub's preview is asked the same way, after the update. A leg without a feed, or one the
+     reader cannot value even then, keeps its units. Anyone can post a newer Pyth update ahead of the fill, at prices
+     a hair off the ones simulated, so the bot names its units at the tolerance of twelve minutes earlier
+     (`ORACLE_LAG`), a tenth of a percent inside the check; a fill that reverts all the same counts as a strike
+     against its auction, as any reverted fill does, and is simulated again once its back-off ends. The index's
+     weights are read every round: its creator may change them behind a notice. The step that builds the update
+     and reads the values is `bot/pyth.mjs`, tested on its own (`test/unit/pyth.test.mjs`); the calls around it
+     need viem and have run only as far as `node --check`.
    - A leg it cannot value keeps its units: a kept leg, a coin outside the catalogue, a share-priced Ondo leg
      (RX-2), and a coin whose price is not the signed one, is older than a minute or carries a confidence interval
      wider than 2% (RX-1, RX-9). A leg within `TRADE_COST_BPS` of its weight is not traded for its own sake.
@@ -60,7 +78,9 @@ Every block L, with T = L's timestamp + 12 (the one block a fill sent now can la
    them like any other auction and names a kept leg's units unchanged.
 3. **Requests.** With `FILL_REQUESTS` on and nothing else to send, the open `MintRequests` requests on the indexes it
    serves are read every 25 blocks, with each index's gate and a Hermes value of one of its shares; a request whose read
-   fails is kept as it was and read again. A request is skipped before any simulation when its escrow at Pyth is worth
+   fails is kept as it was and read again. A scan reads at most 1,000 requests, the new ones from the last id read and
+   the known open ones in turn, so a stranger's one-unit requests delay the reading of the others by a few scans and
+   no more (RZ-10). A request is skipped before any simulation when its escrow at Pyth is worth
    less than its limit plus `MIN_PROFIT_USD`, since no fill of it could pay (RY-8), or when it is a mint on an index
    whose gate would not issue to the executor. Of the rest, the 8
    largest in dollars are simulated per block, at most 4 of them on one side while the other side has requests, and a
@@ -98,6 +118,8 @@ Every block L, with T = L's timestamp + 12 (the one block a fill sent now can la
    that nonce is mined; after the tenth it only waits, and logs it. A nonce left pending by an earlier run is cleared
    the same way at startup, at most 4 of them, and so is one whose send failed with its outcome unknown; a pending
    nonce the RPC reports beyond those is logged and left alone, so an RPC cannot make the bot cancel every block.
+   Nothing is sent over such a nonce either: the bot sends again once it is mined, and says once why it waits, where a
+   fill signed on it replaced it or was refused as underpriced block after block (RZ-8).
 
 ## Inventory
 
@@ -195,7 +217,8 @@ routed coin too; only the rest is bought. The executor's address must be able to
   make the bot buy its other legs with the float; an index an approved creator built still can, up to the auction's
   turnover cap each interval, and a redeem request up to the request allowance. Keep the float and that
   allowance to what fills need, and serve such coins (`INDEXES`) only where the operator has a market for them. A kept
-  coin's quote is the block's own (RX-13); the pools a coin can use are read again every 25 blocks, so one created
+  coin's quote is the block's own (RX-13), and a chosen route is quoted again whenever its leg grows, so a purchase's
+  bound covers the larger amount (RZ-11); the pools a coin can use are read again every 25 blocks, so one created
   after a depeg counts (RX-17), and a pool nobody initialized is no market, so it cannot zero a coin's value (RX-14).
   An initialized pool whose liquidity is gone still quotes nothing, as XS-5 intends.
 - Fills go through the public mempool: anyone can see a fill and the units it names before it lands. The floor bounds
@@ -242,7 +265,10 @@ what nobody needs. It is a separate process with its own key, the **treasury**, 
      already at home cover the needs (RS-3), and bridged in. The executor's `redeemBridged` completes the transfer,
      which carries a payload so that only the executor can complete it, and adds what arrived to the coin's allowance
      as far as the owner's restock allowance for the coin goes (`setRestockAllowance`), which the credit spends
-     (RS-1). A coin whose restock allowance is spent is neither bought nor brought in, and the service names the call;
+     (RS-1). A coin whose restock allowance is spent is neither bought nor brought in, and the service names the call.
+     Stock the executor holds beyond its stock allowance counts as held: nothing is bought for it, and the service
+     asks the owner for `setStockAllowance` instead (RZ-20). Coins at home worth less than `RESTOCK_MIN_USD` wait,
+     in a round that buys, for the buy's coins, and come in with them in one transfer (RZ-21);
    - a covered coin's coins at home first top the stock up to the needs and the buffer, as far as the restock
      allowance goes, and only the rest is sold (RS-10); stock the executor holds beyond the needs, the buffer and
      `RESTOCK_KEEP_USD`, not counting what is on its way (RS-9), is bridged out to the treasury's wallet on its home

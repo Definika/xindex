@@ -29,6 +29,9 @@ Three quantities derive from them and the clock:
 
 - `earliest = lastRebalance + (_maskedFill ? MIN_REBALANCE_INTERVAL : rebalanceInterval)`: the interval's end
   (`earliestRebalance()`).
+- `rolesEarliest`: from when the owner or guardian may start inside the interval (since 2026-11-23, section 3).
+  Once a fill has settled (`rebalanceNonce != 0`) it is `lastRebalance + MIN_REBALANCE_INTERVAL`; before an index's
+  first fill it is `earliest`. It also equals `earliest` on a 7-day index and after a fill with a keep mask.
 - `end = _eta + AUCTION_DURATION`: the auction's last fillable second.
 - `permissionlessAt = max(restartAllowedAt, _eta == 0 ? 0 : end + REBALANCE_DELAY)`: from when a stranger may start
   (`_permissionlessAt`).
@@ -44,7 +47,7 @@ index is always in exactly one of them, and `_stateOf` in the suite classifies a
 | State | Condition | Who may start | `canStartRebalance` | `currentMu` | `pendingRebalance` |
 |---|---|---|---|---|---|
 | Uninitialized | the initialized version is not 1 | nobody | false | 0 | (0, 0) |
-| Interval | `_eta == 0`, `now < earliest` | nobody, the owner and guardian included | false | 0 | (0, 0) |
+| Interval | `_eta == 0`, `now < earliest` | nobody before `rolesEarliest`; from it, the owner or guardian | false | 0 | (0, 0) |
 | Cooldown | `_eta == 0`, `earliest <= now < restartAllowedAt` | the owner or guardian | false | 0 | (0, 0) |
 | Open | `_eta == 0`, `earliest <= now`, `restartAllowedAt <= now` | anyone without a mask, the owner or guardian with one | true | 0 | (0, 0) |
 | Notice | `_eta != 0`, `now < _eta` | nobody | false | 0 | (eta, mask) |
@@ -68,7 +71,7 @@ overload.
 | State | start, stranger | start, owner or guardian | start with mask, stranger | start with mask, owner or guardian | cancel, stranger | cancel, owner or guardian | fill | holders |
 |---|---|---|---|---|---|---|---|---|
 | Uninitialized | `NotInitialized` | `NotInitialized` | `NotInitialized` | `NotInitialized` | `NotInitialized` | `NotInitialized` | `NotInitialized` | `NotInitialized` |
-| Interval | `RebalanceTooSoon` | `RebalanceTooSoon` | `RebalanceTooSoon` | `RebalanceTooSoon` | `NoPendingRebalance` | `NoPendingRebalance` | `NoPendingRebalance` | ok, Interval |
+| Interval | `RebalanceTooSoon` | `RebalanceTooSoon` before `rolesEarliest`, Notice from it | `RebalanceTooSoon` | `RebalanceTooSoon` before `rolesEarliest`, Notice from it | `NoPendingRebalance` | `NoPendingRebalance` | `NoPendingRebalance` | ok, Interval |
 | Cooldown | `Unauthorized` | Notice | `Unauthorized` | Notice | `NoPendingRebalance` | `NoPendingRebalance` | `NoPendingRebalance` | ok, Cooldown |
 | Open | Notice | Notice | `Unauthorized` | Notice | `NoPendingRebalance` | `NoPendingRebalance` | `NoPendingRebalance` | ok, Open |
 | Notice | `RebalancePending` | `RebalancePending` | `RebalancePending` | `RebalancePending` | `Unauthorized` | Cooldown | `RebalanceNotReady` | ok, Notice |
@@ -99,6 +102,24 @@ proposal, it is the cancel of this matrix in every state, with the same revert o
 naming any other, it reverts `StaleProposal` and changes nothing. Its row is
 `test_aBoundCancelIsTheCancelOfTheProposalItNames`, and the mutant that drops the check is C14.
 
+**The owner or guardian inside the interval (2026-11-23).** A fill restarts the index's whole interval however little
+it traded, so a sliver settled at an auction's last second held an index off its weights for up to 91 days, the owner
+and guardian included. Since 2026-11-23 the two may start once `MIN_REBALANCE_INTERVAL` has passed since the last
+fill, with or without a mask; a stranger still waits for `earliest`, and `canStartRebalance` is still false
+there. An index nothing has filled yet has no sliver to undo, so before its first fill the two wait out its
+interval from the creation as anyone does (`test_theRebalanceIntervalIsTheIndexs`, mutant RS4): the rule's first
+draft counted from the creation too, which an independent review of 2026-11-23 found wider than its purpose. A start a second before `rolesEarliest` is `RebalanceTooSoon(rolesEarliest)` for them, and
+`RebalanceTooSoon(earliest)` for a stranger at any time before `earliest`. The window is empty on an index whose own
+interval is `MIN_REBALANCE_INTERVAL`, which is the index the matrix's suite runs, and after a fill with a keep mask,
+which already restarted only that week (XS-3). Pinned by `test_theOwnerOrGuardianRestartsAWeekAfterAnyFill`
+(`test/WeightedHub.rebalance.t.sol`) and the mutants RS1 to RS4; the invariant handler's model follows it. It moves
+no funds: every fill still clears the bar, the caps and Pyth's check. What it gives the two roles beyond the weekly
+keep-mask fills they already had: a start with no mask, on an index of two components too, where a mask was never
+possible, and so a window of their own, from a week after a fill to the end of the index's interval, in which a
+hostile one can start and settle a sliver each week and keep strangers' clock from ever running out. That is the
+guardian's stall by another road, bounded as the cancel is, by the owner replacing the guardian, and the owner
+itself can start in the same window.
+
 A keep mask that names a component the index does not have, or leaves fewer than `MIN_COMPONENTS` moving, is
 `InvalidKeepMask` for any caller, in every state where a start reaches the mask check: Cooldown, Open and both
 expired states. In Interval it is `RebalanceTooSoon` and in Notice and Auction `RebalancePending`, because those
@@ -110,7 +131,7 @@ The clock moves the state at these exact seconds, and nothing else does:
 
 | From | To | At | Pinned by |
 |---|---|---|---|
-| Interval | Open | `earliest` | a start at `earliest - 1` is `RebalanceTooSoon(earliest)`, at `earliest` it succeeds |
+| Interval | Open | `earliest` | a stranger's start at `earliest - 1` is `RebalanceTooSoon(earliest)`, at `earliest` it succeeds; the owner's or guardian's succeeds from `rolesEarliest` |
 | Cooldown | Open | `restartAllowedAt` | a stranger's start a second before is `Unauthorized`, at it succeeds |
 | Notice | Auction | `_eta` | a fill at `_eta - 1` is `RebalanceNotReady(eta)`, at `_eta` it settles at `MU_MAX` |
 | Auction | Expired, held | `end + 1` | a fill at `end` settles at `MU_MIN`; a start at `end` is `RebalancePending(end)`; at `end + 1` a fill is `RebalanceExpired(end)` |

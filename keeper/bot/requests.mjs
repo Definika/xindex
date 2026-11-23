@@ -48,6 +48,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
   const skips = skippedRequests(); // `request:id` -> checks that declined it without a revert (RX-24)
   const waits = shortRequests(); // `request:id` -> checks that found the executor short of stock for it
   let scanned = 0n; // the last id read, every one before it read too
+  let cursor = 0; // where the next scan starts reading the known requests again (RZ-10)
   const recheck = new Set(); // ids forgotten since the last scan, read once more at the next (RZ-13)
 
   function say(id, reason) {
@@ -72,18 +73,21 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
     return fresh;
   }
 
-  /// Reads every request made since the last scan, and re-reads the known open ones, dropping those closed. A read
-  /// that fails keeps its request as it was and is read again next scan (XS-11). The same multicall reads, for every
-  /// index served, whether it would issue to the executor and its units, which with one Hermes request value a share
-  /// of each index with open requests (XS-7).
+  /// Reads the requests made since the last scan, and re-reads the known open ones, dropping those closed, at most
+  /// `M.MAX_SCAN_READS` of them a scan: the rest are read at the next (`M.scanIds`, RZ-10). A read that fails keeps
+  /// its request as it was and is read again next scan (XS-11). The same multicall reads, for every index served,
+  /// whether it would issue to the executor and its units, which with one Hermes request value a share of each index
+  /// with open requests (XS-7).
   async function scan(L, indexes) {
     const count = await chain.read(requests, ABI.requests, "requestCount", [], L.number);
-    const ids = [...known.keys()];
     // A request forgotten on its fill's receipt is read once more: a re-org that dropped the fill leaves it open on
     // chain, where nothing else would look at it again until a restart (RZ-13).
-    for (const id of recheck) if (!known.has(id)) ids.push(id);
-    recheck.clear();
-    for (let id = scanned + 1n; id <= count; id++) if (!known.has(id) && !ids.includes(id)) ids.push(id);
+    const picked = M.scanIds({ known, recheck, scanned, count, cursor });
+    cursor = picked.cursor;
+    const ids = picked.ids;
+    const reading = new Set(ids);
+    // Those known are read with the open ones; those the budget left out wait for the next scan.
+    for (const id of [...recheck]) if (known.has(id) || reading.has(id)) recheck.delete(id);
     if (ids.length === 0) {
       scanned = count;
       return;

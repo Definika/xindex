@@ -9,10 +9,13 @@ import {BnbChainAddresses} from "./BnbChainAddresses.sol";
 import {BaseAddresses} from "./BaseAddresses.sol";
 import {Listings} from "./Listings.sol";
 import {ScriptLists} from "./ScriptLists.sol";
+import {PriceFeeds} from "./PriceFeeds.sol";
+import {IPythPrices} from "../src/interfaces/IPythPrices.sol";
 import {ScriptUtils} from "./ScriptUtils.sol";
 
-/// @notice Drives the listing flow on `WeightedIndexFactory`. A listing is a token and nothing else: no index reads a
-///         price, so no token carries a feed. The script never lists a token on its own: a token never listed gets a
+/// @notice Drives the listing flow on `WeightedIndexFactory`: each token's listing and, on a factory with an oracle,
+///         the Pyth feed `PriceFeeds` names for it, which `propose`, `safe` and `execute` handle in the same run. The
+///         script never lists a token on its own: a token never listed gets a
 ///         proposal only when named in V5_LIST, and a delisted one only when named in V5_RELIST, so a listing the
 ///         guardian cancelled is not proposed again by a routine run (RT-06). Execute mode never proposes.
 ///
@@ -80,17 +83,18 @@ contract ConfigureWeighted is Script {
             address[2] memory currencies = _mintCurrencies();
             if (proposes) {
                 propose(factory, list, firstListings, relist, currencies);
+                proposeFeeds(factory, list);
                 return;
             }
             (bytes[] memory calls, string[] memory labels) =
                 safeCalldata(factory, list, firstListings, relist, currencies);
             console2.log("Safe transactions to the factory, value 0:", address(factory));
-            for (uint256 i = 0; i < calls.length; ++i) {
-                console2.log(labels[i]);
-                console2.logBytes(calls[i]);
-            }
+            _logCalls(calls, labels);
+            (calls, labels) = feedCalldata(factory, list);
+            _logCalls(calls, labels);
         } else if (ScriptUtils.same(mode, "execute")) {
             execute(factory, list);
+            executeFeeds(factory, list);
         } else if (ScriptUtils.same(mode, "status")) {
             status(factory, list);
         } else {
@@ -191,6 +195,97 @@ contract ConfigureWeighted is Script {
             );
             ++count;
         }
+    }
+
+    function _logCalls(bytes[] memory calls, string[] memory labels) private pure {
+        for (uint256 i = 0; i < calls.length; ++i) {
+            console2.log(labels[i]);
+            console2.logBytes(calls[i]);
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Price feeds
+    // ---------------------------------------------------------------------
+
+    /// @dev `feed`, the one this chain's `PriceFeeds` table names for `token`, and whether the factory should be asked
+    ///      to take it: the factory has an oracle, the table names a feed, the factory's is another, and no proposal is
+    ///      pending for it within its window.
+    function _toPropose(IWeightedIndexFactory factory, address token, IPythPrices.PriceFeed memory feed)
+        private
+        view
+        returns (IPythPrices.PriceFeed memory, bool proposes)
+    {
+        if (factory.PRICES() == address(0) || feed.kind == IPythPrices.FeedKind.None) return (feed, proposes);
+        IPythPrices.PriceFeed memory current = factory.priceFeedOf(token);
+        if (current.id == feed.id && current.kind == feed.kind) return (feed, proposes);
+        // forge-lint: disable-next-line(unused-return) the pending feed itself is replaced, only its eta matters
+        (, uint256 eta) = factory.pendingPriceFeed(token);
+        return (feed, eta == 0 || block.timestamp > eta + factory.PROPOSAL_WINDOW());
+    }
+
+    /// @notice Owner only. Proposes, for every token of the list, the feed this chain's `PriceFeeds` table names, where the factory should take it. Reverts
+    ///         OwnerIsContract when the owner cannot sign.
+    function proposeFeeds(IWeightedIndexFactory factory, address[] memory list) public {
+        _requireSigningOwner(factory);
+        (address[] memory tokens, IPythPrices.PriceFeed[] memory table) = PriceFeeds.table(block.chainid);
+        vm.startBroadcast();
+        for (uint256 i = 0; i < list.length; ++i) {
+            (IPythPrices.PriceFeed memory feed, bool proposes) =
+                _toPropose(factory, list[i], PriceFeeds.find(list[i], tokens, table));
+            if (!proposes) continue;
+            factory.proposePriceFeed(list[i], feed);
+            console2.log("proposed a price feed", list[i]);
+        }
+        vm.stopBroadcast();
+    }
+
+    /// @notice Any account, nothing broadcast. For a Safe owner: the `proposePriceFeed` calldata of every feed
+    ///         {proposeFeeds} would submit, each labelled with the token's symbol, its address and the feed's id.
+    function feedCalldata(IWeightedIndexFactory factory, address[] memory list)
+        public
+        view
+        returns (bytes[] memory calls, string[] memory labels)
+    {
+        (address[] memory tokens, IPythPrices.PriceFeed[] memory table) = PriceFeeds.table(block.chainid);
+        IPythPrices.PriceFeed[] memory feeds = new IPythPrices.PriceFeed[](list.length);
+        bool[] memory chosen = new bool[](list.length);
+        uint256 count = 0;
+        for (uint256 i = 0; i < list.length; ++i) {
+            (feeds[i], chosen[i]) = _toPropose(factory, list[i], PriceFeeds.find(list[i], tokens, table));
+            if (chosen[i]) ++count;
+        }
+        calls = new bytes[](count);
+        labels = new string[](count);
+        count = 0;
+        for (uint256 i = 0; i < list.length; ++i) {
+            if (!chosen[i]) continue;
+            calls[count] = abi.encodeCall(IWeightedIndexFactory.proposePriceFeed, (list[i], feeds[i]));
+            labels[count] = string.concat(
+                "proposePriceFeed ",
+                ScriptUtils.symbolOf(list[i]),
+                " ",
+                vm.toString(list[i]),
+                " ",
+                vm.toString(feeds[i].id)
+            );
+            ++count;
+        }
+    }
+
+    /// @notice Any account. Executes every due price feed of the list.
+    function executeFeeds(IWeightedIndexFactory factory, address[] memory list) public {
+        if (factory.PRICES() == address(0)) return;
+        uint256 window = factory.PROPOSAL_WINDOW();
+        vm.startBroadcast();
+        for (uint256 i = 0; i < list.length; ++i) {
+            // forge-lint: disable-next-line(unused-return) the factory executes the feed it holds; its eta decides
+            (, uint256 eta) = factory.pendingPriceFeed(list[i]);
+            if (eta == 0 || block.timestamp < eta || block.timestamp > eta + window) continue;
+            factory.executePriceFeed(list[i]);
+            console2.log("set a price feed", list[i]);
+        }
+        vm.stopBroadcast();
     }
 
     /// @notice ` (<tier>)` for a token a chain's list records a tier for, and nothing for any other.

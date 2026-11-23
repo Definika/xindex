@@ -75,7 +75,7 @@ contract DeployChecksTest is Test {
         vm.mockCall(
             MainnetAddresses.UNIVERSAL_ROUTER, abi.encodeWithSignature("poolManager()"), abi.encode(address(0xbeef))
         );
-        assertGt(checks.marketContracts(MainnetAddresses.UNIVERSAL_ROUTER).length, 2 + BnbChainAddresses.COUNT + 2);
+        assertGt(checks.marketContracts(MainnetAddresses.UNIVERSAL_ROUTER).length, 2 + BnbChainAddresses.COUNT + 3);
     }
 
     /// @dev Ethereum and BNB Chain are pinned, each to its own address book, and no other chain is.
@@ -149,16 +149,18 @@ contract DeployChecksTest is Test {
         );
         checks.resolveRouter(BnbChainAddresses.UNIVERSAL_ROUTER);
 
-        // The roles are checked against Base's market there: the router, its PoolManager, the sixteen coins and the
-        // two mint currencies.
+        // The roles are checked against Base's market there: the router, its PoolManager, the book's tokens, the two
+        // mint currencies and Pyth.
         vm.mockCall(
             BaseAddresses.UNIVERSAL_ROUTER, abi.encodeWithSignature("poolManager()"), abi.encode(address(0xbeef))
         );
         address[] memory market = checks.marketContracts(BaseAddresses.UNIVERSAL_ROUTER);
-        assertEq(market.length, 2 + BaseAddresses.COUNT + 2);
+        assertEq(market.length, 2 + BaseAddresses.COUNT + 3);
         assertEq(market[2], BaseAddresses.WETH);
-        assertEq(market[market.length - 2], BaseAddresses.USDC);
-        assertEq(market[market.length - 1], BaseAddresses.USDT);
+        assertEq(market[market.length - 3], BaseAddresses.USDC);
+        assertEq(market[market.length - 2], BaseAddresses.USDT);
+        assertEq(market[market.length - 1], BaseAddresses.PYTH);
+        assertEq(checks.pinnedPyth(), BaseAddresses.PYTH);
     }
 
     /// @dev Base's router address has code on Ethereum and on BNB Chain too (read on 2026-11-21), so no router's code

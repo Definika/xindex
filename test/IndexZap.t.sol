@@ -833,6 +833,25 @@ contract IndexZapTest is XindexTest {
         vm.stopPrank();
     }
 
+    /// @dev RB-5: the zap took another index as `to`, where the builder refuses every index the factory made. An index
+    ///      can never move a token or a share it receives, so a mint's shares or a burn's payout sent to one stayed
+    ///      there for good. Now neither the index of the call nor any other one is a recipient.
+    function test_RB5_noIndexIsAValidZapRecipient() public {
+        _mintFor(alice, 1e18, 200e6);
+        address other = address(_mixedIndex());
+        address[2] memory traps = [address(index), other];
+        vm.startPrank(alice);
+        index.approve(address(zap), 1e18);
+        for (uint256 i = 0; i < traps.length; ++i) {
+            vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, traps[i]));
+            zap.mintWithToken(_mintParams(address(index), address(usdc), 1, 1e18, _mintLegs(address(usdc)), traps[i]));
+            vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, traps[i]));
+            zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, _burnLegs(address(usdc)), traps[i]));
+        }
+        vm.stopPrank();
+        _assertZapEmpty();
+    }
+
     /// @dev RT-21, the zap's half. The factory can never move a token on, so a burn's payout sent to it was lost; a mint
     ///      to it already reverted in the index, and now reverts here first. (The v3 rule, the other trap, is gone.)
     function test_RT21_theFactoryIsNotAValidZapRecipient() public {

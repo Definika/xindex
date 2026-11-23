@@ -38,7 +38,20 @@ export const ABI = {
     "function symbol() view returns (string)",
     "function decimals() view returns (uint8)",
   ]),
-  multicall3: parseAbi(["function getCurrentBlockTimestamp() view returns (uint256)"]),
+  multicall3: parseAbi([
+    "function getCurrentBlockTimestamp() view returns (uint256)",
+    "struct Call3Value { address target; bool allowFailure; uint256 value; bytes callData; }",
+    "struct Result { bool success; bytes returnData; }",
+    "function aggregate3Value(Call3Value[] calls) payable returns (Result[] returnData)",
+  ]),
+  // The factory's price reader, through which a hub values a fill's legs at Pyth's prices (`PythPrices`).
+  prices: parseAbi([
+    "function PYTH() view returns (address)",
+    "function valueOf(address token, bool leaving) view returns (uint256)",
+    "error NoPriceFeed(address token)",
+    "error StalePrice(address token, uint256 publishTime)",
+    "error UnusablePrice(address token)",
+  ]),
   quoter: parseAbi([
     "function quoteExactInput(bytes path, uint256 amountIn) returns (uint256 amountOut, uint160[], uint32[], uint256)",
     "function quoteExactOutput(bytes path, uint256 amountOut) returns (uint256 amountIn, uint160[], uint32[], uint256)",
@@ -47,9 +60,11 @@ export const ABI = {
   v3Pool: parseAbi([
     "function slot0() view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, uint8 feeProtocol, bool unlocked)",
   ]),
-  // Pyth's contract, which no contract of the protocol calls: the keeper asks it to confirm a price Hermes served.
+  // Pyth's contract. The keeper asks it to confirm a price Hermes served, and its executor posts Pyth's update to it
+  // before a fill on a factory with an oracle, whose price reader then reads the prices back.
   pyth: parseAbi([
     "function getUpdateFee(bytes[] updateData) view returns (uint256)",
+    "function updatePriceFeeds(bytes[] updateData) payable",
     "struct Price { int64 price; uint64 conf; int32 expo; uint256 publishTime; }",
     "struct PriceFeed { bytes32 id; Price price; Price emaPrice; }",
     "function parsePriceFeedUpdates(bytes[] updateData, bytes32[] priceIds, uint64 minPublishTime, uint64 maxPublishTime) payable returns (PriceFeed[] priceFeeds)",
@@ -61,7 +76,7 @@ export const ABI = {
     "error PriceFeedNotFound()",
   ]),
 };
-const ERRORS = [...ABI.hub, ...ABI.factory, ...ABI.requests, ...ABI.executor, ...ABI.pyth].filter((x) => x.type === "error");
+const ERRORS = [...ABI.hub, ...ABI.factory, ...ABI.requests, ...ABI.executor, ...ABI.pyth, ...ABI.prices].filter((x) => x.type === "error");
 
 /// Multicall3, at one address on every chain the keeper runs on: its clock tells whether the RPC honours overrides.
 const MULTICALL3 = "0xcA11bde05977b3631167028862bE2a173976CA11";
@@ -133,6 +148,29 @@ export function createChain(cfg) {
       params: [tx, hex(blockNumber), state, block],
     });
     return decodeFunctionResult({ abi, functionName, data: result });
+  }
+
+  /// Runs `calls`, each `{to, abi, functionName, args, value}`, one after the other inside one eth_call, through
+  /// Multicall3's `aggregate3Value`, at `blockNumber` with `over`. Returns one entry per call: `{ok: true, result}`
+  /// with its decoded outputs, or `{ok: false, error}` with an error that carries the call's revert data, which
+  /// {revertReason} names. It is how the keeper asks an index something that depends on prices nobody has posted yet:
+  /// Pyth's update first, then the question, in the order the fill itself runs them. The calls' sender is Multicall3,
+  /// which neither Pyth nor a view cares about.
+  async function callAfter(calls, blockNumber, over = {}) {
+    const batch = calls.map((c) => ({
+      target: c.to,
+      allowFailure: true,
+      value: c.value ?? 0n,
+      callData: encodeFunctionData({ abi: c.abi, functionName: c.functionName, args: c.args }),
+    }));
+    const value = batch.reduce((sum, c) => sum + c.value, 0n);
+    const results = await call({ to: MULTICALL3, abi: ABI.multicall3, functionName: "aggregate3Value", args: [batch], value }, blockNumber, over);
+    return results.map((r, i) => {
+      if (!r.success) return { ok: false, error: Object.assign(new Error("the call reverted"), { data: r.returnData }) };
+      // A call that returns nothing, as Pyth's update does, has nothing to decode.
+      if (r.returnData === "0x") return { ok: true, result: undefined };
+      return { ok: true, result: decodeFunctionResult({ abi: calls[i].abi, functionName: calls[i].functionName, data: r.returnData }) };
+    });
   }
 
   /// Signs and broadcasts `tx` (see TxTracker), returning its hash. A node that already holds it reports the hash.
@@ -228,6 +266,7 @@ export function createChain(cfg) {
     read,
     multicall,
     call,
+    callAfter,
     txIo,
     checkSetup,
     isRevert,

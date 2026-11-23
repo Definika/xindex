@@ -262,7 +262,14 @@ const execOwner = privateKeyToAccount(key("owner")).address;
 const treasury = privateKeyToAccount(key("treasury"));
 for (const a of [deployer, execOwner, treasury.address]) await eth.test.setBalance({ address: a, value: 10n ** 21n });
 // The factory is the executor's constructor argument alone: owner and guardian, since the factory names no Pyth.
-const factory = await deploy(eth, deployer, json(`${ROOT}out/WeightedIndexFactory.sol/WeightedIndexFactory.json`), [execOwner, deployer]);
+// The factory without an oracle, as the keeper's own end-to-end test runs it, and the arithmetic it calls.
+const math = await deploy(eth, deployer, json(`${ROOT}out/WeightedMath.sol/WeightedMath.json`), []);
+const factory = await deploy(eth, deployer, json(`${ROOT}out/WeightedIndexFactory.sol/WeightedIndexFactory.json`), [
+  execOwner,
+  deployer,
+  "0x0000000000000000000000000000000000000000",
+  math,
+]);
 const requests = await deploy(eth, deployer, json(`${ROOT}out/MintRequests.sol/MintRequests.json`), [factory, ETH_USDC, "0xdAC17F958D2ee523a2206206994597C13D831ec7"]);
 const executor = await deploy(eth, deployer, json(`${KEEPER_DIR}out/KeeperExecutor.sol/KeeperExecutor.json`), [
   "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",

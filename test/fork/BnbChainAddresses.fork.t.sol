@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
+import {WeightedMath} from "../../src/WeightedMath.sol";
 import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
@@ -16,6 +17,10 @@ import {IIndexHub} from "../../src/interfaces/IIndexHub.sol";
 import {IRebalanceExecutor} from "../../src/interfaces/IRebalanceExecutor.sol";
 import {IUniversalRouterSwaps} from "../../src/interfaces/IUniversalRouterSwaps.sol";
 import {IXindexErrors} from "../../src/interfaces/IXindexErrors.sol";
+import {IWeightedHub} from "../../src/interfaces/IWeightedHub.sol";
+import {IPythPrices} from "../../src/interfaces/IPythPrices.sol";
+import {IPythReader} from "../../src/interfaces/IPythReader.sol";
+import {PriceFeeds} from "../../script/PriceFeeds.sol";
 import {PathKey} from "../../src/libraries/UniswapV4Types.sol";
 import {CheckToken} from "../../script/CheckToken.s.sol";
 import {ConfigureWeighted} from "../../script/ConfigureWeighted.s.sol";
@@ -61,10 +66,9 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
 
     uint24 constant F500 = 500;
 
-    // 0.01 BNB + 0.0001 BTCB + 0.001 ETH per index token
-    uint256 constant U_WBNB = 1e16;
-    uint256 constant U_BTCB = 1e14;
-    uint256 constant U_ETH = 1e15;
+    /// @dev What a share of the test's three-coin index is worth at Pyth's prices, in dollars: about what 0.01 BNB,
+    ///      0.0001 BTCB and 0.001 ETH a share came to, before creation was checked against the weights.
+    uint256 constant MAJORS_DOLLARS = 20;
 
     address alice = makeAddr("alice");
 
@@ -527,7 +531,7 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
     {
         DeployWeighted deployer = new DeployWeighted();
         (factory, zap, builder, requests) = deployer.deploy(
-            address(this), address(new GuardianSafe()), address(0), address(0), address(0), address(this)
+            address(this), address(new GuardianSafe()), address(0), address(0), address(0), address(0), address(this)
         );
         deployer.checkDeployment(factory, zap, builder, requests);
     }
@@ -546,14 +550,54 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
         assertEq(requests.USDT(), B.USDT);
     }
 
-    /// @dev Lists `tokens` on `factory`, whose owner is this test.
+    /// @dev Lists `tokens` on `factory`, whose owner is this test, and on a factory with an oracle gives each the feed
+    ///      `script/PriceFeeds.sol` names for it, behind the same delay.
     function _list(WeightedIndexFactory factory, address[] memory tokens) internal {
+        bool priced = factory.PRICES() != address(0);
+        (address[] memory known, IPythPrices.PriceFeed[] memory feeds) = PriceFeeds.table(B.CHAIN_ID);
         for (uint256 i = 0; i < tokens.length; ++i) {
             factory.proposeListing(tokens[i]);
+            if (priced) factory.proposePriceFeed(tokens[i], PriceFeeds.find(tokens[i], known, feeds));
         }
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         for (uint256 i = 0; i < tokens.length; ++i) {
             factory.executeListing(tokens[i]);
+            if (priced) factory.executePriceFeed(tokens[i]);
+        }
+    }
+
+    /// @dev Has BNB Chain's Pyth answer each of `tokens`' stored prices as if published at this block's time. Pyth is a
+    ///      pull oracle: a creator or a filler posts an update Pyth's keys signed, which a test cannot sign, so the tests
+    ///      that are not about prices date the stored price to their own clock. The tests of Pyth's check read the
+    ///      stored prices as they are, at the time they were published. A feed nobody has posted on BNB Chain has no
+    ///      stored price (ZEC's and STABLE's at the pin, of the twelve, and most of the Ondo stocks'): it gets a
+    ///      stand-in of a dollar, as the creator's own update would post a price there.
+    function _freshPrices(WeightedIndexFactory factory, address[] memory tokens) internal {
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            bytes32 id = factory.priceFeedOf(tokens[i]).id;
+            IPythReader.Price memory p = IPythReader(B.PYTH).priceFeedExists(id)
+                ? IPythReader(B.PYTH).getPriceUnsafe(id)
+                : IPythReader.Price({price: 1e8, conf: 0, expo: -8, publishTime: 0});
+            p.publishTime = block.timestamp;
+            vm.mockCall(B.PYTH, abi.encodeCall(IPythReader.getPriceUnsafe, (id)), abi.encode(p));
+        }
+    }
+
+    /// @dev Specs of `tokens` at `weights`, `dollars` a share at Pyth's prices as `createIndex` reads them, so the index
+    ///      is created on its weights.
+    function _onWeights(
+        WeightedIndexFactory factory,
+        address[] memory tokens,
+        uint256[] memory weights,
+        uint256 dollars
+    ) internal view returns (IWeightedIndexFactory.ComponentSpec[] memory specs) {
+        IPythPrices prices = IPythPrices(factory.PRICES());
+        specs = new IWeightedIndexFactory.ComponentSpec[](tokens.length);
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            uint256 value = prices.valueOf(tokens[i], false);
+            specs[i] = IWeightedIndexFactory.ComponentSpec({
+                token: tokens[i], weight: weights[i], units: dollars * 1e36 * weights[i] / 10_000 / value
+            });
         }
     }
 
@@ -574,7 +618,8 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
     function testFork_theBnbListMatchesTheChain() public {
         address[] memory list = new ConfigureWeighted().resolveList("bnb");
         assertEq(list.length, B.COUNT);
-        WeightedIndexFactory factory = new WeightedIndexFactory(address(this), address(0));
+        WeightedIndexFactory factory =
+            new WeightedIndexFactory(address(this), address(0), address(0), address(new WeightedMath()));
         _list(factory, list);
         for (uint256 i = 0; i < list.length; ++i) {
             assertTrue(factory.isWhitelisted(list[i]));
@@ -673,23 +718,24 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
         }
     }
 
-    /// @dev An index of the whole BNB Chain list on a fresh deployment, a thousandth of a coin of each per share.
+    /// @dev An index of the whole BNB Chain list on a fresh deployment, $120 a share, created on its weights.
     function _twelveCoinIndex() internal returns (WeightedHub index, address[] memory list) {
         (WeightedIndexFactory factory,,,) = _deploy();
         // the list's twelve coins, which come first; its Ondo stocks and ETFs are each checked on their own above
         address[] memory all = B.all();
         list = new address[](12);
+        uint256[] memory weights = new uint256[](12);
         for (uint256 i = 0; i < 12; ++i) {
             list[i] = all[i];
+            // 12 coins: 837 for the first and 833 for each other is 10,000.
+            weights[i] = i == 0 ? 837 : 833;
         }
         _list(factory, list);
+        _freshPrices(factory, list);
         factory.setApprovedCreator(address(this), true);
-        IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](list.length);
-        for (uint256 i = 0; i < list.length; ++i) {
-            // 12 coins: 837 for the first and 833 for each other is 10,000.
-            specs[i] = IWeightedIndexFactory.ComponentSpec({token: list[i], weight: i == 0 ? 837 : 833, units: 1e15});
-        }
-        index = WeightedHub(factory.createIndex("BNB Chain Twelve", "BNB12", specs, _params()));
+        index = WeightedHub(
+            factory.createIndex("BNB Chain Twelve", "BNB12", _onWeights(factory, list, weights, 120), _params())
+        );
     }
 
     /// @dev Issues `shares` of `index` to `to` from coins dealt to it. Returns what the index took of each.
@@ -732,6 +778,7 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
         }
         (uint256 eta,) = index.pendingRebalance();
         vm.warp(eta + 2 hours);
+        _freshPrices(WeightedIndexFactory(index.FACTORY()), list);
         (uint256 bar, int256 gain, uint256[] memory amountsOut, uint256[] memory amountsIn) =
             index.previewRebalance(newUnits);
         assertGt(bar, 0);
@@ -830,17 +877,21 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
         }
     }
 
-    /// @dev An index of WBNB, BTCB and ETH on `factory`, the three coins Uniswap routes deepest on BNB Chain.
+    /// @dev An index of WBNB, BTCB and ETH on `factory`, the three coins Uniswap routes deepest on BNB Chain, created
+    ///      on its weights.
     function _majors(WeightedIndexFactory factory) internal returns (WeightedHub index) {
         address[] memory three = new address[](3);
         (three[0], three[1], three[2]) = (B.WBNB, B.BTCB, B.ETH);
+        uint256[] memory weights = new uint256[](3);
+        (weights[0], weights[1], weights[2]) = (3334, 3333, 3333);
         _list(factory, three);
+        _freshPrices(factory, three);
         factory.setApprovedCreator(address(this), true);
-        IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](3);
-        specs[0] = IWeightedIndexFactory.ComponentSpec({token: B.WBNB, weight: 3334, units: U_WBNB});
-        specs[1] = IWeightedIndexFactory.ComponentSpec({token: B.BTCB, weight: 3333, units: U_BTCB});
-        specs[2] = IWeightedIndexFactory.ComponentSpec({token: B.ETH, weight: 3333, units: U_ETH});
-        index = WeightedHub(factory.createIndex("BNB Chain Majors", "BMAJ", specs, _params()));
+        index = WeightedHub(
+            factory.createIndex(
+                "BNB Chain Majors", "BMAJ", _onWeights(factory, three, weights, MAJORS_DOLLARS), _params()
+            )
+        );
     }
 
     function _threeCoinIndex() internal returns (IndexZap zap, WeightedHub index) {
@@ -898,9 +949,10 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
         assertEq(index.balanceOf(alice), shares);
         assertGt(spent, 0);
         assertEq(IERC20(B.USDT).balanceOf(alice), budget - spent, "what the swaps did not take came back");
-        assertEq(IERC20(B.WBNB).balanceOf(address(index)), shares * U_WBNB / 1e18, "the index holds BNB in kind");
-        assertEq(IERC20(B.BTCB).balanceOf(address(index)), shares * U_BTCB / 1e18);
-        assertEq(IERC20(B.ETH).balanceOf(address(index)), shares * U_ETH / 1e18);
+        uint256[] memory units = index.recordedUnits();
+        assertEq(IERC20(B.WBNB).balanceOf(address(index)), shares * units[0] / 1e18, "the index holds BNB in kind");
+        assertEq(IERC20(B.BTCB).balanceOf(address(index)), shares * units[1] / 1e18);
+        assertEq(IERC20(B.ETH).balanceOf(address(index)), shares * units[2] / 1e18);
         assertEq(IERC20(B.USDT).balanceOf(address(zap)), 0, "nothing stays in the zap");
 
         bytes[3] memory burnPaths = [
@@ -971,5 +1023,52 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
         assertFalse(ok, "the zap takes no BNB");
         vm.stopPrank();
         assertEq(IERC20(B.WBNB).balanceOf(alice), 5 ether, "nothing moved");
+    }
+
+    /// @dev The publish time of the batch Pyth's contract on BNB Chain last stored BNB's and ETH's prices in, read on
+    ///      2026-11-22.
+    uint256 constant BNB_BATCH = 1_794_228_600;
+
+    /// @dev A deployment from the book checks its fills against BNB Chain's Pyth: an index of WBNB and ETH, created 4%
+    ///      off its weights, within the 5% creation allows, fills on its weights at Pyth's stored prices and is refused
+    ///      a fill that keeps 3% of what it should bring in, at a tolerance of 1.5%. The clock is moved back to the
+    ///      batch's time, as in Base's suite: a filler posts its own update, which the test cannot sign.
+    function testFork_aFillIsCheckedAgainstPythsOwnContract() public {
+        (WeightedIndexFactory factory,,,) = _deploy();
+        assertEq(IPythPrices(factory.PRICES()).PYTH(), B.PYTH, "the deployment reads the book's Pyth");
+        address[] memory coins = new address[](2);
+        (coins[0], coins[1]) = (B.WBNB, B.ETH);
+        uint256 fill = BNB_BATCH + 30;
+        vm.warp(fill - 2 days - 7 days - 2 hours - 3 hours);
+        _list(factory, coins);
+        uint256[] memory market = new uint256[](2);
+        IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](2);
+        for (uint256 i = 0; i < coins.length; ++i) {
+            IPythReader.Price memory p = IPythReader(B.PYTH).getPriceUnsafe(factory.priceFeedOf(coins[i]).id);
+            assertEq(p.publishTime, BNB_BATCH, "one batch");
+            market[i] = uint256(int256(p.price)) * 1e28 / 1e18;
+            // $52 of BNB and $48 of ether a share, against weights of a half each.
+            specs[i] = IWeightedIndexFactory.ComponentSpec({
+                token: coins[i], weight: 5000, units: uint256(i == 0 ? 52 : 48) * 1e36 / market[i]
+            });
+        }
+        factory.setApprovedCreator(address(this), true);
+        WeightedHub index = WeightedHub(factory.createIndex("BNB and ETH", "BE", specs, _params()));
+        _issueInKind(index, alice, 100e18);
+
+        vm.warp(index.earliestRebalance());
+        index.startRebalance(0);
+        vm.warp(fill);
+        uint256[] memory fair = index.recordedUnits();
+        uint256 value = fair[0] * market[0] + fair[1] * market[1];
+        (fair[0], fair[1]) = ((value / 2 + market[0] - 1) / market[0], (value / 2 + market[1] - 1) / market[1]);
+        uint256[] memory greedy = index.recordedUnits();
+        greedy[0] = fair[0];
+        greedy[1] = greedy[1] + (fair[1] - greedy[1]) * 97 / 100;
+        vm.expectPartialRevert(IWeightedHub.BelowOracleValue.selector);
+        index.previewRebalance(greedy);
+        deal(B.ETH, address(this), 1e24);
+        index.executeRebalance(fair, "");
+        assertEq(index.recordedUnits(), fair);
     }
 }

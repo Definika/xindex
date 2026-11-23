@@ -1274,6 +1274,124 @@ contract WeightedHubRebalanceTest is WeightedTest {
         assertEq(keepMask, 0);
     }
 
+    /// @dev A fill restarts the index's own interval for strangers however little it traded, so a sliver filled at
+    ///      an auction's last second would hold a quarterly index off its weights for a quarter. The owner or guardian
+    ///      may start again MIN_REBALANCE_INTERVAL after any fill, with or without a mask, and not a second before.
+    function test_theOwnerOrGuardianRestartsAWeekAfterAnyFill() public {
+        (WeightedHub quarterly, uint256 interval) = _xs3Index();
+        // A stranger's start, and a sliver filled without a mask at the auction's last second.
+        vm.warp(quarterly.lastRebalance() + interval);
+        vm.prank(stranger);
+        quarterly.startRebalance(0);
+        (uint256 eta,) = quarterly.pendingRebalance();
+        vm.warp(eta + quarterly.AUCTION_DURATION());
+        executor.execute(quarterly, _three(166_633, 2 * 5e12, 2 * 10_000), "");
+        uint256 fillTime = block.timestamp;
+        uint256 strangersEarliest = fillTime + interval;
+        assertEq(quarterly.earliestRebalance(), strangersEarliest, "the whole quarter, for strangers");
+
+        uint256 rolesEarliest = fillTime + quarterly.MIN_REBALANCE_INTERVAL();
+        address[2] memory roles = [owner, guardian];
+        vm.warp(rolesEarliest - 1);
+        for (uint256 i = 0; i < roles.length; ++i) {
+            vm.prank(roles[i]);
+            vm.expectRevert(abi.encodeWithSelector(IWeightedHub.RebalanceTooSoon.selector, rolesEarliest));
+            quarterly.startRebalance(0);
+        }
+
+        vm.warp(rolesEarliest);
+        assertFalse(quarterly.canStartRebalance(), "strangers still wait out the quarter");
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.RebalanceTooSoon.selector, strangersEarliest));
+        quarterly.startRebalance(0);
+
+        // Each role starts, a week after the sliver: the guardian without a mask, the owner with one.
+        vm.prank(guardian);
+        quarterly.startRebalance(0);
+        (eta,) = quarterly.pendingRebalance();
+        assertEq(eta, rolesEarliest + quarterly.REBALANCE_DELAY());
+        vm.prank(guardian);
+        quarterly.cancelRebalance();
+        vm.prank(owner);
+        quarterly.startRebalance(1);
+        (, uint256 keepMask) = quarterly.pendingRebalance();
+        assertEq(keepMask, 1);
+    }
+
+    /// @dev A pause of minting stops an issue and nothing else (the owner's call of 2026-11-23): while the guardian
+    ///      holds it, a holder still redeems, skips a component and collects its claim, shares still transfer, the
+    ///      fee still accrues, and a rebalance still starts and fills. Only an issue reads the pause.
+    function test_aPauseStopsIssuesAndNoExitNorARebalance() public {
+        _fund(index, stranger, 2e18);
+        vm.prank(guardian);
+        factory.pauseMinting(address(index));
+        assertTrue(factory.mintingPaused(address(index)));
+
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.NotAllowedMinter.selector, stranger));
+        index.issue(1e18, stranger);
+        assertEq(index.totalSupply(), SHARES, "nothing was issued");
+
+        // Every way out, and every other thing an index does, goes on.
+        uint256[] memory out = index.previewRedeem(10e18);
+        vm.prank(alice);
+        index.redeem(10e18, alice);
+        assertEq(eth.balanceOf(alice), out[0], "a redeem pays the basket");
+        vm.prank(alice);
+        index.redeemSkipping(10e18, alice, 1);
+        uint256 owed = index.claimOf(alice, address(eth));
+        assertGt(owed, 0);
+        vm.prank(alice);
+        index.claim(address(eth), alice);
+        assertEq(eth.balanceOf(alice), out[0] + owed, "a claim is collected");
+        vm.prank(alice);
+        index.transfer(stranger, 1e18);
+        assertEq(index.balanceOf(stranger), 1e18, "shares still move");
+        index.accrueFees();
+
+        _open(0, index.AUCTION_DURATION());
+        executor.execute(index, _fair(), "");
+        assertEq(index.rebalanceNonce(), 1, "a rebalance starts and fills under the pause");
+
+        // The owner lifts it, and the same issue goes through.
+        vm.prank(owner);
+        factory.resumeMinting(address(index));
+        _fund(index, stranger, 1e18);
+        vm.prank(stranger);
+        index.issue(1e18, stranger);
+        assertEq(index.balanceOf(stranger), 2e18);
+    }
+
+    /// @dev RW-3: a quote that refuses every trade worth making still passes a fill that takes nothing out, and such
+    ///      a sliver, filled by the role that posted the quote, settled the proposal and restarted the index's whole
+    ///      interval, up to 91 days, for the owner and a new guardian too. Since 2026-11-23 either starts again a
+    ///      week later, so the hold outlasts a guardian's replacement by that week at most, as a keep mask's does.
+    function test_RW3_aSliverUnderAQuoteHoldsTheRolesOffAWeekNotAQuarter() public {
+        (WeightedHub quarterly, uint256 interval) = _xs3Index();
+        vm.warp(quarterly.lastRebalance() + interval);
+        // No tolerance and no mask: at these prices every trade that takes anything out is refused.
+        uint256[] memory prices = _three(type(uint128).max, 1, 1);
+        vm.prank(guardian);
+        quarterly.startRebalance(0, prices, 0);
+        (uint256 eta,) = quarterly.pendingRebalance();
+        vm.warp(eta + quarterly.AUCTION_DURATION());
+        // The sliver: the two smallest legs doubled, nothing taken out.
+        executor.execute(quarterly, _three(166_633, 2 * 5e12, 2 * 10_000), "");
+        uint256 fillTime = block.timestamp;
+        assertEq(quarterly.earliestRebalance(), fillTime + interval, "no mask: the whole quarter, for strangers");
+
+        uint256 rolesEarliest = fillTime + quarterly.MIN_REBALANCE_INTERVAL();
+        vm.warp(rolesEarliest - 1);
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.RebalanceTooSoon.selector, rolesEarliest));
+        quarterly.startRebalance(0);
+        vm.warp(rolesEarliest);
+        vm.prank(owner);
+        quarterly.startRebalance(0);
+        (eta,) = quarterly.pendingRebalance();
+        assertEq(eta, rolesEarliest + quarterly.REBALANCE_DELAY(), "the owner reopens it a week on");
+    }
+
     /// @dev The short restart holds for a start with a mask too, so the guardian can renew a keep around a component
     ///      that cannot move as soon as a stranger could start without one, and not a second before; a fill without a
     ///      mask then restores the index's own interval.

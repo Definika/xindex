@@ -4,17 +4,40 @@ How each flow works, and what an app needs to get right when it builds on the co
 
 ## Flows
 
-**Create.** Only a wallet the factory's owner approved creates an index: `isApprovedCreator(account)` says whether one
-may, and `createIndex` from any other reverts `CreatorNotApproved(account)`. No contract reads a price, so none can
-compare the units a creator names with its weights. An index created off its weights carries that distance from its
-first day and loses it to whoever fills its auctions: on the exact model, one last-second fill takes 15.5% of a 50/50
-index created 90/10 by value, and at the worst a fifth of an index per fill. The approval keeps a stranger from creating
-such an index, and the team creates on the weights at the app's prices. A partner asks the team, which creates the index
-and hands on its creator role. The creator picks whitelisted tokens, a weight for each in basis points summing to
-10,000, and the value one index token should start at. The app turns each weight into starting units at its own prices,
-`units_i = w_i / 10,000 × value / price_i` in the token's raw units, calls `predictIndexAddress` to show the address,
-and calls `createIndex`. The factory reads no price and takes the units as named, so the app has to derive them on the
-weights: the first rebalance, the index's interval after creation, pays whatever distance is left to whoever fills it.
+**Create, and buy.** Only a wallet the factory's owner approved creates an index: `isApprovedCreator(account)` says
+whether one may, and either creation from any other reverts `CreatorNotApproved(account)`. A partner asks the team,
+which approves its wallet or creates the index and hands on its creator role. The creator picks whitelisted tokens,
+a weight for each in basis points summing to 10,000, and how much to buy. The app turns each weight into units at
+Pyth's prices, `units_i = w_i / 10,000 × value / price_i` in the token's raw units, with `value` what one index token
+is to be worth at the start. Then, in order:
+
+1. `predictIndexAddress(creator, name, symbol, components, params)` gives the address the index will have.
+2. The creator approves every component to that address, for `previewIssue`'s amounts: each component's units for
+   the shares bought plus the index's fee, rounded up, `ceil(gross × units / 1e18)` with
+   `gross = ceil(shares × 10,000 / (10,000 − fee))`. Only this factory can deploy at that address, and only for
+   that creator, so nobody else can spend the approval.
+3. Pyth's update for the components' feeds (`priceFeedOf(token)`) is posted to Pyth's contract, since the creation
+   reads prices of the last minute.
+4. `createAndIssue(name, symbol, components, params, shares, to)` creates the index and issues `shares` to `to`,
+   pulling the basket from the creator. It is an issue like any other: the index's fee is charged, a gated index
+   issues only to its creator, and a component that arrives short, or that the index could not send out again,
+   reverts the whole creation, so no index is left that its creator could not back.
+
+On a factory with an oracle, which every mainnet factory is, the creation reverts `OffWeights(token, weight,
+valueShare)` unless each component's share of the index's value at Pyth's prices lies within
+`MAX_WEIGHT_DEVIATION`, 5%, of its weight, relative to the weight: an index starts on its weights. A component
+without a feed, or whose price is stale or unusable, reverts the creation (`NoPriceFeed`, `StalePrice`,
+`UnusablePrice`). Creating and issuing in one call costs about what the two cost apart, some 110,000 gas a component
+on plain tokens, so it fits one transaction up to about 125 components; a wider index is created with
+`createIndex(name, symbol, components, params)`, under the same checks and with no shares, and issued afterwards.
+Paying in USDC or USDT is the app's to compose: swap into the creator's wallet, then the four steps above.
+
+The weights are the creator's to change afterwards, the components are not: `proposeWeights(index, weights)` starts
+7 days of notice (`WEIGHTS_DELAY`), after which anyone applies them with `executeWeights` within `PROPOSAL_WINDOW`;
+the creator, the owner or the guardian cancels with `cancelWeights`. Nothing moves at the change: the next rebalance
+moves the units toward the new weights, under the bar, the caps and Pyth's check. An app shows a pending change
+(`weightsEta`) to every holder, who can leave before it applies.
+
 Every unit has to lie in `[MIN_RAW_UNITS, maxUnitsOf(token)]` or the call reverts `UnitsOutOfRange(token, units)`;
 `maxUnitsOf` is `MAX_WHOLE_TOKENS` (1e9) whole tokens per index token, never above `MAX_UNITS`, so a wei-share stays
 worth nothing (RX-5). The floor binds hardest on Tether Gold, whose 10,000 raw units are 0.01 oz, about $30, so an index
@@ -23,13 +46,21 @@ token worth $100 can hold it at 30% or more; for WBTC, 0.0001 BTC, about $11, at
 show the index address and `creatorOf` to avoid spoofing. The creator role is handed on in two steps: `transferCreator`
 offers it and the new creator takes it with `acceptCreator`, so `creatorOf` only ever names an account that agreed
 (RX-22). `acceptCreator` accrues the index's streaming fee first, to the outgoing creator (RW-6), so the accrual's
-events precede `CreatorTransferred`, and it reverts if called from inside one of the index's own calls. The new
+events precede `CreatorTransferred`, and it reverts if called from inside one of the index's own calls. It also
+cancels a change of weights the outgoing creator left pending (`WeightsCancelled`): the new creator proposes its
+own (HK-16). The new
 creator needs no approval: the approval is read at creation and nowhere else.
 
 The address commits to the creator, the name, the symbol, every component's token, units and weight, and the index's
 fee rates, referral share and rebalance interval. A change of the fee policy that lands between the preview and the
 transaction changes the address, never the terms at an address (RZ-28). A listing is no term of an index, so a
 relisting changes neither.
+
+**A pause of minting.** Before it offers any mint, an app reads `mintingPaused(index)` and
+`mintingPaused(address(0))` on the factory: while either is true every issue of that index reverts
+`NotAllowedMinter`, whichever way it is reached (in kind, the zap, the builder's `mint`, a creation with a first
+issue). Redeeming, claims and transfers are never paused. `MintingPaused(index, by)` and `MintingResumed(index)`
+announce it, with a zero `index` for every index.
 
 **Mint with USDC/USDT.** For each leg the app picks a venue, quotes it (QuoterV2 `quoteExactOutput` for a V3 leg, the
 V4 Quoter for a V4 one), sets per-leg limits and the overall `maxAmountIn`, reads `rebalanceNonce()`, and calls
@@ -51,14 +82,19 @@ non-zero overall `minAmountOut`, passes `rebalanceNonce()`, and calls `burnToTok
    guardian's keep-mask fill, XS-3), anyone calls `startRebalance(0)`. It is a plain call: it takes no ether and no
    data and reads no price. It calls no component and only sets the auction's start, `eta`, 2 hours ahead. The owner
    or guardian may start with a quote instead, `startRebalance(keepMask, prices, tolerance)` (see "Start with a
-   quote" below).
+   quote" below). The owner or guardian may also start before the index's interval has passed, once a fill has
+   settled and `MIN_REBALANCE_INTERVAL`, a week, has passed since it: a fill restarts the whole interval however
+   little it traded, and this is how an index a sliver closed is reopened (RW-3). Before an index's first fill they
+   wait out its interval as anyone does. `canStartRebalance()`
+   answers for a stranger; a start too soon reverts `RebalanceTooSoon(earliest)` with the caller's own earliest.
 2. For 2 hours nothing changes. The units a fill settles at are named at the fill, so the notice is for executors to
    ready their stock, routes and prices, not a window holders need. Issue and redeem stay open throughout.
 3. A 4-hour auction follows. Its bar, `currentBar()`, starts at a half (`BAR_MAX`), halves every 12 minutes
    (`BAR_HALF_LIFE`) along a straight line, rounds up, and ends at 476,837,158,204 in 1e18ths at the auction's last
    second. An executor contract calls `executeRebalance(newUnits, data)`, naming the recorded units every component
    is to have, in component order; `recordedUnits()` returns the current ones, and a component the executor leaves
-   alone gets its current units. The hub reads no price of its own. It accepts the units when these hold:
+   alone gets its current units. The hub judges them on units first, and on a factory with an oracle then checks
+   them against Pyth's prices. It accepts the units when these hold:
    - every component keeps at least four fifths of its own units, rounded up, and at most twice them, and a kept
      component exactly its units, or the call reverts `LegOutOfBounds(index, units, lowest, highest)`;
    - the weighted gain `⌊Σ w_i · L(x_i) / 10,000⌋` is at least the bar, or the call reverts `GainBelowBar(gain,
@@ -66,7 +102,16 @@ non-zero overall `minAmountOut`, passes `rebalanceNonce()`, and calls `burnToTok
      down;
    - when the proposal's start posted a quote, the fill brings in, at the quote's prices, at least `1 − tolerance` of
      the value it takes out: `Σ p_i · (v_i − u_i)` over the components that grow is at least `⌈Σ p_i · (u_i − v_i)
-     over those that shrink · (1e18 − tolerance) / 1e18⌉`, or the call reverts `BelowQuote(valueIn, floor)`.
+     over those that shrink · (1e18 − tolerance) / 1e18⌉`, or the call reverts `BelowQuote(valueIn, floor)`;
+   - on a factory with an oracle (`PRICES()` is not zero), the same inequality at Pyth's prices, with a tolerance
+     that rises in a straight line from nothing at the auction's first second to `MAX_ORACLE_TOLERANCE`, 2%, at its
+     last, or the call reverts `BelowOracleValue(valueIn, floor)`. Each component that moves is valued through the
+     factory's reader (`IPythPrices`, at `priceFeedOf(token)`): what leaves at Pyth's price plus its confidence,
+     what arrives at the price less it. The price must have been published within the last 60 seconds
+     (`StalePrice`), so the executor posts Pyth's update to Pyth's contract in the same transaction, before it
+     fills; a component without a feed (`NoPriceFeed`), or with a price the reader cannot use (`UnusablePrice`),
+     stops only a fill that moves it. This check can only refuse: a fill the units refuse is refused whatever the
+     prices say.
 
    The executor receives what the shrinking components release and, inside its `onXindexRebalance` callback, must
    send back what the growing ones need; the fill stands only if every component then backs the new units, with the
@@ -80,9 +125,10 @@ non-zero overall `minAmountOut`, passes `rebalanceNonce()`, and calls `burnToTok
    clears the highest bar is the one that puts the index on its weights at the market's prices, so executors compete by
    filling earlier, which leaves more with the holders. A fair price therefore needs an executor bidding, the keeper in
    `keeper/` first. A lone executor that waits for the last second keeps the index's distance from its weights, out of
-   the holders' value: 0.3 to 0.6% of an index in an ordinary week, 5.0% after one coin of two doubled. A quote posted
-   with the start caps it at the quote's tolerance of what the executor trades. On its weights an index has nothing to
-   take (see "Known limitations").
+   the holders' value on units alone: 0.3 to 0.6% of an index in an ordinary week, 5.0% after one coin of two
+   doubled. Pyth's check caps that at the tolerance of what the executor trades, 2% at the last second and less
+   before it, and a quote posted with the start caps it at the quote's tolerance. On its weights an index has
+   nothing to take (see "Known limitations").
 6. If nobody fills, the auction expires. The owner or guardian can start a fresh one at once; anyone else can 2 hours
    after the auction's last second.
 7. The owner or guardian can cancel a rebalance. Cancelling a live one makes others wait 2 hours from the cancel to

@@ -21,6 +21,7 @@ export const MAX_GROWTH = WAD;
 export const BAR_MAX = 5n * 10n ** 17n;
 export const BAR_HALF_LIFE = 720n;
 export const AUCTION_DURATION = 14_400n;
+export const MAX_ORACLE_TOLERANCE = 2n * 10n ** 16n;
 
 /// The most the keeper grows a leg: 1.9 times its units. The hub allows twice, but the score `L` peaks near 1.92 and
 /// falls after, so past it a leg costs more and scores less; under it the gain only rises with the units named.
@@ -114,6 +115,37 @@ export function quoteOf(units, newUnits, prices, tolerance) {
   return { valueOut, valueIn, floor, holds: valueIn >= floor };
 }
 
+/// The tolerance of Pyth's check `elapsed` seconds into an auction, as `WeightedMath.oracleToleranceAt`: from nothing
+/// to MAX_ORACLE_TOLERANCE along a straight line, rounded down. Null once the auction is over, where the hub reverts.
+export function oracleToleranceAt(elapsed) {
+  const e = BigInt(elapsed);
+  if (e < 0n || e > AUCTION_DURATION) return null;
+  return (MAX_ORACLE_TOLERANCE * e) / AUCTION_DURATION;
+}
+
+/// Pyth's check on a fill `elapsed` seconds into its auction, as `WeightedMath.oracleCheck`: at `values`, what one
+/// raw unit of each leg is worth as `PythPrices` reports it for the way that leg moves, the units the fill adds must
+/// be worth at least the units it takes, less the tolerance of that second, rounded up. `holds` is the hub's verdict;
+/// null once the auction is over.
+export function oracleOf(units, newUnits, values, elapsed) {
+  const tolerance = oracleToleranceAt(elapsed);
+  if (tolerance === null) return null;
+  return { tolerance, ...quoteOf(units, newUnits, values, tolerance) };
+}
+
+/// The value `PythPrices` puts on each leg of a fill from `units` to `newUnits`: `leaving[i]` for a leg that falls,
+/// `arriving[i]` for one that rises, nothing for one that keeps its units, which the hub does not read. Null when a
+/// leg that moves has no value: the hub would refuse that fill.
+export function legValuesOf(units, newUnits, leaving, arriving) {
+  const values = [];
+  for (let i = 0; i < units.length; i++) {
+    const value = newUnits[i] < units[i] ? leaving[i] : newUnits[i] > units[i] ? arriving[i] : 0n;
+    if (value === null || value === undefined) return null;
+    values.push(value);
+  }
+  return values;
+}
+
 /// The units the keeper names for a fill that must clear `bar`: the fill that leaves the index the least value at
 /// `prices` among those the index accepts, so the keeper's best at that second; whether it pays is the simulation's
 /// to say, not this function's.
@@ -131,9 +163,13 @@ export function quoteOf(units, newUnits, prices, tolerance) {
 /// price plus that cost, shrunk only past it at the price less that cost, and otherwise left, so a leg within the
 /// cost of its weight is not traded for nothing. `quote`, `{prices, tolerance}` as the hub reports it, is the quote
 /// posted with the proposal, which the fill must also hold: the units named then give the index more, as much as the
-/// quote asks. Returns `{newUnits, gain}`, checked in the hub's exact arithmetic, or null when fewer than two legs can
-/// move or nothing this function can name clears the bar and holds the quote.
-export function nameUnits({ units, weights, keepMask = 0n, prices, bar, costBps = 0, quote = null }) {
+/// quote asks. `oracle`, `{leaving, arriving, elapsed}`, is Pyth's check on a factory with an oracle: each leg's
+/// value per raw unit as `PythPrices` reports it for a leg that leaves and for one that arrives (null for a leg it
+/// cannot value), and the auction's second, which sets the tolerance; the fill must hold it too, so early in an
+/// auction the units named leave the keeper next to nothing. Returns `{newUnits, gain}`, checked in the hub's exact
+/// arithmetic, or null when fewer than two legs can move or nothing this function can name clears the bar and holds
+/// the quote and Pyth's check.
+export function nameUnits({ units, weights, keepMask = 0n, prices, bar, costBps = 0, quote = null, oracle = null }) {
   const free = [];
   for (let i = 0; i < units.length; i++) {
     const kept = ((keepMask >> BigInt(i)) & 1n) === 1n;
@@ -171,6 +207,10 @@ export function nameUnits({ units, weights, keepMask = 0n, prices, bar, costBps 
     const g = gainOf(units, named, weights, keepMask);
     if (g.error !== undefined || g.gain < bar) return null;
     if (quote !== null && !quoteOf(units, named, quote.prices, quote.tolerance).holds) return null;
+    if (oracle !== null) {
+      const values = legValuesOf(units, named, oracle.leaving, oracle.arriving);
+      if (values === null || !oracleOf(units, named, values, oracle.elapsed)?.holds) return null;
+    }
     return g.gain;
   };
 

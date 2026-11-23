@@ -2,9 +2,11 @@
 // Xindex keeper: starts and fills `WeightedHub` auctions through its own `KeeperExecutor`. It holds no role in the
 // protocol (starting and filling are open to anyone); its key is a dedicated hot key that can only fill. See README.md.
 //
-// No contract reads a price (since 2026-11-10): a fill names the units the index settles at, and the index accepts them
-// when a weighted gain in units clears the auction's bar, which falls with time. The keeper prices its own trades, off
-// chain, at Pyth's prices from Hermes, each confirmed by Pyth's contract before anything is valued at it.
+// A fill names the units the index settles at, and the index accepts them when a weighted gain in units clears the
+// auction's bar, which falls with time. On a factory with an oracle the index then checks the fill against Pyth's
+// prices of the last minute, a check that can only refuse, so the fill carries Pyth's signed update and the executor
+// posts it first. The keeper prices its own trades, off chain, at Pyth's prices from Hermes, each confirmed by Pyth's
+// contract before anything is valued at it.
 //
 // Every block L, with T = L's timestamp + 12, the one block a fill sent now can land in:
 //   1. for each open auction the bot names, at its prices, the units that clear the bar at T while leaving the index
@@ -28,6 +30,7 @@ import { ABI, createChain, revertReason } from "./bot/chain.mjs";
 import { createHermes, priceKey } from "./bot/hermes.mjs";
 import * as M from "./bot/math.mjs";
 import { createNeeds } from "./bot/needs.mjs";
+import { createPythFor } from "./bot/pyth.mjs";
 import { TxTracker } from "./bot/nonce.mjs";
 import { createRequestFiller } from "./bot/requests.mjs";
 import { createRoutes, marketOf } from "./bot/routes.mjs";
@@ -41,6 +44,12 @@ const MAX_FILL_CHECKS = 8; // open auctions simulated per block, richest first (
 const MAX_START_CHECKS = 4; // ready indexes whose start is simulated per round, richest first (RX-34)
 const DAY = 86_400n;
 const INT256_MIN = -(2n ** 255n);
+// Pyth's tolerance grows by 2% over an auction's four hours. The keeper names its units as if the auction were this
+// many seconds younger, a tenth of a percent of tolerance, so a newer Pyth update that lands ahead of its fill, by a
+// hair off the prices it simulated, does not push a fill named at the very edge over it. A fill that reverts on
+// chain is a strike against its auction (XS-4), so a rival that could knock fills out this way would keep the keeper
+// off an auction for an hour: the margin is what makes that take a real move in prices, not a newer timestamp.
+const ORACLE_LAG = 720n;
 const ONCE = process.argv.includes("--once");
 const ONCE_HEAD_WAIT_MS = 60_000; // how long --once waits for a block it can read
 
@@ -69,7 +78,7 @@ const tokensOf = (short) => short.map((s) => s.token).join(", ");
 let subsidies = []; // {at, usd}: fills sent below zero profit, for SUBSIDY_BUDGET_USD's rolling day (RX-16)
 let startKeys = []; // route keys of the last start round, kept until the next (RX-34)
 
-const statics = new Map(); // index -> {tokens, ids, decimals, weights}: `ids` null where the keeper has no price id
+const statics = new Map(); // index -> {tokens, ids, decimals, reader, pyth}: `ids` null where the keeper has no price id
 const started = new Map(); // index -> timestamp of a start of ours not yet filled
 const said = new Map(); // index -> the last reason logged, so a waiting index is not logged every block
 const worth = new Map(); // `index:proposal` -> {supply, tvl, block}: an open auction's index, valued every 25 blocks
@@ -99,7 +108,15 @@ async function staticsOf(index, blockNumber) {
     );
     if (decimals.some((r) => r.status !== "success")) throw new Error("a decimals read failed");
     const ids = tokens.map((t) => cfg.priceIds[t.toLowerCase()] ?? null);
-    statics.set(index, { tokens, ids, decimals: decimals.map((r) => Number(r.result)), weights: null });
+    // On a factory with an oracle, the reader a fill's legs are valued through and Pyth's contract behind it: both
+    // immutable. Zero where the factory has none, and then no fill is checked against a price.
+    const reader = await chain.read(index, ABI.hub, "PRICES", [], blockNumber);
+    const checked = BigInt(reader) !== 0n;
+    const pyth = checked ? await chain.read(reader, ABI.prices, "PYTH", [], blockNumber) : null;
+    if (checked && pyth.toLowerCase() !== setup.pyth.toLowerCase()) {
+      throw new Error(`${index} is checked against Pyth at ${pyth}, not the ${setup.pyth} this keeper is set up for`);
+    }
+    statics.set(index, { tokens, ids, decimals: decimals.map((r) => Number(r.result)), reader: checked ? reader : null, pyth });
   }
   return statics.get(index);
 }
@@ -121,11 +138,11 @@ async function withStatics(list, L, what, onUnread = () => {}) {
   return read;
 }
 
-/// The weights of `index`, fixed at its creation, in basis points.
-async function weightsOf(index, st, blockNumber) {
-  if (st.weights === null) st.weights = await chain.read(index, ABI.hub, "componentWeights", [], blockNumber);
-  return st.weights;
-}
+/// The weights of `index`, in basis points, read every time. Its creator may change them behind a notice
+/// (`proposeWeights`, since 2026-11-23): kept from the first read, a fill would be named against weights the index no
+/// longer has, and the hub scores it at the ones it does, so the keeper would be absent from exactly the auction a
+/// change of weights opens.
+const weightsOf = (index, blockNumber) => chain.read(index, ABI.hub, "componentWeights", [], blockNumber);
 
 /// The Hermes prices of `ids`, with none for a coin without an id.
 const pricesFrom = (latest, ids) => ids.map((id) => (id ? latest.get(priceKey(id)) : undefined));
@@ -169,6 +186,9 @@ async function pricesOf(st, L, keepMask) {
   });
 }
 
+/// What a fill on a factory with an oracle posts to Pyth and what Pyth's check will make of its legs: bot/pyth.mjs.
+const pythFor = createPythFor({ chain, hermes, factory: cfg.factory, abi: ABI, hermesMs: HERMES_MS, revertReason });
+
 /// The fill of `index` the keeper would send for block L+1: the units it names at its own prices to clear the bar
 /// then, and the settlement the hub previews for them. `eta`, when given, is written into the hub for the call, to see
 /// an auction that is not open yet. `maxSupply` is the most shares the fill accepts: the supply now, plus the streaming
@@ -186,22 +206,49 @@ async function preview(index, st, L, keepMask, eta) {
   const quote = quotePrices.length ? { prices: quotePrices, tolerance: quoteTolerance } : null;
   const [units, weights, bar, prices] = await Promise.all([
     chain.read(index, ABI.hub, "recordedUnits", [], L.number),
-    weightsOf(index, st, L.number),
+    weightsOf(index, L.number),
     chain.call({ to: index, abi: ABI.hub, functionName: "currentBar", args: [] }, L.number, over),
     pricesOf(st, L, keepMask),
   ]);
   if (bar === 0n) throw new Error("no auction is open at the next block");
+  // On a factory with an oracle the fill must also hold Pyth's check, at the tolerance of the auction's second, with
+  // each leg valued as the hub's reader values it once the fill's own update is posted. A leg the reader cannot
+  // value is left alone, as one the keeper cannot price is.
+  const pyth = await pythFor(st, L, over, prices.map((p) => p !== null));
+  let oracle = null;
+  if (pyth !== null) {
+    const opened = eta ?? (await chain.read(index, ABI.hub, "pendingRebalance", [], L.number))[0];
+    for (let i = 0; i < prices.length; i++) if (pyth.leaving[i] === null) prices[i] = null;
+    const elapsed = T - opened;
+    oracle = { leaving: pyth.leaving, arriving: pyth.arriving, elapsed: elapsed > ORACLE_LAG ? elapsed - ORACLE_LAG : 0n };
+  }
   // Dollars per raw unit: only their ratios decide the units named.
   const perUnit = prices.map((p, i) => (p ? M.priceUsd(p) / 10 ** st.decimals[i] : null));
-  const named = U.nameUnits({ units, weights, keepMask, prices: perUnit, bar, costBps: cfg.tradeCostBps, quote });
-  if (!named) throw new Error(quote ? "no units the keeper can price clear the bar and hold the quote" : "no units the keeper can price clear the bar");
+  const named = U.nameUnits({ units, weights, keepMask, prices: perUnit, bar, costBps: cfg.tradeCostBps, quote, oracle });
+  if (!named) {
+    const held = [quote ? "hold the quote" : null, oracle ? "hold Pyth's check" : null].filter(Boolean);
+    throw new Error(`no units the keeper can price clear the bar${held.length ? ` and ${held.join(" and ")}` : ""}`);
+  }
+  // The hub's own preview of those units. Where Pyth checks the fill, it is asked after the update the fill will
+  // post: asked alone it would meet whatever stale price Pyth's contract holds, and revert.
   const at = { to: index, abi: ABI.hub, functionName: "previewRebalance", args: [named.newUnits] };
-  const [, gain, out, need] = await chain.call(at, L.number, over);
+  let previewed;
+  if (pyth?.post) {
+    const [posted, answer] = await chain.callAfter([pyth.post, at], L.number, over);
+    if (!posted.ok) throw new Error(`Pyth refused the update Hermes served: ${revertReason(posted.error)}`);
+    if (!answer.ok) throw answer.error;
+    previewed = answer.result;
+  } else {
+    previewed = await chain.call(at, L.number, over);
+  }
+  const [, gain, out, need] = previewed;
   const moving = out.map((_, i) => i).filter((i) => out[i] > 0n || need[i] > 0n);
   const supply = await chain.read(index, ABI.hub, "totalSupply", [], L.number);
   const [feeShares] = await chain.call({ to: index, abi: ABI.hub, functionName: "pendingStreamingFee", args: [] }, L.number, over);
   const maxSupply = M.withTolerance(supply + feeShares, cfg.supplyToleranceBps);
-  return { T, moving, newUnits: named.newUnits, bar, gain, priceOf: (i) => prices[i], over, out, in: need, maxSupply };
+  // What the fill posts and pays Pyth, or nothing on a factory without an oracle.
+  const update = pyth?.post ? { updates: pyth.updates, fee: pyth.fee } : { updates: [], fee: 0n };
+  return { T, moving, newUnits: named.newUnits, bar, gain, priceOf: (i) => prices[i], over, out, in: need, maxSupply, update };
 }
 
 /// The routes, stock change and routed volume of a settlement, or `short` naming coins the executor can neither buy
@@ -267,12 +314,25 @@ async function legs(index, st, sim, maxIn, L, key) {
 /// Simulates the executor's fill of `sim` and prices it: profit after gas, and the transaction that would send it.
 async function priceFill(index, sim, leg, maxIn, L) {
   if (ethUsd === null) return { skip: "no ETH price to value gas" };
-  const args = [index, sim.newUnits, leg.routes, maxIn, sim.maxSupply, INT256_MIN, sim.T];
+  // The executor's fill, floored at `floor`: it posts Pyth's update first, for the fee the call carries.
+  const fillOf = (floor) => [
+    {
+      index,
+      newUnits: sim.newUnits,
+      routes: leg.routes,
+      maxAmountsIn: maxIn,
+      maxSupply: sim.maxSupply,
+      minUsdcDelta: floor,
+      deadline: sim.T,
+      pythUpdate: sim.update.updates,
+    },
+  ];
+  const args = fillOf(INT256_MIN);
   let usdcDelta;
   let inner;
   try {
     [usdcDelta, inner] = await chain.call(
-      { to: cfg.executor, abi: ABI.executor, functionName: "fill", args },
+      { to: cfg.executor, abi: ABI.executor, functionName: "fill", args, value: sim.update.fee },
       L.number,
       sim.over,
     );
@@ -284,7 +344,8 @@ async function priceFill(index, sim, leg, maxIn, L) {
   const gas = M.min(M.gasLimitFor(used), TX_GAS_CAP);
   const nextBase = M.nextBaseFee(L);
   if (nextBase + tip > feeCap) return { skip: `base fee ${M.weiToGwei(nextBase)} gwei above MAX_FEE_GWEI` };
-  const gasUsd = M.fillCostUsd({ used, nextBase, tip, ethUsd });
+  // Pyth's fee is counted with the gas: both are ether the fill spends.
+  const gasUsd = M.fillCostUsd({ used, nextBase, tip, ethUsd, value: sim.update.fee });
   const profit = M.profitUsd({ usdcDelta, inventoryUsd: leg.inventoryUsd, gasUsd });
   const bounds = {
     simDelta: usdcDelta,
@@ -295,15 +356,11 @@ async function priceFill(index, sim, leg, maxIn, L) {
     slippageBps: cfg.slippageBps,
   };
   const floor = M.usdcFloor(bounds);
-  const data = encodeFunctionData({
-    abi: ABI.executor,
-    functionName: "fill",
-    args: [index, sim.newUnits, leg.routes, maxIn, sim.maxSupply, floor, sim.T],
-  });
+  const data = encodeFunctionData({ abi: ABI.executor, functionName: "fill", args: fillOf(floor) });
   const tx = {
     to: cfg.executor,
     data,
-    value: 0n,
+    value: sim.update.fee,
     gas,
     maxFeePerGas: M.min(2n * nextBase + tip, feeCap),
     maxPriorityFeePerGas: tip,
@@ -673,7 +730,7 @@ async function onBlock(L) {
     const sent = await tracker.send(best.tx, { label: `fill ${best.index} ${best.proposal}`, targetBlock: Number(L.number) + 1, deadline: best.deadline });
     // The budget is charged for a fill that went out, at what its floor lets it lose: one the node refused costs
     // nothing (RZ-9, RZ-16).
-    if (sent === null) log(best.index, "not sent: the node refused it, its nonce taken; checked again at the next block");
+    if (sent === null) log(best.index, "not sent (the tracker's line says why); checked again at the next block");
     else if (best.worst < 0) subsidies.push({ at: L.timestamp, usd: -best.worst });
     return false;
   }

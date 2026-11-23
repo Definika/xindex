@@ -4,11 +4,13 @@ pragma solidity 0.8.28;
 import {console2} from "forge-std/Script.sol";
 import {WeightedIndexFactory} from "../src/WeightedIndexFactory.sol";
 import {WeightedHub} from "../src/WeightedHub.sol";
+import {WeightedMath} from "../src/WeightedMath.sol";
 import {IndexZap} from "../src/IndexZap.sol";
 import {BasketBuilder} from "../src/BasketBuilder.sol";
 import {MintRequests} from "../src/MintRequests.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
+import {IPythPrices} from "../src/interfaces/IPythPrices.sol";
 import {DeployChecks} from "./DeployChecks.sol";
 
 /// @notice Deploys Xindex: `WeightedIndexFactory`, which deploys the `WeightedHub` implementation every index is a
@@ -36,22 +38,29 @@ import {DeployChecks} from "./DeployChecks.sol";
 ///                       Chain; on those two it defaults to the chain's address book, and nothing else is accepted.
 ///   USDC, USDT          The two stablecoins, the only currencies the zap and the basket builder take and pay and
 ///                       MintRequests escrows. Resolved like the router.
+///   PYTH                Pyth's price contract, which every rebalance fill of the factory is checked against. On
+///                       Ethereum, BNB Chain and Base it is the address book's, and nothing else is accepted; elsewhere
+///                       unset builds a factory whose fills no price checks.
 contract DeployWeighted is DeployChecks {
-    /// @notice keccak256 of `WeightedIndexFactory`'s init code, which embeds the `WeightedHub` implementation's, as this
+    /// @notice keccak256 of `WeightedIndexFactory`'s init code, which embeds the `WeightedHub` implementation's and
+    ///         `PythPrices`', as this
     ///         commit builds it with this repository's foundry.toml. With the two below, this is the release record a
     ///         mainnet broadcast is bound to (CF-5): `deploy` refuses to broadcast on a pinned chain from any other build (a
     ///         local edit, a lib/ checkout off foundry.lock, a FOUNDRY_* override), and `test_CF5_*` in
     ///         test/Scripts.t.sol fails until these equal the build, so only a reviewed, CI-green commit moves them.
-    bytes32 public constant FACTORY_INITCODE_HASH = 0x1a8022424f3cb0b1a3bdf8f3d6c149b480764d58d3fa95d211fa6820d6e709d0;
+    bytes32 public constant FACTORY_INITCODE_HASH = 0x500cc51cd523baa0a4bd352ef20c698532438693b309f957f4cee4255f9bcdd1;
     /// @notice keccak256 of `IndexZap`'s init code, as above.
-    bytes32 public constant ZAP_INITCODE_HASH = 0xbaadfe5668c0ced3f32af5ab073b5b8602f7ec2999e2aeb3b59d03ab11320e3b;
+    bytes32 public constant ZAP_INITCODE_HASH = 0xc3ee5028c643112bfdd217d4908b40f69df3b5feadc1bd9a5e17dddad08da770;
     /// @notice keccak256 of `BasketBuilder`'s init code, as above.
     bytes32 public constant BUILDER_INITCODE_HASH = 0x765ff137667f291ff1ba82d2fd82d15ced38faaa7dbe192bc830ace97b2d7f92;
+    /// @notice keccak256 of `WeightedMath`'s init code, as above: deployed on its own since 2026-11-23, before the
+    ///         factory, which the factory's init code no longer has room to embed (EIP-3860).
+    bytes32 public constant MATH_INITCODE_HASH = 0x549b47e8001ddecbf0c40c630a2d2f39439601a439ea0564efdcbc9b87f9a911;
     /// @notice keccak256 of `MintRequests`' init code, as above.
     bytes32 public constant REQUESTS_INITCODE_HASH = 0x41e888e2c8f02f0e76301ef6b8b614e6494aa70bac20f07590979ddc448047dc;
 
-    /// @dev How many contracts the release record covers: the factory, the zap, the builder and MintRequests.
-    uint256 private constant RELEASED = 4;
+    /// @dev How many contracts the release record covers: the factory, the zap, the builder, MintRequests and the math.
+    uint256 private constant RELEASED = 5;
 
     /// @notice The local build of `name` is not the one this commit records: its init code hashes to `actual`.
     error BuildNotReleased(string name, bytes32 expected, bytes32 actual);
@@ -67,6 +76,7 @@ contract DeployWeighted is DeployChecks {
             vm.envOr("UNIVERSAL_ROUTER", address(0)),
             vm.envOr("USDC", address(0)),
             vm.envOr("USDT", address(0)),
+            vm.envOr("PYTH", address(0)),
             vm.envOr("OWNER_IS_NOT_A_SAFE", address(0))
         );
     }
@@ -79,27 +89,35 @@ contract DeployWeighted is DeployChecks {
     /// @param router Uniswap's Universal Router, through which the zap and the builder swap; see {resolveRouter}.
     /// @param usdc USDC for the zap, the builder and MintRequests; see {resolveStable}.
     /// @param usdt USDT for the zap, the builder and MintRequests; see {resolveStable}.
+    /// @param pyth Pyth's contract, which the factory's fills are checked against; see {resolvePyth}.
     /// @param acknowledged The owner the operator acknowledges is a contract but not a Safe; see {checkOwner}.
     /// @return factory The deployed factory.
     /// @return zap The deployed zap.
     /// @return builder The deployed basket builder.
     /// @return requests The deployed MintRequests.
-    function deploy(address owner, address guardian, address router, address usdc, address usdt, address acknowledged)
-        public
-        returns (WeightedIndexFactory factory, IndexZap zap, BasketBuilder builder, MintRequests requests)
-    {
+    function deploy(
+        address owner,
+        address guardian,
+        address router,
+        address usdc,
+        address usdt,
+        address pyth,
+        address acknowledged
+    ) public returns (WeightedIndexFactory factory, IndexZap zap, BasketBuilder builder, MintRequests requests) {
         checkBroadcaster();
         checkOwner(owner, acknowledged);
         checkGuardian(owner, guardian);
         router = resolveRouter(router);
         usdc = resolveStable("USDC", usdc, pinnedUsdc());
         usdt = resolveStable("USDT", usdt, pinnedUsdt());
+        pyth = resolvePyth(pyth);
         checkRolesAreNotMarket(owner, guardian, router);
         // What is broadcast on a mainnet is the build this commit records, never whatever the local tree compiles (CF-5).
         if (isPinnedChain()) checkBuild(releaseInitCodeHashes());
 
         vm.startBroadcast();
-        factory = new WeightedIndexFactory(owner, guardian);
+        // The math first: the factory takes it for the implementation it deploys.
+        factory = new WeightedIndexFactory(owner, guardian, pyth, address(new WeightedMath()));
         // The zap types its factory as `IIndexFactory`, and calls only `isIndex` on it, which this factory answers.
         zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(router), usdc, usdt);
         builder = new BasketBuilder(IIndexFactory(address(factory)), IUniversalRouter(router), usdc, usdt);
@@ -108,6 +126,7 @@ contract DeployWeighted is DeployChecks {
 
         console2.log("WeightedIndexFactory:    ", address(factory));
         console2.log("WeightedHub impl:        ", factory.IMPLEMENTATION());
+        console2.log("WeightedMath:            ", WeightedHub(factory.IMPLEMENTATION()).MATH());
         console2.log("IndexZap:                ", address(zap));
         console2.log("BasketBuilder:           ", address(builder));
         console2.log("Factory owner:           ", owner);
@@ -117,24 +136,27 @@ contract DeployWeighted is DeployChecks {
         console2.log("MintRequests:            ", address(requests));
         console2.log("USDC:                    ", usdc);
         console2.log("USDT:                    ", usdt);
+        console2.log("Pyth:                    ", pyth);
+        console2.log("PythPrices:              ", factory.PRICES());
 
-        bytes32[5] memory codehashes = checkDeployment(factory, zap, builder, requests);
+        bytes32[6] memory codehashes = checkDeployment(factory, zap, builder, requests);
         console2.log("WeightedIndexFactory hash:", vm.toString(codehashes[0]));
         console2.log("WeightedHub impl hash:   ", vm.toString(codehashes[1]));
         console2.log("IndexZap hash:           ", vm.toString(codehashes[2]));
         console2.log("BasketBuilder hash:      ", vm.toString(codehashes[3]));
         console2.log("MintRequests hash:       ", vm.toString(codehashes[4]));
+        console2.log("WeightedMath hash:       ", vm.toString(codehashes[5]));
     }
 
     /// @notice Checks that a factory, its implementation, a zap, a basket builder and MintRequests are one deployment,
     ///         and returns the runtime code hashes to freeze in the release record. Run it again later against the
     ///         recorded addresses: equal hashes prove the deployed code is unchanged.
     /// @return codehashes keccak256 of the runtime code of the factory, the `WeightedHub` implementation, the zap, the
-    ///         builder and MintRequests.
+    ///         builder, MintRequests and the implementation's `WeightedMath`.
     function checkDeployment(WeightedIndexFactory factory, IndexZap zap, BasketBuilder builder, MintRequests requests)
         public
         view
-        returns (bytes32[5] memory codehashes)
+        returns (bytes32[6] memory codehashes)
     {
         WeightedHub implementation = WeightedHub(factory.IMPLEMENTATION());
         address implementationFactory = implementation.FACTORY();
@@ -154,6 +176,15 @@ contract DeployWeighted is DeployChecks {
         if (requestsFactory != address(factory)) {
             revert WrongWiring("MintRequests.FACTORY", address(factory), requestsFactory);
         }
+        // On a pinned chain the factory checks its fills against the chain's own Pyth.
+        address prices = factory.PRICES();
+        if (implementation.PRICES() != prices) {
+            revert WrongWiring("WeightedHub.PRICES", prices, implementation.PRICES());
+        }
+        if (isPinnedChain()) {
+            address pyth = prices == address(0) ? address(0) : IPythPrices(prices).PYTH();
+            if (pyth != pinnedPyth()) revert WrongWiring("PythPrices.PYTH", pinnedPyth(), pyth);
+        }
         // The three take and pay the same two stablecoins.
         _checkStables("IndexZap", zap.USDC(), zap.USDT(), requests);
         _checkStables("BasketBuilder", builder.USDC(), builder.USDT(), requests);
@@ -162,7 +193,8 @@ contract DeployWeighted is DeployChecks {
             address(implementation).codehash,
             address(zap).codehash,
             address(builder).codehash,
-            address(requests).codehash
+            address(requests).codehash,
+            implementation.MATH().codehash
         ];
     }
 
@@ -172,19 +204,28 @@ contract DeployWeighted is DeployChecks {
         if (usdt != requests.USDT()) revert WrongWiring(string.concat(name, ".USDT"), requests.USDT(), usdt);
     }
 
-    /// @notice The init-code hashes a mainnet broadcast must match: the factory's, the zap's, the builder's and
-    ///         MintRequests'.
+    /// @notice The init-code hashes a mainnet broadcast must match: the factory's, the zap's, the builder's,
+    ///         MintRequests' and the math's.
     function releaseInitCodeHashes() public pure virtual returns (bytes32[RELEASED] memory) {
-        return [FACTORY_INITCODE_HASH, ZAP_INITCODE_HASH, BUILDER_INITCODE_HASH, REQUESTS_INITCODE_HASH];
+        return
+            [
+                FACTORY_INITCODE_HASH,
+                ZAP_INITCODE_HASH,
+                BUILDER_INITCODE_HASH,
+                REQUESTS_INITCODE_HASH,
+                MATH_INITCODE_HASH
+            ];
     }
 
-    /// @notice The init-code hashes of the factory, the zap, the builder and MintRequests as this build compiled them.
+    /// @notice The init-code hashes of the factory, the zap, the builder, MintRequests and the math as this build compiled
+    ///         them.
     function buildInitCodeHashes() public pure returns (bytes32[RELEASED] memory) {
         return [
             keccak256(type(WeightedIndexFactory).creationCode),
             keccak256(type(IndexZap).creationCode),
             keccak256(type(BasketBuilder).creationCode),
-            keccak256(type(MintRequests).creationCode)
+            keccak256(type(MintRequests).creationCode),
+            keccak256(type(WeightedMath).creationCode)
         ];
     }
 
@@ -192,7 +233,8 @@ contract DeployWeighted is DeployChecks {
     ///         {releaseInitCodeHashes}.
     function checkBuild(bytes32[RELEASED] memory expected) public pure {
         bytes32[RELEASED] memory actual = buildInitCodeHashes();
-        string[RELEASED] memory names = ["WeightedIndexFactory", "IndexZap", "BasketBuilder", "MintRequests"];
+        string[RELEASED] memory names =
+            ["WeightedIndexFactory", "IndexZap", "BasketBuilder", "MintRequests", "WeightedMath"];
         for (uint256 i = 0; i < actual.length; ++i) {
             if (actual[i] != expected[i]) revert BuildNotReleased(names[i], expected[i], actual[i]);
         }

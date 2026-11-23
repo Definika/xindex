@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
+import {WeightedMath} from "../../src/WeightedMath.sol";
 import {Test} from "forge-std/Test.sol";
 import {ISwapRouter02} from "./ISwapRouter02.sol";
 import {MockERC20} from "./MockERC20.sol";
@@ -21,6 +22,7 @@ import {MockWETH} from "./MockWETH.sol";
 import {MockPositionManager} from "./MockPositionManager.sol";
 import {INonfungiblePositionManager} from "../../script/interfaces/INonfungiblePositionManager.sol";
 import {MockMarket} from "./MockMarket.sol";
+import {MockPyth} from "./MockPyth.sol";
 import {WeightedIndexFactory} from "../../src/WeightedIndexFactory.sol";
 import {WeightedHub} from "../../src/WeightedHub.sol";
 import {IIndexHub} from "../../src/interfaces/IIndexHub.sol";
@@ -59,6 +61,28 @@ contract MocksTest is Test {
     // ---------------------------------------------------------------------
     // MockSwapRouter
     // ---------------------------------------------------------------------
+
+    /// @dev The mock Pyth answers a feed it was given, reverts on one it never heard of, and answers nothing at all
+    ///      while it is down, so a test can stand for a Pyth contract that has stopped.
+    function test_pyth_answersUntilItIsDown() public {
+        MockPyth pyth = new MockPyth();
+        bytes32 id = keccak256("feed");
+        assertFalse(pyth.priceFeedExists(id));
+        pyth.setPrice(id, 100, 1, -2, 1);
+        assertTrue(pyth.priceFeedExists(id));
+        assertEq(pyth.getPriceUnsafe(id).price, 100);
+        // a feed made known with no update yet has no price to give
+        bytes32 empty = keccak256("empty");
+        pyth.addFeed(empty);
+        assertTrue(pyth.priceFeedExists(empty));
+        vm.expectRevert(MockPyth.PriceFeedNotFound.selector);
+        pyth.getPriceUnsafe(empty);
+        pyth.setBroken(true);
+        vm.expectRevert("pyth is down");
+        pyth.getPriceUnsafe(id);
+        vm.expectRevert("pyth is down");
+        pyth.priceFeedExists(id);
+    }
 
     function test_router_quotesAreInverse() public view {
         // 3000 USDC -> 1 WETH, and 1 WETH costs 3000 USDC
@@ -632,7 +656,8 @@ contract MocksTest is Test {
     }
 
     function test_weightedExecutorV3_sellsBuysAndSettlesThroughARouter() public {
-        WeightedIndexFactory f = new WeightedIndexFactory(address(this), address(0));
+        WeightedIndexFactory f =
+            new WeightedIndexFactory(address(this), address(0), address(0), address(new WeightedMath()));
         f.setApprovedCreator(address(this), true);
         MockERC20 shrinking = new MockERC20("Shrinking", "SHR", 18);
         MockERC20 growing = new MockERC20("Growing", "GRO", 18);

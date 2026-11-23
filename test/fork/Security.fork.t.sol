@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
+import {WeightedMath} from "../../src/WeightedMath.sol";
 import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -130,7 +131,7 @@ contract SecurityForkTest is Test {
                 )
             );
         }
-        factory = new WeightedIndexFactory(address(this), address(0));
+        factory = new WeightedIndexFactory(address(this), address(0), address(0), address(new WeightedMath()));
         factory.setApprovedCreator(address(this), true);
         zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER), A.USDC, A.USDT);
 

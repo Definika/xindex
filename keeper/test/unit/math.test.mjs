@@ -226,6 +226,8 @@ test("startStage: ready, in its notice, startable within the lead, or none", () 
 test("a fill costs its gas at the next block's base fee plus the tip, and nothing else", () => {
   const gwei = 10n ** 9n;
   assert.equal(M.fillCostUsd({ used: 1_000_000n, nextBase: 10n * gwei, tip: 2n * gwei, ethUsd: 3_000 }), 36);
+  // The ether a fill carries, Pyth's fee for the update it posts, is part of what it costs.
+  assert.equal(M.fillCostUsd({ used: 1_000_000n, nextBase: 10n * gwei, tip: 2n * gwei, ethUsd: 3_000, value: 10n ** 15n }), 39);
 });
 
 test("RX-9, RY-7: only prices Pyth's contract returned identically from the signed update are kept", () => {

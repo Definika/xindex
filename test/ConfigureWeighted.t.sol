@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
+import {WeightedMath} from "../src/WeightedMath.sol";
 import {Test} from "forge-std/Test.sol";
 import {ConfigureWeighted} from "../script/ConfigureWeighted.s.sol";
 import {ScriptLists} from "../script/ScriptLists.sol";
@@ -9,7 +10,11 @@ import {BnbChainAddresses} from "../script/BnbChainAddresses.sol";
 import {BaseAddresses} from "../script/BaseAddresses.sol";
 import {Listings} from "../script/Listings.sol";
 import {WeightedIndexFactory} from "../src/WeightedIndexFactory.sol";
+import {IWeightedIndexFactory} from "../src/interfaces/IWeightedIndexFactory.sol";
+import {IPythPrices} from "../src/interfaces/IPythPrices.sol";
+import {PriceFeeds} from "../script/PriceFeeds.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
+import {MockPyth} from "./mocks/MockPyth.sol";
 
 /// @notice A contract with no `decimals`, so the policy check finds no answer.
 contract NoDecimals {}
@@ -29,7 +34,7 @@ contract ConfigureWeightedTest is Test {
 
     function setUp() public {
         configure = new ConfigureWeighted();
-        factory = new WeightedIndexFactory(DEFAULT_SENDER, guardian);
+        factory = new WeightedIndexFactory(DEFAULT_SENDER, guardian, address(0), address(new WeightedMath()));
         a = new MockERC20("Alpha", "A", 18);
         b = new MockERC20("Beta", "B", 8);
     }
@@ -1194,7 +1199,8 @@ contract ConfigureWeightedTest is Test {
     }
 
     function test_XA18_LR07_proposeNeedsAnOwnerThatSigns() public {
-        WeightedIndexFactory owned = new WeightedIndexFactory(address(configure), guardian);
+        WeightedIndexFactory owned =
+            new WeightedIndexFactory(address(configure), guardian, address(0), address(new WeightedMath()));
         address[] memory list = _list();
         address[] memory none = _none();
         vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.OwnerIsContract.selector, address(configure)));
@@ -1240,7 +1246,8 @@ contract ConfigureWeightedTest is Test {
     ///      cancelled.
     function test_FR05_executeWorksFromAnyAccountAndNeverReproposesACancelledListing() public {
         address someoneElse = makeAddr("someone else"); // the broadcaster is neither owner nor guardian
-        WeightedIndexFactory other = new WeightedIndexFactory(someoneElse, guardian);
+        WeightedIndexFactory other =
+            new WeightedIndexFactory(someoneElse, guardian, address(0), address(new WeightedMath()));
         address[] memory list = _list();
         vm.startPrank(someoneElse);
         other.proposeListing(list[0]);
@@ -1568,5 +1575,95 @@ contract ConfigureWeightedTest is Test {
             abi.encodeWithSelector(ConfigureWeighted.MintCurrencyOverride.selector, "V5_USDT", BnbChainAddresses.USDT)
         );
         configure.mintCurrencies(address(0), BnbChainAddresses.USDT);
+    }
+
+    // ---------------------------------------------------------------------
+    // Price feeds
+    // ---------------------------------------------------------------------
+
+    /// @dev Each chain's feed table runs in its list's order and names a feed for every listed token: a vault for
+    ///      every wrapped xStock, a multiplier for every Coinbase stock token, the token itself for every other coin.
+    ///      A token off a chain's list, or any token on a chain without a table, has none. The Ethereum ids are the
+    ///      keeper's catalogue's, which `keeper/test/unit/price-ids.test.mjs` pins entry by entry.
+    function test_everyListedTokenHasAFeed() public pure {
+        assertEq(PriceFeeds.ETHEREUM_COUNT, Listings.COUNT);
+        assertEq(PriceFeeds.BNB_COUNT, BnbChainAddresses.COUNT);
+        assertEq(PriceFeeds.BASE_COUNT, BaseAddresses.COUNT);
+        _assertTable(1, Listings.all(), 0);
+        _assertTable(BnbChainAddresses.CHAIN_ID, BnbChainAddresses.all(), 0);
+        address[] memory base = BaseAddresses.all();
+        _assertTable(BaseAddresses.CHAIN_ID, base, 0);
+        for (uint256 i = 0; i < base.length; ++i) {
+            IPythPrices.FeedKind kind = PriceFeeds.feedOf(BaseAddresses.CHAIN_ID, base[i]).kind;
+            bool stock = BaseAddresses.isStock(base[i]);
+            assertEq(kind == IPythPrices.FeedKind.Multiplier, stock, "a stock token's feed prices its share");
+        }
+        assertEq(PriceFeeds.feedOf(1, MainnetAddresses.WETH).id, PriceFeeds.feedOf(8453, BaseAddresses.WETH).id);
+        assertEq(
+            PriceFeeds.feedOf(8453, BaseAddresses.UNI).id,
+            PriceFeeds.feedOf(1, MainnetAddresses.UNI).id,
+            "a copy of the bridge's is priced as its Ethereum coin"
+        );
+        assertEq(uint8(PriceFeeds.feedOf(1, address(0xbeef)).kind), uint8(IPythPrices.FeedKind.None));
+        assertEq(uint8(PriceFeeds.feedOf(11_155_111, MainnetAddresses.WETH).kind), uint8(IPythPrices.FeedKind.None));
+    }
+
+    /// @dev Every token of `list` has a feed on `chainId`, none zero, `vaults` of them vaults.
+    function _assertTable(uint256 chainId, address[] memory list, uint256 vaults) internal pure {
+        uint256 counted = 0;
+        (address[] memory tokens, IPythPrices.PriceFeed[] memory feeds) = PriceFeeds.table(chainId);
+        for (uint256 i = 0; i < list.length; ++i) {
+            IPythPrices.PriceFeed memory feed = PriceFeeds.find(list[i], tokens, feeds);
+            assertTrue(feed.id != bytes32(0), "every listed token has a feed");
+            assertTrue(feed.kind != IPythPrices.FeedKind.None);
+            if (feed.kind == IPythPrices.FeedKind.Vault) ++counted;
+        }
+        assertEq(counted, vaults, "no listed token is a vault since the xStocks left");
+    }
+
+    /// @dev On a factory with an oracle, the script proposes each listed token's feed once: not again while it is
+    ///      pending, and not once the factory holds it; on a factory without one it proposes nothing. Safe mode's
+    ///      calldata is the same proposals, each labelled with the token and the feed.
+    function test_theScriptProposesEachFeedOnce() public {
+        vm.chainId(BaseAddresses.CHAIN_ID);
+        MockPyth pyth = new MockPyth();
+        WeightedIndexFactory priced =
+            new WeightedIndexFactory(DEFAULT_SENDER, guardian, address(pyth), address(new WeightedMath()));
+        address[] memory list = new address[](2);
+        (list[0], list[1]) = (BaseAddresses.CBBTC, BaseAddresses.NVDAC);
+        for (uint256 i = 0; i < list.length; ++i) {
+            vm.etch(list[i], hex"00");
+            pyth.addFeed(PriceFeeds.feedOf(BaseAddresses.CHAIN_ID, list[i]).id);
+        }
+
+        (bytes[] memory calls, string[] memory labels) =
+            configure.feedCalldata(IWeightedIndexFactory(address(priced)), list);
+        assertEq(calls.length, 2);
+        IPythPrices.PriceFeed memory stock = PriceFeeds.feedOf(BaseAddresses.CHAIN_ID, list[1]);
+        assertEq(calls[1], abi.encodeCall(IWeightedIndexFactory.proposePriceFeed, (list[1], stock)));
+        assertEq(labels[1], string.concat("proposePriceFeed ? ", vm.toString(list[1]), " ", vm.toString(stock.id)));
+
+        configure.proposeFeeds(IWeightedIndexFactory(address(priced)), list);
+        (calls,) = configure.feedCalldata(IWeightedIndexFactory(address(priced)), list);
+        assertEq(calls.length, 0, "pending, so not proposed again");
+        configure.executeFeeds(IWeightedIndexFactory(address(priced)), list);
+        assertEq(uint8(priced.priceFeedOf(list[1]).kind), uint8(IPythPrices.FeedKind.None), "not yet due");
+
+        vm.warp(block.timestamp + priced.LISTING_DELAY());
+        configure.executeFeeds(IWeightedIndexFactory(address(priced)), list);
+        assertEq(priced.priceFeedOf(list[1]).id, stock.id);
+        assertEq(uint8(priced.priceFeedOf(list[1]).kind), uint8(IPythPrices.FeedKind.Multiplier));
+        (calls,) = configure.feedCalldata(IWeightedIndexFactory(address(priced)), list);
+        assertEq(calls.length, 0, "held, so not proposed again");
+
+        // A proposal left past its window is proposed again; a factory without an oracle is asked nothing.
+        vm.prank(DEFAULT_SENDER);
+        priced.proposePriceFeed(list[0], IPythPrices.PriceFeed({id: bytes32(0), kind: IPythPrices.FeedKind.None}));
+        vm.warp(block.timestamp + priced.LISTING_DELAY() + priced.PROPOSAL_WINDOW() + 1);
+        configure.executeFeeds(IWeightedIndexFactory(address(priced)), list);
+        assertEq(priced.priceFeedOf(list[0]).id, PriceFeeds.feedOf(BaseAddresses.CHAIN_ID, list[0]).id, "expired");
+        (calls,) = configure.feedCalldata(IWeightedIndexFactory(address(factory)), list);
+        assertEq(calls.length, 0);
+        configure.executeFeeds(IWeightedIndexFactory(address(factory)), list);
     }
 }

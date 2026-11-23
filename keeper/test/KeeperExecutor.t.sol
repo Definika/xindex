@@ -5,6 +5,7 @@ import {IWeightedHub} from "xindex/src/interfaces/IWeightedHub.sol";
 import {IWeightedIndexFactory} from "xindex/src/interfaces/IWeightedIndexFactory.sol";
 import {WeightedHub} from "xindex/src/WeightedHub.sol";
 import {WeightedIndexFactory} from "xindex/src/WeightedIndexFactory.sol";
+import {WeightedMath} from "xindex/src/WeightedMath.sol";
 import {MintRequests} from "xindex/src/MintRequests.sol";
 import {IMintRequests} from "xindex/src/interfaces/IMintRequests.sol";
 import {stdError} from "forge-std/StdError.sol";
@@ -178,7 +179,29 @@ contract KeeperExecutorTest is WeightedTest {
         uint256[] memory units = _units();
         uint256 deadline = block.timestamp;
         vm.prank(keeper);
-        return ex.fill(index, units, routes, maxIn, ANY_SUPPLY, minDelta, deadline);
+        return ex.fill(_auction(index, units, routes, maxIn, ANY_SUPPLY, minDelta, deadline));
+    }
+
+    /// @dev An auction fill of `hub` that posts no Pyth update, as on this suite's factory, which has no oracle.
+    function _auction(
+        IWeightedHub hub,
+        uint256[] memory units,
+        bytes[] memory routes,
+        uint256[] memory maxIn,
+        uint256 maxSupply,
+        int256 minDelta,
+        uint256 deadline
+    ) internal pure returns (KeeperExecutor.AuctionFill memory) {
+        return KeeperExecutor.AuctionFill({
+            index: hub,
+            newUnits: units,
+            routes: routes,
+            maxAmountsIn: maxIn,
+            maxSupply: maxSupply,
+            minUsdcDelta: minDelta,
+            deadline: deadline,
+            pythUpdate: new bytes[](0)
+        });
     }
 
     function _int(uint256 x) internal pure returns (int256) {
@@ -242,7 +265,7 @@ contract KeeperExecutorTest is WeightedTest {
         bytes[] memory routes = _routes();
         uint256 deadline = block.timestamp;
         vm.prank(keeper);
-        (int256 delta,) = executor.fill(index, units, routes, in_, ANY_SUPPLY, type(int256).min, deadline);
+        (int256 delta,) = executor.fill(_auction(index, units, routes, in_, ANY_SUPPLY, type(int256).min, deadline));
         assertEq(delta, expected, "the float moves by the routes' quotes");
         assertGt(delta, 10e6, "three hundredths of the $500 the fair fill buys stays with the keeper");
     }
@@ -261,7 +284,7 @@ contract KeeperExecutorTest is WeightedTest {
         bytes[] memory routes = _routes();
         uint256 deadline = block.timestamp;
         vm.prank(keeper);
-        (int256 delta,) = executor.fill(index, units, routes, in_, ANY_SUPPLY, type(int256).min, deadline);
+        (int256 delta,) = executor.fill(_auction(index, units, routes, in_, ANY_SUPPLY, type(int256).min, deadline));
         assertEq(
             delta,
             -_int(router.quoteIn(address(usdc), address(eth), in_[0]))
@@ -280,7 +303,7 @@ contract KeeperExecutorTest is WeightedTest {
         uint256 deadline = block.timestamp;
         vm.expectPartialRevert(IWeightedHub.GainBelowBar.selector);
         vm.prank(keeper);
-        executor.fill(index, units, routes, new uint256[](0), ANY_SUPPLY, type(int256).min, deadline);
+        executor.fill(_auction(index, units, routes, new uint256[](0), ANY_SUPPLY, type(int256).min, deadline));
     }
 
     function test_minUsdcDeltaIsAFloor() public {
@@ -297,7 +320,7 @@ contract KeeperExecutorTest is WeightedTest {
         uint256 deadline = block.timestamp;
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.TooCostly.selector, expected, expected + 1));
         vm.prank(keeper);
-        executor.fill(index, units, routes, in_, ANY_SUPPLY, expected + 1, deadline);
+        executor.fill(_auction(index, units, routes, in_, ANY_SUPPLY, expected + 1, deadline));
     }
 
     function test_unroutedOutIsKeptAsInventory() public {
@@ -356,7 +379,7 @@ contract KeeperExecutorTest is WeightedTest {
         uint256 deadline = block.timestamp;
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NoRoute.selector, address(btc)));
         vm.prank(keeper);
-        executor.fill(index, units, routes, in_, ANY_SUPPLY, type(int256).min, deadline);
+        executor.fill(_auction(index, units, routes, in_, ANY_SUPPLY, type(int256).min, deadline));
     }
 
     function test_maxAmountsInBindsTheSettlement() public {
@@ -371,7 +394,7 @@ contract KeeperExecutorTest is WeightedTest {
             abi.encodeWithSelector(IWeightedHub.RebalanceMovedOn.selector, address(btc), in_[1], in_[1] - 1)
         );
         vm.prank(keeper);
-        executor.fill(index, units, routes, maxIn, ANY_SUPPLY, type(int256).min, deadline);
+        executor.fill(_auction(index, units, routes, maxIn, ANY_SUPPLY, type(int256).min, deadline));
     }
 
     /// @dev XS-4: the bot bounds the supply at its quote plus SUPPLY_TOLERANCE_BPS (10). A griefer's issue of 0.11% of
@@ -393,7 +416,7 @@ contract KeeperExecutorTest is WeightedTest {
         // Unmoved, the bounded fill settles.
         uint256 snapshot = vm.snapshotState();
         vm.prank(keeper);
-        executor.fill(index, units, routes, maxIn, maxSupply, type(int256).min, deadline);
+        executor.fill(_auction(index, units, routes, maxIn, maxSupply, type(int256).min, deadline));
         assertEq(index.rebalanceNonce(), 1, "a fill within its bounds settles");
         vm.revertToState(snapshot);
 
@@ -402,21 +425,34 @@ contract KeeperExecutorTest is WeightedTest {
         assertGt(griefed, maxSupply, "the issue is past the tolerance");
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.SupplyMovedOn.selector, griefed, maxSupply));
         vm.prank(keeper);
-        executor.fill(index, units, routes, maxIn, maxSupply, type(int256).min, deadline);
+        executor.fill(_auction(index, units, routes, maxIn, maxSupply, type(int256).min, deadline));
     }
 
-    /// @dev Nobody is paid for a price, so a fill takes no ether and the executor never holds any.
-    function test_aFillTakesNoEther() public {
+    /// @dev A fill carries ether only as Pyth's fee for an update it posts (`KeeperExecutorPythTest`). With no update
+    ///      it carries none, so the executor never comes to hold a fill's ether.
+    function test_aFillWithoutAnUpdateCarriesNoEther() public {
         _open(index.AUCTION_DURATION());
         (, uint256[] memory in_) = _preview();
-        bytes memory call = abi.encodeCall(
-            KeeperExecutor.fill, (index, _units(), _routes(), in_, ANY_SUPPLY, type(int256).min, block.timestamp)
-        );
+        KeeperExecutor.AuctionFill memory f =
+            _auction(index, _units(), _routes(), in_, ANY_SUPPLY, type(int256).min, block.timestamp);
         vm.deal(keeper, 1);
         vm.prank(keeper);
-        (bool sent,) = address(executor).call{value: 1}(call);
-        assertFalse(sent, "a fill sent with ether reverts");
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.WrongPythFee.selector, 1, 0));
+        executor.fill{value: 1}(f);
         assertEq(address(executor).balance, 0);
+    }
+
+    /// @dev This suite's factory has no oracle, so its indexes read no price and there is no Pyth contract to post
+    ///      an update to: a fill that carries one is refused by name, before any ether moves.
+    function test_anUpdateForAnIndexWithoutAnOracleIsRefused() public {
+        _open(index.AUCTION_DURATION());
+        (, uint256[] memory in_) = _preview();
+        KeeperExecutor.AuctionFill memory f =
+            _auction(index, _units(), _routes(), in_, ANY_SUPPLY, type(int256).min, block.timestamp);
+        f.pythUpdate = new bytes[](1);
+        vm.prank(keeper);
+        vm.expectRevert(KeeperExecutor.NoOracle.selector);
+        executor.fill(f);
     }
 
     // ---------------------------------------------------------------------
@@ -454,7 +490,7 @@ contract KeeperExecutorTest is WeightedTest {
         uint256 deadline = block.timestamp;
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NoRoute.selector, address(btc)));
         vm.prank(keeper);
-        executor.fill(own, units, routes, in_, ANY_SUPPLY, type(int256).min, deadline);
+        executor.fill(_auction(own, units, routes, in_, ANY_SUPPLY, type(int256).min, deadline));
         assertEq(btc.balanceOf(address(executor)), 1e8, "the stock stayed");
     }
 
@@ -555,7 +591,7 @@ contract KeeperExecutorTest is WeightedTest {
         routes[1] = abi.encodePacked(address(btc), uint24(3000), address(eth), uint24(500), address(usd));
         uint256 deadline = block.timestamp;
         vm.prank(keeper);
-        (int256 delta,) = ex.fill(index, units, routes, in_, ANY_SUPPLY, type(int256).min, deadline);
+        (int256 delta,) = ex.fill(_auction(index, units, routes, in_, ANY_SUPPLY, type(int256).min, deadline));
         assertEq(
             delta,
             _int(out[2]) - _int(router.quoteIn(address(usd), address(eth), in_[0]))
@@ -574,7 +610,7 @@ contract KeeperExecutorTest is WeightedTest {
         uint256 deadline = block.timestamp;
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.BadRoute.selector, address(usd)));
         vm.prank(keeper);
-        ex.fill(index, units, routes, in_, ANY_SUPPLY, type(int256).min, deadline);
+        ex.fill(_auction(index, units, routes, in_, ANY_SUPPLY, type(int256).min, deadline));
     }
 
     // ---------------------------------------------------------------------
@@ -592,7 +628,7 @@ contract KeeperExecutorTest is WeightedTest {
         uint256[] memory units = _units();
         vm.expectRevert(err);
         vm.prank(caller);
-        executor.fill(IWeightedHub(target), units, routes, in_, ANY_SUPPLY, type(int256).min, deadline);
+        executor.fill(_auction(IWeightedHub(target), units, routes, in_, ANY_SUPPLY, type(int256).min, deadline));
     }
 
     function test_onlyTheKeeperFills() public {
@@ -700,7 +736,7 @@ contract KeeperExecutorTest is WeightedTest {
         bytes[] memory routes = _routes();
         uint256 deadline = block.timestamp;
         vm.prank(next);
-        executor.fill(index, units, routes, in_, ANY_SUPPLY, type(int256).min, deadline);
+        executor.fill(_auction(index, units, routes, in_, ANY_SUPPLY, type(int256).min, deadline));
         assertEq(index.rebalanceNonce(), 1, "the new keeper filled");
     }
 
@@ -752,7 +788,7 @@ contract KeeperExecutorTest is WeightedTest {
     /// @dev A request escrow for another factory's indexes would let the keeper fill requests the factory check never
     ///      saw; the executor refuses it at construction.
     function test_constructorRefusesRequestsOnAnotherFactory() public {
-        WeightedIndexFactory other = new WeightedIndexFactory(owner, guardian);
+        WeightedIndexFactory other = new WeightedIndexFactory(owner, guardian, address(0), address(new WeightedMath()));
         MintRequests elsewhere = new MintRequests(address(other), address(usdc), address(usdt));
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.RequestsMismatch.selector, address(elsewhere)));
         new KeeperExecutor(

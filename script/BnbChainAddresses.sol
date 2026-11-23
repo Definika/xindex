@@ -446,6 +446,11 @@ library BnbChainAddresses {
     ///      depth sits on PancakeSwap, which neither the zap nor `CheckToken` reads, so the depth recorded here is
     ///      what the zap can reach and not the coin's market.
     address internal constant UNISWAP_V3_FACTORY = 0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7;
+    /// @dev Pyth's price contract, a proxy, through which the factory's `PythPrices` reads the price a fill is checked
+    ///      against (the owner's call of 2026-11-22). A filler posts a fresh update to it in its own transaction. Read
+    ///      on chain that day: it answers `priceFeedExists` for ETH/USD, and `DeployChecks` resolves it as it does the
+    ///      router.
+    address internal constant PYTH = 0x4D7E825f80bDf85e913E0DD2A2D54927e9dE1594;
 
     /// @notice Every coin of the list: WBNB, BTCB and ETH first, then the Binance-Peg coins, then BNB Chain's own
     ///         tokens.

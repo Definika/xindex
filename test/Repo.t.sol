@@ -19,7 +19,7 @@ import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 contract RepoTest is Test {
     /// @dev keccak256 of the files `test_A712_theCiConfigIsPinnedWhole` pins whole: CI's workflow and the two Foundry
     ///      configs it runs. A change to one fails that test, which prints the new hash, until it is pinned here.
-    bytes32 private constant WORKFLOW_HASH = 0xa3e5999468e15e7123a4d84f0fe1c38f4118afbbd9b61a4955f6a379978f2305;
+    bytes32 private constant WORKFLOW_HASH = 0x3c1adf478d5063085cd32f2f6cf194681058b675f60671c3376d9733e8dc9d5a;
     bytes32 private constant FOUNDRY_TOML_HASH = 0xed56be1c9acc47165fe8a9303665b35391357ee7d85ef998f8c0c74761a0c3c4;
     bytes32 private constant KEEPER_FOUNDRY_TOML_HASH =
         0x5426d5180cca7c4ac15d7fb182272a805a3ce19a143d6c6f8c158f61765d7592;
@@ -144,9 +144,9 @@ contract RepoTest is Test {
     ///      keeps the old check green.
     function test_I09_XS17_theKnownLimitationsAreDocumented() public view {
         string memory section = _section(_read("docs/known-limitations.md"), "# Known limitations\n");
-        string[22] memory anchors = [
+        string[23] memory anchors = [
             "**A lone executor keeps the index's distance from its weights.**",
-            "**No contract reads a price.**",
+            "**No mint, redeem or claim reads a price.**",
             "**One fill may not land on the weights.**",
             "**Wrapped legs rest on Wormhole.**",
             "**A collapsing coin is still bought.**",
@@ -155,6 +155,7 @@ contract RepoTest is Test {
             "**Rebalances clear only when the distance pays for the fill.**",
             "**An index one holder owns can be walked.**",
             "**An exit sent during the auction can be overtaken by the fill.**",
+            "**Minting can be paused; redeeming cannot.**",
             "**The guardian can stall rebalancing.**",
             "**Issuers can freeze components, and some can burn them.**",
             "**A request's surplus goes to the fastest filler.**",
@@ -357,8 +358,8 @@ contract RepoTest is Test {
     ///      starts carried (`audit/2026-11-10-oracle-retirement.md`). A7-12: the step is pinned whole, so neither a
     ///      contract left out nor a diff that stops failing passes.
     function test_XA44_A712_theAbisAreCommittedAndChecked() public view {
-        string[5] memory contracts =
-            ["IndexZap", "BasketBuilder", "MintRequests", "WeightedIndexFactory", "WeightedHub"];
+        string[6] memory contracts =
+            ["IndexZap", "BasketBuilder", "MintRequests", "WeightedIndexFactory", "WeightedHub", "PythPrices"];
         for (uint256 i = 0; i < contracts.length; ++i) {
             assertTrue(
                 _contains(_read(string.concat("abi/", contracts[i], ".json")), '"type": "function"'),
@@ -370,7 +371,7 @@ contract RepoTest is Test {
             string.concat(
                 "        run: |\n",
                 "          set -euo pipefail\n",
-                "          for contract in IndexZap BasketBuilder MintRequests WeightedIndexFactory WeightedHub; do\n",
+                "          for contract in IndexZap BasketBuilder MintRequests WeightedIndexFactory WeightedHub PythPrices; do\n",
                 "            forge inspect \"$contract\" abi --json > \"abi/$contract.json\"\n",
                 "          done\n",
                 "          git diff --exit-code abi/\n"
@@ -686,8 +687,9 @@ contract RepoTest is Test {
 
     /// @dev No file in `src/` and no shipped ABI in `abi/` names a Chainlink feed, a pool's price or its oracle, and the
     ///      v3 price contracts are gone. Every file of both folders is read, Stage B's included, so a new file is covered
-    ///      without being listed. Nothing reads Pyth either (`test_V5I4_noContractNamesPyth`). A7-13: the words name the
-    ///      common ways to read a price
+    ///      without being listed; the price reader's own files alone are left out since 2026-11-22, when Pyth's check
+    ///      on a fill came in (`_isPriceReader`, `audit/2026-11-22-pyth-check-retirement.md`), and the scan holds them
+    ///      to Pyth alone (`test_onlyThePriceReaderReadsPyth`). A7-13: the words name the common ways to read a price
     ///      (`_priceWords`), not five of them, and `test_A713_theScanFindsEveryPriceWord` shows the scan finds each.
     function test_A713_noContractReadsAPrice() public view {
         string[47] memory priceWords = _priceWords();
@@ -784,27 +786,52 @@ contract RepoTest is Test {
         return "";
     }
 
-    /// @dev No contract reads a price since the oracle-free rebalance of 2026-11-10: a rebalance is judged on units
-    ///      alone (`design/2026-11-10-oracle-free-rebalance.md`). V5-I4 kept Pyth to the hub; now no file in `src/` and
-    ///      no shipped ABI names Pyth at all, by its name, its parse, its getters, its pushes or its price struct, and
-    ///      the vendored Pyth interfaces are gone. A new file is covered without being listed.
-    function test_V5I4_noContractNamesPyth() public view {
-        string[7] memory pythWords =
-            ["Pyth", "pyth", "PYTH", "parsePriceFeedUpdates", "getPrice", "updatePriceFeeds", "priceId"];
+    /// @dev The price reader's own files: the one contract that reads Pyth, its interface, Pyth's read declaration and
+    ///      the stock token's multiplier, which it reads too. Nothing else in `src/` or `abi/` may read a price.
+    function _isPriceReader(string memory path) internal pure returns (bool) {
+        string[5] memory reader = [
+            "src/PythPrices.sol",
+            "src/interfaces/IPythPrices.sol",
+            "src/interfaces/IPythReader.sol",
+            "src/interfaces/IMultiplierToken.sol",
+            "abi/PythPrices.json"
+        ];
+        for (uint256 i = 0; i < reader.length; ++i) {
+            if (_endsWith(path, reader[i])) return true;
+        }
+        return false;
+    }
+
+    /// @dev Since 2026-11-22 a rebalance fill is checked against Pyth's prices, and one contract reads them:
+    ///      `PythPrices`. Pyth's reads (its stored price, its parse, its pushes, whether it knows a feed) appear in
+    ///      its files alone: since 2026-11-23 the factory does not ask whether a feed exists. The vendored Pyth interfaces stay
+    ///      gone: `IPythReader` is a declaration of our own. A new file is covered without being listed. V5-I4's test,
+    ///      which allowed Pyth nowhere, is retired (`audit/2026-11-22-pyth-check-retirement.md`).
+    function test_onlyThePriceReaderReadsPyth() public view {
+        string[6] memory reads = [
+            "getPriceUnsafe",
+            "getPriceNoOlderThan",
+            "getEmaPrice",
+            "parsePriceFeedUpdates",
+            "updatePriceFeeds",
+            "priceFeedExists"
+        ];
         uint256 read = 0;
         string[2] memory dirs = ["src", "abi"];
         for (uint256 d = 0; d < dirs.length; ++d) {
             VmSafe.DirEntry[] memory entries = vm.readDir(dirs[d], 8);
             for (uint256 i = 0; i < entries.length; ++i) {
-                if (entries[i].isDir || _isFinderMetadata(entries[i].path)) continue;
+                string memory path = entries[i].path;
+                if (entries[i].isDir || _isFinderMetadata(path) || _isPriceReader(path)) continue;
                 ++read;
-                string memory text = vm.readFile(entries[i].path);
-                for (uint256 j = 0; j < pythWords.length; ++j) {
-                    assertFalse(_contains(text, pythWords[j]), string.concat(entries[i].path, " names ", pythWords[j]));
+                string memory text = vm.readFile(path);
+                for (uint256 j = 0; j < reads.length; ++j) {
+                    assertFalse(_contains(text, reads[j]), string.concat(path, " names ", reads[j]));
                 }
             }
         }
         assertGt(read, 20, "every source and ABI file is read");
+        assertTrue(_contains(vm.readFile("src/PythPrices.sol"), "getPriceUnsafe"), "the reader is the one that reads");
         assertFalse(vm.exists("src/interfaces/pyth"), "the vendored Pyth interfaces are gone");
     }
 
@@ -829,7 +856,7 @@ contract RepoTest is Test {
     function _assertNoPriceIn(string memory dir, string[47] memory priceWords) internal view returns (uint256 read) {
         VmSafe.DirEntry[] memory entries = vm.readDir(dir, 8);
         for (uint256 i = 0; i < entries.length; ++i) {
-            if (entries[i].isDir || _isFinderMetadata(entries[i].path)) continue;
+            if (entries[i].isDir || _isFinderMetadata(entries[i].path) || _isPriceReader(entries[i].path)) continue;
             string memory found = _priceWordIn(vm.readFile(entries[i].path), priceWords);
             assertEq(found, "", string.concat(entries[i].path, " names ", found));
             ++read;

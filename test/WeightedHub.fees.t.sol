@@ -558,9 +558,14 @@ contract WeightedHubFeesTest is WeightedTest {
         assertFalse(monthly.canStartRebalance(), "the monthly one is not");
         vm.expectRevert(abi.encodeWithSelector(IWeightedHub.RebalanceTooSoon.selector, earliest));
         monthly.startRebalance(0);
-        vm.prank(guardian);
-        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.RebalanceTooSoon.selector, earliest));
-        monthly.startRebalance(0);
+        // Nothing has filled this index yet, so the owner and guardian wait out its interval as anyone does: their
+        // week's restart is for an index a fill closed (`test_theOwnerOrGuardianRestartsAWeekAfterAnyFill`).
+        address[2] memory roles = [owner, guardian];
+        for (uint256 i = 0; i < roles.length; ++i) {
+            vm.prank(roles[i]);
+            vm.expectRevert(abi.encodeWithSelector(IWeightedHub.RebalanceTooSoon.selector, earliest));
+            monthly.startRebalance(0);
+        }
 
         vm.warp(earliest - 1);
         assertFalse(monthly.canStartRebalance());

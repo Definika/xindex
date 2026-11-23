@@ -5,8 +5,8 @@ How to deploy Xindex, operate it once deployed, and use the Sepolia test deploym
 ## Deploy
 
 Nothing below has been run on a mainnet yet. The scripts as they now are run in `test/Scripts.t.sol` and
-`test/ConfigureWeighted.t.sol`; the end-to-end runs on an anvil fork of Ethereum were of the Pyth-priced build that the
-oracle-free rebalance replaced on 2026-11-10. Never put a private key in `.env`. Import the deployer key once into an
+`test/ConfigureWeighted.t.sol`; no end-to-end run on an anvil fork has been made of the current build, which checks
+every fill and every creation against Pyth since 2026-11-22. Never put a private key in `.env`. Import the deployer key once into an
 encrypted keystore, or use a hardware wallet with `--ledger`:
 
 ```bash
@@ -16,8 +16,8 @@ source .env
 ```
 
 `DeployWeighted` deploys `WeightedIndexFactory` with the owner, `OWNER`, and the guardian's Safe, `GUARDIAN`, as its
-guardian. The factory's constructor deploys `WeightedMath` and the `WeightedHub` implementation every index is a clone
-of. The script then deploys the zap, the basket builder and `MintRequests` for that factory. It runs once on each
+guardian. It first deploys `WeightedMath`, which the factory takes at construction, and the factory's constructor deploys
+the `WeightedHub` implementation every index is a clone of. The script then deploys the zap, the basket builder and `MintRequests` for that factory. It runs once on each
 chain, Ethereum, BNB Chain and Base, each with that chain's own owner Safe and guardian's Safe. Listings follow
 through the factory's timelock.
 
@@ -36,8 +36,13 @@ Base's USDT and can replace its code, and
 `BASE_RPC_URL=... forge test --match-path 'test/fork/BaseAddresses.fork.t.sol'` passing on an archive RPC
 ([`design/2026-11-21-base-deployment.md`](../design/2026-11-21-base-deployment.md)).
 
-No oracle is deployed, named or read: there is no `PYTH` variable, and an index rebalances through an auction on units
-alone (`design/2026-11-10-oracle-free-rebalance.md`). There is no relay either. A start of a rebalance is a plain call,
+`PYTH` is Pyth's price contract, which every rebalance fill and every creation of the factory is checked against
+(`design/2026-11-22-pyth-check.md`). On Ethereum, BNB Chain and Base it is the chain's address book's and nothing
+else is accepted, so a mainnet factory always has an oracle; elsewhere, unset builds a factory whose fills no price
+checks, as a local test market may need. The factory deploys its price reader, `PythPrices`, with it, and
+`WeightedMath` is deployed first, on its own, since the factory's init code no longer has room to embed it. An index
+still rebalances through an auction judged on units first (`design/2026-11-10-oracle-free-rebalance.md`); Pyth's
+prices can only refuse a fill. There is no relay. A start of a rebalance is a plain call,
 so the guardian's Safe holds the role itself and sends every guardian call as an ordinary transaction:
 `startRebalance(keepMask)` and `cancelRebalance(proposalId)` on an index, and `cancelListing(token)`, `delist(token)`
 and `cancelGuardianChange()` on the factory. On Ethereum and BNB Chain `DeployWeighted` refuses a guardian that is not
@@ -63,8 +68,8 @@ Safe, neither the guardian nor the broadcasting key may be one of its signers, s
 (RZ-24); and neither role may be a market contract: the router and the PoolManager everywhere, and on a mainnet also
 every token and mint currency in the address book (CR-I37). `UNIVERSAL_ROUTER`, `USDC` and `USDT` default to
 the address book's on chain 1 (`script/MainnetAddresses.sol`), where any other value is rejected, and are required
-anywhere else; they are the script's only market addresses, because the hub and factory depend on no Uniswap contract
-and on no oracle.
+anywhere else; with `PYTH`, resolved the same way, they are the script's only market addresses, because the hub and
+factory depend on no Uniswap contract.
 
 An owner that is a contract but not a Safe, such as a timelock, is refused on Ethereum unless `OWNER_IS_NOT_A_SAFE`
 names it, set to the owner's own address (A7-08): the script cannot tell who signs for such an owner, so check that
@@ -82,15 +87,15 @@ builder or a `MintRequests` that does not point at that factory, a builder on an
 whose `FACTORY` is another). It logs the guardian's address as well; since the factory's guardian can change,
 `checkDeployment` does not read it.
 
-**The release record.** On chain 1 the script broadcasts only the build its four release hashes record:
-`FACTORY_INITCODE_HASH`, whose init code embeds the math's and the implementation's, `ZAP_INITCODE_HASH`,
-`BUILDER_INITCODE_HASH` and `REQUESTS_INITCODE_HASH`. Any other build reverts `BuildNotReleased` (CF-5).
-`test_CF5_theReleaseHashesAreThisBuilds` fails until the four equal the build, and they are fixed at the audited commit
-before a mainnet broadcast.
+**The release record.** On chains 1, 56 and 8453 the script broadcasts only the build its five release hashes record:
+`FACTORY_INITCODE_HASH`, whose init code embeds the implementation's and the price reader's, `MATH_INITCODE_HASH`,
+`ZAP_INITCODE_HASH`, `BUILDER_INITCODE_HASH` and `REQUESTS_INITCODE_HASH`. Any other build reverts `BuildNotReleased`
+(CF-5). `test_CF5_theReleaseHashesAreThisBuilds` fails until the five equal the build, and they are fixed at the
+audited commit before a mainnet broadcast.
 
 **Approving creators.** After the listings, the owner's Safe approves each wallet that creates indexes with
-`setApprovedCreator(<wallet>, true)`. Nobody can create an index before: `createIndex` from any other wallet reverts
-`CreatorNotApproved`, the owner and the guardian included. The approval takes effect at once, with no delay.
+`setApprovedCreator(<wallet>, true)`. Nobody can create an index before: `createIndex` and `createAndIssue` from any
+other wallet revert `CreatorNotApproved`, the owner and the guardian included. The approval takes effect at once, with no delay.
 
 ```bash
 # the calldata of the Safe's transaction to the factory, value 0
@@ -99,10 +104,11 @@ cast calldata "setApprovedCreator(address,bool)" <wallet> true
 cast call <factory> "isApprovedCreator(address)(bool)" <wallet>
 ```
 
-No contract reads a price, so none can compare the units a creator names with its weights. An index created off its
-weights carries that distance from its first day and loses it to whoever fills its auctions: on the exact model, one
-last-second fill takes 15.5% of a 50/50 index created 90/10 by value, and at the worst a fifth of an index per fill. The
-approval is what keeps a stranger from creating such an index; the team creates on the weights at the app's prices. It
+On units alone an index created off its weights carries that distance from its first day and loses it to whoever
+fills its auctions: on the exact model, one last-second fill takes 15.5% of a 50/50 index created 90/10 by value. So a
+creation reverts `OffWeights` unless every component's units lie within 5% of its weight at Pyth's prices, and the
+creator posts Pyth's update first; `createAndIssue` then issues the index's first shares in the same call, the basket
+pulled from the creator (`docs/integration.md`). The approval gate stays as well. It
 is read at creation and nowhere else: withdrawing it (`setApprovedCreator(<wallet>, false)`) reaches no index that
 exists, it gives no power over funds, and an index's creator role still moves to any account, approved or not
 (`transferCreator`, `acceptCreator`), which is how a partner takes over an index the team made. The fee policy is zero
@@ -119,9 +125,11 @@ CHECK=<token,...> forge script script/CheckToken.s.sol --fork-url <any evm rpc>
 ```
 
 **Listings** go through `script/ConfigureWeighted.s.sol`, or the equivalent calls through the Safe:
-`proposeListing(token)` for each coin. A listing is a token and nothing else: no index reads a price, so no token
-carries a price id. `V5_WHITELIST=default` is the first four coins of `script/Listings.sol` (WETH, WBTC, LINK and UNI)
-and `V5_WHITELIST=wide` the other 167, 171 in all; on BNB Chain `V5_WHITELIST=bnb` is that chain's 116, and on Base
+`proposeListing(token)` for each coin, and `proposePriceFeed(token, feed)` for the Pyth feed
+`script/PriceFeeds.sol` names for it: the same run proposes both, and `execute` runs both once the 2-day delay has
+passed. A token without a feed can be listed but cannot be put in a new index or moved by a fill.
+`V5_WHITELIST=default` is the first four coins of `script/Listings.sol` (WETH, WBTC, LINK and UNI)
+and `V5_WHITELIST=wide` the rest, 414 in all; on BNB Chain `V5_WHITELIST=bnb` is that chain's 364, and on Base
 `V5_WHITELIST=base` its thirty-two. On Base the script cannot read Coinbase's ten stock tokens under the pinned
 Foundry, which does not run Base's precompiles: it takes their decimals from `script/BaseAddresses.sol` and still
 builds their proposals, and the factory reads the real decimals when each lands. Safe mode
@@ -267,7 +275,7 @@ DEPLOYER=$(cast wallet address --account sepolia-deployer)
 MARKET_MODE=create forge script script/testnet/SetupTestMarket.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast
 MARKET_MODE=seed MARKET_TOKENS=<logged by create> forge script script/testnet/SetupTestMarket.s.sol --rpc-url sepolia --account sepolia-deployer --sender $DEPLOYER --broadcast
 
-# 2. the factory (which deploys WeightedMath and the WeightedHub implementation), the zap, the basket builder and
+# 2. WeightedMath, the factory (which deploys the WeightedHub implementation), the zap, the basket builder and
 #    MintRequests; USDT is any second 6-decimal test token, a FaucetToken for instance (tUSDT above)
 OWNER=<Safe> GUARDIAN=<guardian> UNIVERSAL_ROUTER=0x3A9D48AB9751398BbFa63ad67599Bb04e4BdF98b \
   USDC=<tUSDC logged by create> USDT=<a second test stablecoin> \

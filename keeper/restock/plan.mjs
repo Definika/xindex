@@ -79,7 +79,16 @@ export function plan({ coins, needs, stock, inflight, home, treasury, prices, sp
     const blocked = noGas.has(c.chain);
 
     if (usable + credited < need) {
-      const short = want - usable - credited;
+      // Stock the executor holds beyond its stock allowance is there, but no fill may deliver it: what it lacks is
+      // allowance, which only the owner sets, not coins. Counted as missing, it was bought again, and once covered
+      // the coins over the need went home to be sold; the note sent the owner to the restock allowance (RZ-20).
+      if (balance > usable) {
+        notes.push(
+          `${c.symbol}: the executor holds ${usdOf(balance - usable, c.decimals, price).toFixed(0)} USD of it beyond its stock allowance: the owner must raise it with setStockAllowance(${c.copy}, <amount>)`,
+        );
+        if (balance + credited >= need) continue;
+      }
+      const short = want - balance - credited;
       if (open === 0n) {
         notes.push(
           `${c.symbol}: short ${usdOf(short, c.decimals, price).toFixed(0)} USD, but its restock allowance on the executor is spent: the owner must call setRestockAllowance(${c.copy}, <amount>)`,
@@ -90,21 +99,31 @@ export function plan({ coins, needs, stock, inflight, home, treasury, prices, sp
       // grows a little before the coins land does not start another round of buys.
       const gap = short < open ? short : open;
       const fromHome = atHome < gap ? atHome : gap;
-      const bring = bridgeable(fromHome, c.decimals);
-      if (bring > 0n && !blocked) {
-        const capped = bridgeable(capUnits(bring, c, price, cfg.maxTransferUsd), c.decimals);
-        actions.push({ kind: "bridgeIn", coin: c.symbol, copy: c.copy, chain: c.chain, amount: capped, usd: usdOf(capped, c.decimals, price) });
-      }
+      // What the home wallet holds comes in first, unless this round buys and it is worth less than RESTOCK_MIN_USD:
+      // then it waits for the buy's coins, which land beside it, and the next round brings both in one transfer. Sent
+      // on its own, it cost an Ethereum redeem for a sliver the buy did not shrink (RZ-21).
+      const bring = bridgeable(capUnits(bridgeable(fromHome, c.decimals), c, price, cfg.maxTransferUsd), c.decimals);
+      const bringUsd = usdOf(bring, c.decimals, price);
+      const bringIn = () => {
+        if (bring > 0n && !blocked) actions.push({ kind: "bridgeIn", coin: c.symbol, copy: c.copy, chain: c.chain, amount: bring, usd: bringUsd });
+      };
       const rest = gap - fromHome;
-      if (rest <= 0n) continue;
+      if (rest <= 0n) {
+        bringIn();
+        continue;
+      }
       // The buy, counted in the coin's units so that it lands on what is missing to the wei (RS-3): at least
       // RESTOCK_MIN_USD of the coin, so fees do not eat a small one, unless the home wallet's coins already cover the
       // need, when what only the buffer still lacks waits; at most RESTOCK_MAX_TRANSFER_USD, the restock allowance and
       // what is left of the day's budget, to which a larger one is cut rather than dropped (RS-7).
       const minUnits = unitsOf(cfg.minUsd, c.decimals, price);
-      if (rest < minUnits && usable + credited + fromHome >= need) continue;
+      if (rest < minUnits && balance + credited + fromHome >= need) {
+        bringIn();
+        continue;
+      }
       const roomLeft = open - fromHome;
       if (roomLeft < minUnits) {
+        bringIn();
         notes.push(
           `${c.symbol}: its restock allowance on the executor has ${usdOf(roomLeft, c.decimals, price).toFixed(0)} USD left, below RESTOCK_MIN_USD: the owner must raise it with setRestockAllowance(${c.copy}, <amount>)`,
         );
@@ -112,6 +131,7 @@ export function plan({ coins, needs, stock, inflight, home, treasury, prices, sp
       }
       const budgetLeft = budget > 0 ? unitsOf(budget / worst, c.decimals, price) : 0n;
       if (budgetLeft < minUnits) {
+        bringIn();
         notes.push(`${c.symbol}: short ${usdOf(rest, c.decimals, price).toFixed(0)} USD, past RESTOCK_DAILY_USD for the day`);
         continue;
       }
@@ -129,12 +149,15 @@ export function plan({ coins, needs, stock, inflight, home, treasury, prices, sp
       if (have < maxIn) {
         fundWanted.set(c.chain, (fundWanted.get(c.chain) ?? 0n) + maxIn - have);
         float.set(c.chain, 0n);
+        bringIn();
         notes.push(`${c.symbol}: waiting for ${fl.symbol} on ${c.chain}`);
         continue;
       }
       float.set(c.chain, have - maxIn);
       budget -= usd * worst;
       const minOut = unitsOf(usd * (1 - cfg.maxLossBps / 10_000), c.decimals, price);
+      if (bringUsd >= cfg.minUsd) bringIn();
+      else if (bring > 0n) notes.push(`${c.symbol}: ${bringUsd.toFixed(0)} USD at home waits to come in with the coins this round buys`);
       actions.push({ kind: "buy", coin: c.symbol, copy: c.copy, chain: c.chain, usd, maxUsd: usd * worst, amountIn, maxIn, amountOut, minOut });
       continue;
     }

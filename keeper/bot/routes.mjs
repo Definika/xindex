@@ -95,13 +95,15 @@ export function createRoutes(chain, cfg, abi, market = ETHEREUM_MARKET) {
   /// The route for selling (`side` "sell") or buying ("buy") `amount` of `token`, worth `fairUsd` at Pyth, in the
   /// auction or request `key`; null when none loses at most ROUTE_MAX_LOSS_BPS. A chosen route serves the auction for
   /// ROUTE_REQUOTE_BLOCKS, then is quoted again and kept only if it still passes; {forgetKey} drops it at once, after
-  /// a simulation or a fill that reverted (RX-13). A leg without one is quoted again whenever its amount grows past the
-  /// one quoted, or in each new block, so the quote {quoteOf} reads is the block's and covers the amount it values.
+  /// a simulation or a fill that reverted (RX-13). Either way a leg is quoted again whenever its amount grows past the
+  /// one quoted, and a leg without a route in each new block too, so the quote {quoteOf} reads covers the amount it is
+  /// asked for. A chosen route answered a larger purchase from its smaller one's cost, which a fill took as its most to
+  /// spend: the fill reverted, and its request was struck for it (RZ-11).
   async function best({ key, token, side, amount, fairUsd, blockNumber }) {
     const k = `${key}:${token.toLowerCase()}:${side}`;
     const c = chosen.get(k);
     const age = c ? BigInt(blockNumber) - c.block : 0n;
-    if (c && c.route !== null && age < ROUTE_REQUOTE_BLOCKS) return c.route;
+    if (c && c.route !== null && amount <= c.amount && age < ROUTE_REQUOTE_BLOCKS) return c.route;
     if (c && c.route === null && amount <= c.amount && age < REQUOTE_BLOCKS) return null;
     if (c && c.route !== null) {
       const usdc = await quote(side, c.route, amount, blockNumber);
@@ -126,10 +128,12 @@ export function createRoutes(chain, cfg, abi, market = ETHEREUM_MARKET) {
     return result;
   }
 
-  /// What selling `amount` of `token` in `key` would return at the best quote {best} found, used or not, in USDC's raw
-  /// units: null when the token has no pool at all, 0n when it has pools but none quoted, and otherwise the quote,
-  /// scaled down pro rata (rounded down) to an `amount` below the one quoted. Each is a floor on what the pools pay:
-  /// a smaller sale gets at least its share of a larger one's proceeds, and a larger one at least the smaller's.
+  /// What selling (or buying) `amount` of `token` in `key` would return (or cost) at the best quote {best} found, used
+  /// or not, in USDC's raw units: null when the token has no pool at all, 0n when it has pools but none quoted, and
+  /// otherwise the quote, scaled down pro rata (rounded down) to an `amount` below the one quoted. A sale's is a floor
+  /// on what the pools pay, a smaller sale getting at least its share of a larger one's proceeds; a purchase's is a
+  /// ceiling, a smaller purchase costing at most its share of a larger one's cost. Asked for more than it quoted, it
+  /// answers the smaller quote, which bounds neither side: {best} quotes a larger amount again first (RZ-11).
   function quoteOf({ key, token, side, amount }) {
     const c = chosen.get(`${key}:${token.toLowerCase()}:${side}`);
     if (!c) return 0n;

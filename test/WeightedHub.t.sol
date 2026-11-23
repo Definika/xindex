@@ -47,6 +47,11 @@ contract WeightedHubTest is WeightedTest {
         });
     }
 
+    /// @dev A creation without a first issue.
+    function _noFirst() internal pure returns (IWeightedHub.FirstIssue memory) {
+        return IWeightedHub.FirstIssue(address(0), 0, address(0));
+    }
+
     function _clone() internal returns (WeightedHub) {
         return WeightedHub(Clones.clone(factory.IMPLEMENTATION()));
     }
@@ -55,7 +60,7 @@ contract WeightedHubTest is WeightedTest {
         WeightedHub clone = _clone();
         IWeightedHub.ComponentInit[] memory inits = _inits();
         vm.expectRevert(IWeightedHub.NotFactory.selector);
-        clone.initialize("X", "X", inits, _cfg());
+        clone.initialize("X", "X", inits, _cfg(), _noFirst());
     }
 
     function test_theImplementationCannotBeInitialized() public {
@@ -63,21 +68,21 @@ contract WeightedHubTest is WeightedTest {
         IWeightedHub.ComponentInit[] memory inits = _inits();
         vm.expectRevert(Initializable.InvalidInitialization.selector);
         vm.prank(address(factory));
-        implementation.initialize("X", "X", inits, _cfg());
+        implementation.initialize("X", "X", inits, _cfg(), _noFirst());
     }
 
     function test_initializeRunsOnce() public {
         IWeightedHub.ComponentInit[] memory inits = _inits();
         vm.expectRevert(Initializable.InvalidInitialization.selector);
         vm.prank(address(factory));
-        index.initialize("X", "X", inits, _cfg());
+        index.initialize("X", "X", inits, _cfg(), _noFirst());
     }
 
     function _expectInvalid(IWeightedHub.ComponentInit[] memory inits) internal {
         WeightedHub clone = _clone();
         vm.expectRevert(IWeightedHub.InvalidComponents.selector);
         vm.prank(address(factory));
-        clone.initialize("X", "X", inits, _cfg());
+        clone.initialize("X", "X", inits, _cfg(), _noFirst());
     }
 
     function test_initializeRefusesBadComponents() public {
@@ -120,7 +125,7 @@ contract WeightedHubTest is WeightedTest {
         WeightedHub clone = _clone();
         vm.expectRevert(abi.encodeWithSelector(SafeCast.SafeCastOverflowedUintDowncast.selector, 96, inits[0].units));
         vm.prank(address(factory));
-        clone.initialize("X", "X", inits, _cfg());
+        clone.initialize("X", "X", inits, _cfg(), _noFirst());
     }
 
     function test_DA22_CRI25_CRI33_anUninitializedCloneDoesNothing() public {

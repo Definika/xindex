@@ -164,6 +164,77 @@ test("nameUnits does not trade a leg that sits within its trading cost of its we
   assert.ok(U.gainOf(ON_WEIGHTS, banded.newUnits, WEIGHTS).gain >= bar);
 });
 
+test("the bot's oracle check is WeightedMath's: the tolerance, both sums, the floor and the verdict of every oracle vector", () => {
+  assert.equal(model.oracles.length, 85);
+  const seen = { held: 0, below: 0, over: 0 };
+  for (const o of model.oracles) {
+    const got = U.oracleOf(big(o.units), big(o.newUnits), big(o.values), BigInt(o.elapsed));
+    // The model's outcomes: 0 holds, 1 below the floor, 2 past the auction's end, where the hub reverts AuctionOver.
+    if (o.outcome === "2") {
+      assert.equal(got, null);
+      assert.equal(U.oracleToleranceAt(BigInt(o.elapsed)), null);
+      seen.over++;
+      continue;
+    }
+    assert.equal(got.tolerance, BigInt(o.tolerance));
+    assert.equal(got.valueOut, BigInt(o.valueOut));
+    assert.equal(got.valueIn, BigInt(o.valueIn));
+    assert.equal(got.floor, BigInt(o.floor));
+    assert.equal(got.holds, o.outcome === "0");
+    got.holds ? seen.held++ : seen.below++;
+  }
+  assert.ok(seen.held >= 15 && seen.below >= 15 && seen.over >= 3, "every outcome is among the vectors");
+  assert.equal(U.oracleToleranceAt(0n), 0n, "nothing at the auction's first second");
+  assert.equal(U.oracleToleranceAt(U.AUCTION_DURATION), U.MAX_ORACLE_TOLERANCE, "two percent at its last");
+  assert.equal(U.oracleToleranceAt(-1n), null);
+});
+
+test("a fill's legs are valued the way they move, and a moving leg without a value has none", () => {
+  const leaving = [11n, 21n, 31n];
+  const arriving = [10n, 20n, null];
+  assert.deepEqual(U.legValuesOf([5n, 5n, 5n], [4n, 6n, 5n], leaving, arriving), [11n, 20n, 0n]);
+  assert.equal(U.legValuesOf([5n, 5n, 5n], [4n, 5n, 6n], leaving, arriving), null, "the third leg rises unvalued");
+  assert.deepEqual(U.legValuesOf([5n, 5n, 5n], [5n, 5n, 5n], leaving, arriving), [0n, 0n, 0n], "a leg at rest is not read");
+});
+
+test("under Pyth's check, nameUnits keeps what the second's tolerance allows, and a leg Pyth cannot value stops the fill", () => {
+  const prices = [2500 / 1e18, PRICES[1], PRICES[2]];
+  // Pyth's values per raw unit, at one scale, with no confidence interval: the market's own prices.
+  const exact = [2500n, 60_000n * 10n ** 10n, 20n * 10n ** 12n];
+  // At the auction's last second a lone fill on units alone keeps the index's whole distance from its weights, which
+  // here is more than two percent of what it trades: Pyth's check refuses it, and caps what the keeper keeps.
+  const last = 14_400n;
+  const alone = U.nameUnits({ units: ON_WEIGHTS, weights: WEIGHTS, prices, bar: U.barAt(last) });
+  const lone = U.legValuesOf(ON_WEIGHTS, alone.newUnits, exact, exact);
+  assert.equal(U.oracleOf(ON_WEIGHTS, alone.newUnits, lone, last).holds, false, "the lone fill fails Pyth's check");
+  const capped = U.nameUnits({ units: ON_WEIGHTS, weights: WEIGHTS, prices, bar: U.barAt(last), oracle: { leaving: exact, arriving: exact, elapsed: last } });
+  assert.ok(U.oracleOf(ON_WEIGHTS, capped.newUnits, U.legValuesOf(ON_WEIGHTS, capped.newUnits, exact, exact), last).holds);
+  assert.ok(U.takeUsd(ON_WEIGHTS, capped.newUnits, prices) > 0, "it still pays");
+  assert.ok(U.takeUsd(ON_WEIGHTS, capped.newUnits, prices) < U.takeUsd(ON_WEIGHTS, alone.newUnits, prices), "and keeps less than the distance");
+
+  // An hour in, the tolerance is half a percent, and the bar asks more than a lone fill gives: what is named holds both.
+  const elapsed = 3_600n;
+  const bar = U.barAt(elapsed);
+  const checked = U.nameUnits({ units: ON_WEIGHTS, weights: WEIGHTS, prices, bar, oracle: { leaving: exact, arriving: exact, elapsed } });
+  const values = U.legValuesOf(ON_WEIGHTS, checked.newUnits, exact, exact);
+  const verdict = U.oracleOf(ON_WEIGHTS, checked.newUnits, values, elapsed);
+  assert.ok(verdict.holds, "what it names under Pyth's check holds it");
+  assert.equal(verdict.tolerance, 5n * 10n ** 15n);
+  assert.ok(U.gainOf(ON_WEIGHTS, checked.newUnits, WEIGHTS).gain >= bar);
+
+  // Pyth prices the first coin at a thousand times the market: selling it must be paid a thousand times over, so
+  // holding the check costs the keeper, as holding a wrong quote does. The check can only refuse.
+  const wrong = [2_500_000n, exact[1], exact[2]];
+  const gift = U.nameUnits({ units: ON_WEIGHTS, weights: WEIGHTS, prices, bar: U.barAt(14_400n), oracle: { leaving: wrong, arriving: wrong, elapsed: 14_400n } });
+  assert.ok(U.takeUsd(ON_WEIGHTS, gift.newUnits, prices) < 0, "a wrong price makes the fill a gift or nothing");
+
+  // No value for a leg the fill would move: nothing can be named.
+  const blind = [null, exact[1], exact[2]];
+  assert.equal(U.nameUnits({ units: ON_WEIGHTS, weights: WEIGHTS, prices, bar: U.barAt(14_400n), oracle: { leaving: blind, arriving: blind, elapsed: 14_400n } }), null);
+  // Past the auction's end there is no tolerance and no fill.
+  assert.equal(U.nameUnits({ units: ON_WEIGHTS, weights: WEIGHTS, prices, bar: U.barAt(14_400n), oracle: { leaving: exact, arriving: exact, elapsed: 14_401n } }), null);
+});
+
 test("under a quote, nameUnits gives the index what the quote asks, where alone it would keep the distance", () => {
   const prices = [2500 / 1e18, PRICES[1], PRICES[2]];
   const bar = U.barAt(14_400n);

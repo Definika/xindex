@@ -64,6 +64,18 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
         uint256 weight;
     }
 
+    /// @notice The first issue, made by {initialize} in the index's own creation: an issue as any other, except that
+    ///         the basket is pulled from `from`, the index's creator, who approved the index's address before it
+    ///         existed. Zero `shares` means the index is created with no shares.
+    /// @param from Pays the basket: whoever called the factory's `createIndex`.
+    /// @param shares Shares `to` receives; 1e18 is one whole index token.
+    /// @param to Receives the shares.
+    struct FirstIssue {
+        address from;
+        uint256 shares;
+        address to;
+    }
+
     /// @notice What the factory fixed for the index at creation, besides its components. None of it ever changes.
     /// @param creatorFeeBps The creator's fee on every issue and on every redeem, in basis points of the shares, at
     ///        most the factory's MAX_CREATOR_FEE_BPS.
@@ -84,7 +96,12 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
         uint32 rebalanceInterval;
     }
 
+    /// @notice The index's weights are now `weights`, set through its factory after the creator's notice; its units
+    ///         follow at its next rebalance.
+    event WeightsChanged(uint256[] weights);
+
     /// @notice `sender` paid `amounts` (per component, in component order, rounded up) and `to` received `shares`.
+    ///         For the first issue of an index created with one, `sender` is its creator.
     event Issued(address indexed sender, address indexed to, uint256 shares, uint256[] amounts);
     /// @notice `sender` burned `shares` for `amounts` (per component, in component order, rounded down). With
     ///         {redeemSkipping}, the skipped components' amounts are recorded as claims for `to` instead of being
@@ -159,7 +176,8 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     ///         600, a referral share above 10,000 basis points, or an interval below MIN_REBALANCE_INTERVAL. The
     ///         factory bounds each rate and the interval more tightly.
     error InvalidConfig();
-    /// @notice The index is gated and `to` is not on the factory's allowlist for it.
+    /// @notice The factory does not let `to` be issued shares now: the index is gated and `to` is not on its
+    ///         allowlist, or minting is paused, on this index or on every index (`mintingPaused`).
     error NotAllowedMinter(address to);
     /// @notice `shares` is zero.
     error ZeroShares();
@@ -171,7 +189,9 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     error ClaimTooLarge(address token, uint256 amount, uint256 recorded);
     /// @notice {issue} received less `token` than it pulled, as with a fee-on-transfer token.
     error TransferAmountMismatch(address token);
-    /// @notice The index's rebalance interval has not passed since the last rebalance; it does at `earliest`.
+    /// @notice The caller may not start a rebalance yet: it may at `earliest`, the index's rebalance interval after
+    ///         the last fill or the creation, or, once a fill has settled, MIN_REBALANCE_INTERVAL after it for the
+    ///         factory owner or guardian.
     error RebalanceTooSoon(uint256 earliest);
     /// @notice A rebalance is pending until `deadline`, the end of its auction.
     error RebalancePending(uint256 deadline);
@@ -218,6 +238,10 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     /// @notice The fill brings in `valueIn` at the prices the owner or guardian posted with this proposal, under the
     ///         `floor` the quote asks: the value it takes out, less the tolerance, rounded up.
     error BelowQuote(uint256 valueIn, uint256 floor);
+
+    /// @notice At Pyth's prices the fill brings in `valueIn`, under the `floor` the auction's oracle tolerance allows
+    ///         at this second: what it takes, less that tolerance.
+    error BelowOracleValue(uint256 valueIn, uint256 floor);
     /// @notice After a fill or an issue, the index could not send itself one raw unit of `token`, a leg it bought or
     ///         was just paid, or lost some doing so: a token that blocks the index as a sender would trap what came
     ///         in (RX-12).
@@ -240,8 +264,9 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     function REBALANCE_DELAY() external view returns (uint256);
 
     /// @notice Shortest rebalance interval an index can be created with. It is also the wait that a settlement with a
-    ///         keep mask restarts, whatever the index's own interval ({earliestRebalance}). The factory bounds the
-    ///         interval above.
+    ///         keep mask restarts, whatever the index's own interval ({earliestRebalance}), and the wait after any
+    ///         fill before the factory owner or guardian may start the next. The factory bounds the interval
+    ///         above.
     function MIN_REBALANCE_INTERVAL() external view returns (uint256);
 
     /// @notice Length of the auction, over which the bar falls from the math's BAR_MAX by half every BAR_HALF_LIFE.
@@ -262,16 +287,24 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     ///         this implementation, and it never changes.
     function MATH() external view returns (address);
 
+    /// @notice The contract that values a fill's legs at Pyth's prices (`IPythPrices`), which the factory deployed with
+    ///         this implementation; zero when the factory has no oracle, and then no fill is checked against one.
+    function PRICES() external view returns (address);
+
     /// @notice One-time initializer called by the factory in the same transaction as the clone.
     /// @param name_ ERC-20 name, also the EIP-712 domain name for permits.
     /// @param symbol_ ERC-20 symbol.
     /// @param components_ The components, in the order every array of this index uses.
     /// @param config_ The fee rates and the rebalance interval.
+    /// @param first_ The creation's own first issue ({FirstIssue}); zero shares for none. It runs every check an
+    ///        {issue} runs, the gate, the fee and each component's arrival among them, and reverts the creation with
+    ///        it. This is the only time the index pulls a basket from an account other than its caller.
     function initialize(
         string calldata name_,
         string calldata symbol_,
         ComponentInit[] calldata components_,
-        Config calldata config_
+        Config calldata config_,
+        FirstIssue calldata first_
     ) external;
 
     /// @notice The fee rates and the rebalance interval, fixed at creation.
@@ -322,9 +355,14 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     ///         gross shares, the fee's included, rounded up; {previewIssue} gives the exact amounts (RX-42).
     function components() external view returns (address[] memory tokens, uint256[] memory units);
 
-    /// @notice Each component's share of the index's value, in basis points, in component order, as the creator fixed
-    ///         it.
+    /// @notice Each component's share of the index's value, in basis points, in component order: as the creator fixed
+    ///         it, or as its last change of weights through the factory set it.
     function componentWeights() external view returns (uint256[] memory weights);
+
+    /// @notice Sets the components' weights, in component order, and emits WeightsChanged; the units follow at the next
+    ///         rebalance. The factory only (NotFactory otherwise), from {IWeightedIndexFactory-executeWeights}, which
+    ///         checked them. Reverts RebalancePending while a rebalance is live, and InvalidComponents on a wrong length.
+    function setWeights(uint256[] calldata weights) external;
 
     /// @notice Number of rebalance proposals ever started, including cancelled and expired ones.
     function proposalCount() external view returns (uint256);
@@ -332,9 +370,12 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     /// @notice Time of the last executed rebalance, or of creation.
     function lastRebalance() external view returns (uint256);
 
-    /// @notice The earliest time the next rebalance may start: the index's rebalance interval after {lastRebalance},
-    ///         or only MIN_REBALANCE_INTERVAL if that settlement had a keep mask (XS-3). {canStartRebalance} also
-    ///         checks the waits after a cancel and after an auction nobody filled.
+    /// @notice The earliest time anyone may start the next rebalance: the index's rebalance interval after
+    ///         {lastRebalance}, or only MIN_REBALANCE_INTERVAL if that settlement had a keep mask (XS-3). Once a fill
+    ///         has settled, the factory owner and guardian may start from MIN_REBALANCE_INTERVAL after it in either
+    ///         case, so a fill that traded next to nothing does not hold an index off its weights for its whole
+    ///         interval; before an index's first fill they wait as anyone does.
+    ///         {canStartRebalance} also checks the waits after a cancel and after an auction nobody filled.
     function earliestRebalance() external view returns (uint256);
 
     /// @notice After {cancelRebalance}, only the factory owner or guardian can start a rebalance before this time. Read
@@ -345,8 +386,9 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     ///         - {earliestRebalance} has passed;
     ///         - no unexpired rebalance is pending;
     ///         - the waits after a cancel and after an auction nobody filled are over.
-    ///         Before the waits are over, only the factory owner or guardian can start one. It calls nothing on any
-    ///         component and reads no price.
+    ///         Before the waits are over, only the factory owner or guardian can start one, and before
+    ///         {earliestRebalance} only they can, once a fill has settled and MIN_REBALANCE_INTERVAL has passed
+    ///         since it. It calls nothing on any component and reads no price.
     /// @param keepMask Bit i set leaves component i untouched: no fill of this rebalance may change its units, for
     ///        example while its issuer is minting it without limit. Only the factory owner or guardian can pass a
     ///        non-zero mask, and it must leave at least MIN_COMPONENTS components to rebalance. An executor needs no
@@ -361,7 +403,8 @@ interface IWeightedHub is IIndexHub, IXindexErrors {
     ///           proposal from filling, which a cancel already can; it can make no fill worse than a start without
     ///           one allows. One thing it can do that a cancel cannot: prices that refuse every trade worth making
     ///           still pass a fill that shrinks no leg, and such a fill, however small, settles the proposal and
-    ///           restarts the index's whole interval. The one-week restart of XS-3 covers keep masks only.
+    ///           restarts the index's whole interval for strangers. The other role may start again
+    ///           MIN_REBALANCE_INTERVAL later.
     ///         - What it buys: an executor alone at the auction's last second keeps at most `tolerance` of what it
     ///           trades, where without a quote it keeps the index's whole distance from its weights.
     ///         - The quote belongs to this proposal alone and ends with it.

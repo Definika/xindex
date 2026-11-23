@@ -237,7 +237,7 @@ abstract contract DeployChecks is Script {
     /// @notice The contracts a deployment on this chain trades or prices through, none of which may hold a role.
     /// @param router The resolved Universal Router.
     /// @return list The router and the PoolManager it settles against, then, on a pinned chain, every token and mint
-    ///         currency in that chain's address book.
+    ///         currency in that chain's address book, and its Pyth contract.
     function marketContracts(address router) public view returns (address[] memory list) {
         address[] memory book = onBase()
             ? _baseMarket()
@@ -250,33 +250,37 @@ abstract contract DeployChecks is Script {
         }
     }
 
-    /// @dev Every token the Ethereum address book lists, the whole `Listings` table, then its two mint currencies.
+    /// @dev Every token the Ethereum address book lists, the whole `Listings` table, then its two mint currencies and
+    ///      Pyth.
     function _mainnetMarket() private pure returns (address[] memory) {
-        return _withStables(Listings.all(), MainnetAddresses.USDC, MainnetAddresses.USDT);
+        return _withStables(Listings.all(), MainnetAddresses.USDC, MainnetAddresses.USDT, MainnetAddresses.PYTH);
     }
 
-    /// @dev Every token the BNB Chain address book lists, then its two mint currencies.
+    /// @dev Every token the BNB Chain address book lists, then its two mint currencies and Pyth.
     function _bnbMarket() private pure returns (address[] memory) {
-        return _withStables(BnbChainAddresses.all(), BnbChainAddresses.USDC, BnbChainAddresses.USDT);
+        return
+            _withStables(
+                BnbChainAddresses.all(), BnbChainAddresses.USDC, BnbChainAddresses.USDT, BnbChainAddresses.PYTH
+            );
     }
 
-    /// @dev Every token the Base address book lists, then its two mint currencies.
+    /// @dev Every token the Base address book lists, then its two mint currencies and Pyth.
     function _baseMarket() private pure returns (address[] memory) {
-        return _withStables(BaseAddresses.all(), BaseAddresses.USDC, BaseAddresses.USDT);
+        return _withStables(BaseAddresses.all(), BaseAddresses.USDC, BaseAddresses.USDT, BaseAddresses.PYTH);
     }
 
-    /// @dev `tokens`, then the chain's two mint currencies.
-    function _withStables(address[] memory tokens, address usdc, address usdt)
+    /// @dev `tokens`, then the chain's two mint currencies and its Pyth contract.
+    function _withStables(address[] memory tokens, address usdc, address usdt, address pyth)
         private
         pure
         returns (address[] memory list)
     {
         uint256 n = tokens.length;
-        list = new address[](n + 2);
+        list = new address[](n + 3);
         for (uint256 i = 0; i < n; ++i) {
             list[i] = tokens[i];
         }
-        (list[n], list[n + 1]) = (usdc, usdt);
+        (list[n], list[n + 1], list[n + 2]) = (usdc, usdt, pyth);
     }
 
     /// @notice Whether this chain's market addresses are pinned to an address book: Ethereum's, BNB Chain's or
@@ -337,6 +341,23 @@ abstract contract DeployChecks is Script {
     function pinnedUsdt() public view returns (address) {
         if (onBase()) return BaseAddresses.USDT;
         return onBnbChain() ? BnbChainAddresses.USDT : MainnetAddresses.USDT;
+    }
+
+    /// @notice The pinned chain's Pyth contract.
+    function pinnedPyth() public view returns (address) {
+        if (onBase()) return BaseAddresses.PYTH;
+        return onBnbChain() ? BnbChainAddresses.PYTH : MainnetAddresses.PYTH;
+    }
+
+    /// @notice Pyth's contract for the factory's price check. On a pinned chain it is the chain's own: zero takes it,
+    ///         and any other address is refused, so a mainnet factory always checks its fills against Pyth. Elsewhere
+    ///         zero is allowed and builds a factory whose fills no price checks, as a local test market may need; a
+    ///         given address must have code.
+    /// @param pyth Address from the environment.
+    /// @return The resolved address, zero for none.
+    function resolvePyth(address pyth) public view returns (address) {
+        if (pyth == address(0) && !isPinnedChain()) return address(0);
+        return _resolve("PYTH", pyth, pinnedPyth());
     }
 
     /// @notice Fills a zero router with the chain's default on a pinned chain only, and requires it to have code. On a

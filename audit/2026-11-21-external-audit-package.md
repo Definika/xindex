@@ -8,6 +8,27 @@ and every rule there that says "must" or "never" is a property we expect the aud
 
 Every earlier review in this repository is internal, the work of agents and of the team. None is an external audit.
 
+> **This package predates the build (noted 2026-11-23).** It describes the candidate of section 1. The working tree
+> of the branch `feat/pyth-check` has since changed `src/` in ways an audit must cover, none of them committed or
+> packaged yet:
+>
+> - Pyth's check on every fill, through a new contract, `PythPrices`, and `WeightedMath.oracleCheck`; price feeds
+>   per token on the factory (`design/2026-11-22-pyth-check.md`).
+> - A creation held to its weights at Pyth's prices (`OffWeights`), and weights the creator can change behind 7 days
+>   of notice (`design/2026-11-23-changeable-weights.md`).
+> - `createAndIssue`: a creation that issues the index's first shares in the hub's initializer, the basket pulled
+>   from the creator, the one place the hub pulls from an account other than its caller.
+> - The owner or guardian may start a rebalance `MIN_REBALANCE_INTERVAL` after any fill (RW-3).
+> - `PythPrices` refuses a value of zero.
+> - A pause of minting on the factory (`pauseMinting`, `resumeMinting`), which only an issue reads.
+> - `acceptCreator` cancels a change of weights the outgoing creator left pending (HK-16,
+>   `audit/2026-11-23-attack-replay.md`, a replay of twenty classes of past attacks against this build).
+> - In `keeper/`: `KeeperExecutor.fill` is payable and posts Pyth's update before it fills.
+>
+> `CLAUDE.md`'s bullets of 2026-11-22 and 2026-11-23 describe each, with its tests and mutants. Sections 1 and 2
+> below, the scope, the roles and the properties need rewriting for that build, at its commit, before this goes to
+> an auditor.
+
 ## 1. Commit
 
 The candidate is the branch `release/2026-11-21-candidate` at `e2508f71d98209ae2db5422bc1d50cd1bb9da903`. It is
@@ -42,8 +63,9 @@ It is a candidate, not the freeze. What can still change `src/` before the freez
 
 1. **RW-3**, the owner's to decide (section 9): a fill under a quote that restarts the whole interval. Every rule
    weighed so far changes the rebalance's state machine.
-2. **RB-5**, one line in `IndexZap._checkIndexCall`: the zap refuses as `to` only the index it mints or burns, where
-   the builder refuses every factory index.
+2. **RB-5**, one line in `IndexZap._checkIndexCall`: the zap refused as `to` only the index it mints or burns, where
+   the builder refuses every factory index. Fixed on 2026-11-23: the zap refuses every factory index too, and its
+   release hash moved.
 3. Any fix this audit asks for.
 
 The frozen commit is the one `DeployWeighted`'s four release hashes (`FACTORY_INITCODE_HASH`, `ZAP_INITCODE_HASH`,
@@ -307,14 +329,14 @@ Still open:
   restarting one week for everyone would open every honestly quoted index to an unquoted auction a week later; the
   owner and guardian starting a week after such a fill is a power neither has today, close to what a keep mask
   already gives; a least gain before a fill restarts the interval is a tuning constant. The owner's to decide.
-- **RB-5** (informational): section 1.
+- **RB-5** (informational): section 1; fixed on 2026-11-23.
 - **RY-3, RW-4** (informational, policy): a minter may name itself as referrer and take the referral share of the
   platform's fee. Deferred to the fee policy; a check on chain is dodged by a second wallet.
 - **Of the audit of 2026-11-21**, left as they are with their reasons in its record: CA-M11, CA-M15, CA-M19,
   CA-R2-01, CA-R2-06, CA-R2-08; and, before the restock's non-EVM signers run, CA-M14, CA-L7, CA-R2-12 and CA-R2-13.
   All are in the keeper, the restock or the scripts.
-- **RZ-8, RZ-10, RZ-11, RZ-20, RZ-21**: keeper and restock, informational (out of scope). RZ-6, RZ-9, RZ-13, RZ-15,
-  RZ-16 and RZ-19 were fixed on 2026-11-21.
+- **RZ-8, RZ-10, RZ-11, RZ-20, RZ-21**: keeper and restock, informational (out of scope), fixed on 2026-11-23. RZ-6,
+  RZ-9, RZ-13, RZ-15, RZ-16 and RZ-19 were fixed on 2026-11-21.
 - **XA-34**: one fork test keeps a bare `vm.expectRevert()`.
 
 ## 10. Assurance already done

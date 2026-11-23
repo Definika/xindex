@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
+import {WeightedMath} from "../../src/WeightedMath.sol";
 import {Test} from "forge-std/Test.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {WeightedIndexFactory} from "../../src/WeightedIndexFactory.sol";
@@ -9,6 +10,9 @@ import {DeployWeighted} from "../../script/DeployWeighted.s.sol";
 import {DeployChecks} from "../../script/DeployChecks.sol";
 import {MainnetAddresses as M} from "../../script/MainnetAddresses.sol";
 import {ForkAddresses as A} from "./ForkAddresses.sol";
+import {PriceFeeds} from "../../script/PriceFeeds.sol";
+import {IPythPrices} from "../../src/interfaces/IPythPrices.sol";
+import {IPythReader} from "../../src/interfaces/IPythReader.sol";
 
 interface IRouterImmutables {
     function poolManager() external view returns (address);
@@ -535,7 +539,8 @@ contract MainnetAddressesForkTest is Test {
     /// @dev Every entry, as the listing script builds it, listed on a fresh factory, which records each token's
     ///      on-chain decimals.
     function _listOnAFreshFactory(address[] memory list) internal {
-        WeightedIndexFactory factory = new WeightedIndexFactory(address(this), address(0));
+        WeightedIndexFactory factory =
+            new WeightedIndexFactory(address(this), address(0), address(0), address(new WeightedMath()));
         for (uint256 i = 0; i < list.length; ++i) {
             factory.proposeListing(list[i]);
         }
@@ -584,5 +589,31 @@ contract MainnetAddressesForkTest is Test {
             assertEq(list[i], four[i]);
         }
         _listOnAFreshFactory(list);
+    }
+
+    /// @dev The book's Pyth is Pyth's contract on Ethereum: it knows ETH/USD, and a factory built on it values WETH at
+    ///      the price it stores, its confidence leaning against the executor, while that price is under a minute
+    ///      old, and refuses it after. The clock is moved to the stored price's publish time: on Ethereum a price is
+    ///      stored only when someone pays to post it, a filler in its own transaction.
+    function testFork_aFactoryOnTheBooksPythValuesAtItsStoredPrice() public {
+        IPythPrices.PriceFeed memory feed = PriceFeeds.feedOf(1, M.WETH);
+        assertTrue(IPythReader(M.PYTH).priceFeedExists(feed.id), "Pyth's contract knows ETH/USD");
+        IPythReader.Price memory p = IPythReader(M.PYTH).getPriceUnsafe(feed.id);
+        WeightedIndexFactory factory =
+            new WeightedIndexFactory(address(this), address(0), M.PYTH, address(new WeightedMath()));
+        factory.proposeListing(M.WETH);
+        factory.proposePriceFeed(M.WETH, feed);
+        vm.warp(block.timestamp + factory.LISTING_DELAY());
+        factory.executeListing(M.WETH);
+        factory.executePriceFeed(M.WETH);
+
+        IPythPrices prices = IPythPrices(factory.PRICES());
+        vm.warp(p.publishTime + 60);
+        uint256 price = uint256(int256(p.price));
+        assertEq(prices.valueOf(M.WETH, true), (price + p.conf) * 1e28 / 1e18, "leaving: up by the confidence");
+        assertEq(prices.valueOf(M.WETH, false), (price - p.conf) * 1e28 / 1e18, "arriving: down by it");
+        vm.warp(p.publishTime + 61);
+        vm.expectRevert(abi.encodeWithSelector(IPythPrices.StalePrice.selector, M.WETH, p.publishTime));
+        prices.valueOf(M.WETH, true);
     }
 }

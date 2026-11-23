@@ -18,20 +18,25 @@ import {IIndexHub} from "./interfaces/IIndexHub.sol";
 import {IWeightedHub} from "./interfaces/IWeightedHub.sol";
 import {IWeightedIndexFactory} from "./interfaces/IWeightedIndexFactory.sol";
 import {IWeightedMath} from "./interfaces/IWeightedMath.sol";
+import {IPythPrices} from "./interfaces/IPythPrices.sol";
 import {IRebalanceExecutor} from "./interfaces/IRebalanceExecutor.sol";
 
 /// @title WeightedHub
 /// @notice An index token fully backed by its components. The components and their weights are fixed at creation.
-///         The index rebalances back toward those weights through an auction that reads no price. See
-///         {IWeightedHub}.
+///         The index rebalances back toward those weights through an auction judged on units, which Pyth's prices
+///         can only refuse. See {IWeightedHub}.
 /// @dev Deployment
 ///      - {WeightedIndexFactory} deploys each index as an EIP-1167 clone of one implementation.
-///      - The factory's constructor deploys the implementation, so `FACTORY` and `MATH` can be immutables.
+///      - The factory's constructor deploys the implementation, so `FACTORY`, `MATH` and `PRICES` can be
+///        immutables.
 ///        Immutables live in the bytecode the clones delegate to, so every clone sees the same values.
 ///      - The storage-based {ReentrancyGuard} needs no initializer: its zero slot means "not entered", so it works in
 ///        a clone. Every function that mints, burns, pays a claim or changes a rebalance shares it.
 ///      - Only an initialized clone can issue, redeem or rebalance. The implementation, or a clone deployed outside
 ///        the factory, has no components and would mint unbacked shares.
+///      - A creation may carry the index's first issue: the initializer then issues to the creator's recipient, under
+///        the guard, pulling the basket from the creator. It is the same issue as any other, with one difference:
+///        the payer is the account the factory names, since the factory is the caller.
 ///
 ///      Invariant, for every component i, with units_i as recorded and `scale` the streaming fee's factor (1e18 = one):
 ///          token_i.balanceOf(index) >= floor(totalSupply * units_i * scale / 1e36) + totalClaims[token_i]
@@ -43,9 +48,13 @@ import {IRebalanceExecutor} from "./interfaces/IRebalanceExecutor.sol";
 ///        attack.
 ///
 ///      Prices
-///      - There are none. No function reads a price, a feed or a pool. Issue, redeem and claims are in kind, and a
-///        rebalance is judged on units alone (below). So no feed can block an exit, misprice a mint or set the terms of
-///        a rebalance, and nobody's keys stand between the holders and their coins.
+///      - Issue, redeem and claims read none: they are in kind. So no feed can block an exit or misprice a mint, and
+///        nobody's keys stand between the holders and their coins.
+///      - A rebalance is judged on units (below), and then checked against Pyth's prices through `PRICES`, which can
+///        only refuse it: a fill must bring in, at those prices, at least what it takes less a tolerance that rises
+///        from nothing to the math's MAX_ORACLE_TOLERANCE over the auction. A price that is stale, missing or wrong
+///        can stop a fill, never pass one the units refuse. On a factory without an oracle (`PRICES` zero, never on
+///        a chain the deploy script pins) the check is not made.
 ///
 ///      Fees
 ///      - An index charges its creator's rate plus the platform's, both fixed at creation, on every issue and redeem.
@@ -56,7 +65,9 @@ import {IRebalanceExecutor} from "./interfaces/IRebalanceExecutor.sol";
 ///        cannot hold shares is replaced: the platform's part goes to the creator, and the creator's to the call's
 ///        `to`. So no recipient can block a mint or an exit.
 ///      - A referrer named at mint takes the referral share of the platform's part.
-///      - A gated index issues only to recipients the factory allows, until its creator opens it.
+///      - A gated index issues only to recipients the factory allows, until its creator opens it. And no index
+///        issues while the factory's owner or guardian has paused minting, on it or on every index. Only an issue
+///        asks: a redeem, a claim and a rebalance never read the gate or the pause.
 ///
 ///      Rebalancing
 ///      - Once the index's rebalance interval has passed, anyone can start a rebalance. After REBALANCE_DELAY of
@@ -70,17 +81,20 @@ import {IRebalanceExecutor} from "./interfaces/IRebalanceExecutor.sol";
 ///      - The bar starts at the math's BAR_MAX and halves every BAR_HALF_LIFE. Executors compete to clear it first.
 ///        Among fills worth the same at the market's prices, the one that clears the highest bar is close to the one
 ///        that puts the index on its weights, not exactly it: `L` runs under the logarithm, more so on a leg that
-///        grows much, so a fill a little short of the weights can score a little more (CA-S07). A lone executor at
-///        the auction's end keeps the whole distance; competition is what returns it to the holders.
+///        grows much, so a fill a little short of the weights can score a little more (CA-S07). On units alone a lone
+///        executor at the auction's end keeps the whole distance. Pyth's check bounds what it keeps by the oracle's
+///        tolerance of what it trades, and competition, filling earlier at a smaller tolerance, returns the rest.
 ///      - The caps do not depend on what anything is worth. One fill sends out at most MAX_TURNOVER of each
 ///        component's own units and adds at most the math's MAX_GROWTH of them (V5-M2, RX-15).
 ///      - A fill that changes nothing has no gain, so none can restart the rebalance interval for free (V5-L2). An
 ///        index with less than one whole share does not rebalance.
 ///      - A fill with a keep mask restarts only MIN_REBALANCE_INTERVAL. A sliver the owner or guardian fills behind a
 ///        mask cannot hold the index off for its whole interval, and a keep can be renewed a week later (XS-3).
-///      - Any other fill restarts the whole interval, for everyone, however little it trades, and the least a fill
-///        can give at an auction's last second is about 4.8e-7. So where nothing else filled, or could fill (a
-///        component paused, or a quote that refuses every trade worth making), a sliver uses the interval up.
+///      - Any other fill restarts the whole interval, however little it trades, and the least a fill can give at an
+///        auction's last second is about 4.8e-7. So where nothing else filled, or could fill (a component paused, or
+///        a quote that refuses every trade worth making), a sliver uses the interval up for strangers. The owner or
+///        guardian may start again MIN_REBALANCE_INTERVAL after any fill, so no sliver holds an index off its
+///        weights for longer than that once either acts. Before an index's first fill they wait as anyone does.
 ///      - Transfer amounts come from supply and units alone. The settlement stands only if the invariant holds with
 ///        the new units, and the whole of `amountsIn` arrived on top of what the index held.
 contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable, ReentrancyGuard, IWeightedHub {
@@ -98,6 +112,7 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
     uint256 public constant MAX_TURNOVER = 0.2e18;
     address public immutable FACTORY;
     address public immutable MATH;
+    address public immutable PRICES;
 
     uint256 private constant WAD = 1e18;
     uint256 private constant BPS = 1e4;
@@ -166,10 +181,16 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
         _;
     }
 
-    constructor(address math) {
+    /// @param prices The contract that values a fill at Pyth's prices, or zero for a factory without an oracle.
+    // A zero `prices` is allowed on purpose: a factory without an oracle, which the deploy script refuses on mainnets.
+    // forge-lint: disable-next-item(missing-zero-check)
+    constructor(address math, address prices) {
         if (math == address(0)) revert ZeroAddress();
         FACTORY = msg.sender;
         MATH = math;
+        // Zero on purpose for a factory without an oracle; the deploy script refuses that on every pinned chain.
+        // aderyn-fp-next-line(state-no-address-check)
+        PRICES = prices;
         _disableInitializers();
     }
 
@@ -178,8 +199,9 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
         string calldata name_,
         string calldata symbol_,
         ComponentInit[] calldata components_,
-        Config calldata config_
-    ) external initializer {
+        Config calldata config_,
+        FirstIssue calldata first_
+    ) external nonReentrant initializer {
         if (msg.sender != FACTORY) revert NotFactory();
         uint256 n = components_.length;
         if (n < MIN_COMPONENTS || n > MAX_COMPONENTS) revert InvalidComponents();
@@ -226,6 +248,11 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
         // Set once at creation, in the same transaction as the factory's IndexCreated event.
         // forge-lint: disable-next-line(missing-events-arithmetic)
         lastRebalance = block.timestamp;
+
+        // The creation's own first issue, if it has one: an issue as any other, under the guard, with the basket
+        // pulled from the creator the factory names. Every state above is written, so it sees a finished index, and
+        // a check it fails reverts the creation with it.
+        if (first_.shares != 0) _issue(first_.from, first_.shares, first_.to, address(0));
     }
 
     // ---------------------------------------------------------------------
@@ -234,16 +261,18 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
 
     /// @inheritdoc IIndexHub
     function issue(uint256 shares, address to) external nonReentrant onlyInitialized {
-        _issue(shares, to, address(0));
+        _issue(msg.sender, shares, to, address(0));
     }
 
     /// @inheritdoc IIndexHub
     function issue(uint256 shares, address to, address referrer) external nonReentrant onlyInitialized {
-        _issue(shares, to, referrer);
+        _issue(msg.sender, shares, to, referrer);
     }
 
-    /// @dev Mints `shares` to `to` and the fee's shares to the recipients, then pulls the basket that backs them all.
-    function _issue(uint256 shares, address to, address referrer) private {
+    /// @dev Mints `shares` to `to` and the fee's shares to the recipients, then pulls from `from` the basket that
+    ///      backs them all. `from` is the caller, except in the first issue of a creation, where the caller is the
+    ///      factory and `from` the creator it names ({initialize}).
+    function _issue(address from, uint256 shares, address to, address referrer) private {
         if (shares == 0) revert ZeroShares();
         _checkRecipient(to);
         (bool allowed, address creator, address platform) = _feeTerms(to);
@@ -260,7 +289,7 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
         _mint(to, shares);
         // The factory call above is a view; nothing external can run in between.
         // forge-lint: disable-next-line(reentrancy-events)
-        emit Issued(msg.sender, to, shares, amounts);
+        emit Issued(from, to, shares, amounts);
         _mintFeeShares(
             gross - shares,
             _platformPart(gross - shares, cfg.platformFeeBps, cfg.creatorFeeBps),
@@ -269,7 +298,13 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
             creator,
             platform
         );
+        _pullBasket(from, amounts, supply, scale);
+    }
 
+    /// @dev Pulls `amounts`, the basket of an issue, from `from`, one component after the other, with the checks that
+    ///      revert the whole issue: every leg already backs `supply`, the supply before this issue, at `scale`, and
+    ///      every component arrives in full and can leave again. Apart from {_issue} only for the compiler's stack.
+    function _pullBasket(address from, uint256[] memory amounts, uint256 supply, uint256 scale) private {
         uint256 n = amounts.length;
         for (uint256 i = 0; i < n; ++i) {
             IERC20 token = IERC20(_components[i].token);
@@ -279,7 +314,10 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
             uint256 required =
                 _backing(supply, _components[i].units, scale, Math.Rounding.Floor) + totalClaims[address(token)];
             if (before < required) revert Underbacked(address(token), before, required);
-            token.safeTransferFrom(msg.sender, address(this), amounts[i]);
+            // `from` is the caller, or, in a creation's first issue, the creator the factory names: only the factory
+            // calls {initialize}, once per index, and it names its own caller.
+            // forge-lint: disable-next-line(arbitrary-send-erc20)
+            token.safeTransferFrom(from, address(this), amounts[i]);
             uint256 arrived = token.balanceOf(address(this));
             // Rejects fee-on-transfer tokens, even a listed token that starts charging a fee later.
             if (arrived - before < amounts[i]) revert TransferAmountMismatch(address(token));
@@ -561,6 +599,13 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
     /// @dev Starts a rebalance for `msg.sender` under the clock and the keep-mask rules. Its id is `proposalCount`.
     function _start(uint256 keepMask) private {
         uint256 earliest = _earliestRebalance();
+        // Before then, the owner or guardian may still start, once MIN_REBALANCE_INTERVAL has passed since the last
+        // fill. A fill restarts the index's whole interval however little it traded, so without this a sliver would
+        // hold an index off its weights for up to a quarter, and nobody could reopen it. An index nothing has filled
+        // yet has no sliver to undo: it waits out its own interval from its creation, for them as for anyone.
+        // A view on the factory, by STATICCALL: nothing it reaches can change state, so nothing re-enters.
+        // aderyn-fp-next-line(reentrancy-state-change)
+        if (_restartsEarly(earliest)) earliest = lastRebalance + MIN_REBALANCE_INTERVAL;
         if (block.timestamp < earliest) revert RebalanceTooSoon(earliest);
         uint256 pendingEta = _eta;
         if (pendingEta != 0 && block.timestamp <= pendingEta + AUCTION_DURATION) {
@@ -586,11 +631,19 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
         emit RebalanceStarted(proposalId, rebalanceNonce + 1, msg.sender, keepMask, eta);
     }
 
-    /// @dev The earliest time the next rebalance may start: the index's interval after the last settlement, or only
-    ///      MIN_REBALANCE_INTERVAL if that settlement had a keep mask, whatever mask the next start names (XS-3).
-    ///      So a sliver filled behind a mask holds the index off a week at most. And the guardian can renew a keep
-    ///      around a frozen component as soon as anyone could start without one. Any other fill, a sliver included,
-    ///      restarts the index's own interval, for the owner and guardian as for anyone.
+    /// @dev Whether the caller may start before `earliest`, the time a stranger may: it is not yet `earliest`, a
+    ///      fill has settled, and the caller is the factory's owner or guardian.
+    function _restartsEarly(uint256 earliest) private view returns (bool) {
+        return block.timestamp < earliest && rebalanceNonce != 0
+            && IWeightedIndexFactory(FACTORY).isOwnerOrGuardian(msg.sender);
+    }
+
+    /// @dev The earliest time anyone may start the next rebalance: the index's interval after the last settlement,
+    ///      or only MIN_REBALANCE_INTERVAL if that settlement had a keep mask, whatever mask the next start names
+    ///      (XS-3). So a sliver filled behind a mask holds the index off a week at most. And the guardian can renew a
+    ///      keep around a frozen component as soon as anyone could start without one. Any other fill, a sliver
+    ///      included, restarts the index's own interval for strangers; the owner and guardian wait only
+    ///      MIN_REBALANCE_INTERVAL after any fill ({_start}).
     function _earliestRebalance() private view returns (uint256) {
         return lastRebalance + (_maskedFill ? MIN_REBALANCE_INTERVAL : _config.rebalanceInterval);
     }
@@ -816,9 +869,19 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
         uint256[] memory units = _recordedUnits();
         (bar, gain, amountsOut, amountsIn) =
             IWeightedMath(MATH).settlement(elapsed, supply, scale, units, newUnits, weights, _keepMask);
-        // A quote posted with this proposal's start can only refuse what the settlement above accepted.
+        _checkValues(elapsed, units, newUnits);
+    }
+
+    /// @dev The two checks that can only refuse what the settlement accepted. A quote posted with this proposal's
+    ///      start, at its prices. And Pyth's prices, for every fill: only the legs that move are valued, so a leg
+    ///      without a feed, or with a stale one, stops only a fill that moves it.
+    function _checkValues(uint256 elapsed, uint256[] memory units, uint256[] memory newUnits) private view {
         if (_quoteProposal == proposalCount) {
-            IWeightedMath(MATH).quoteCheck(units, newUnits, _quotePrices(n), _quoteTolerance);
+            IWeightedMath(MATH).quoteCheck(units, newUnits, _quotePrices(units.length), _quoteTolerance);
+        }
+        if (PRICES != address(0)) {
+            uint256[] memory values = IPythPrices(PRICES).legValues(_tokens(), units, newUnits);
+            IWeightedMath(MATH).oracleCheck(units, newUnits, values, elapsed);
         }
     }
 
@@ -893,6 +956,23 @@ contract WeightedHub is Initializable, ERC20Upgradeable, ERC20PermitUpgradeable,
         tokens = new address[](n);
         for (uint256 i = 0; i < n; ++i) {
             tokens[i] = _components[i].token;
+        }
+    }
+
+    /// @inheritdoc IWeightedHub
+    function setWeights(uint256[] calldata weights) external nonReentrant onlyInitialized {
+        if (msg.sender != FACTORY) revert NotFactory();
+        uint256 pendingEta = _eta;
+        if (pendingEta != 0 && block.timestamp <= pendingEta + AUCTION_DURATION) {
+            revert RebalancePending(pendingEta + AUCTION_DURATION);
+        }
+        uint256 n = _weights.length;
+        if (weights.length != n) revert InvalidComponents();
+        // A false positive: nothing in this function calls out, and the factory's call to it is the last thing it does.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit WeightsChanged(weights);
+        for (uint256 i = 0; i < n; ++i) {
+            _weights[i] = SafeCast.toUint16(weights[i]);
         }
     }
 

@@ -6,6 +6,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IWeightedIndexFactory} from "xindex/src/interfaces/IWeightedIndexFactory.sol";
 import {IMintRequests} from "xindex/src/interfaces/IMintRequests.sol";
 import {WeightedIndexFactory} from "xindex/src/WeightedIndexFactory.sol";
+import {WeightedMath} from "xindex/src/WeightedMath.sol";
 import {MintRequests} from "xindex/src/MintRequests.sol";
 import {MainnetAddresses as A} from "xindex/script/MainnetAddresses.sol";
 import {ForkAddresses as F} from "xindex/test/fork/ForkAddresses.sol";
@@ -87,7 +88,8 @@ contract KeeperExecutorForkTest is Test {
         guardian = vm.createWallet("guardian");
         _installGuardian(guardian.addr);
 
-        WeightedIndexFactory factory = new WeightedIndexFactory(execOwner, makeAddr("guardian role"));
+        WeightedIndexFactory factory =
+            new WeightedIndexFactory(execOwner, makeAddr("guardian role"), address(0), address(new WeightedMath()));
         MintRequests requests = new MintRequests(address(factory), A.USDC, A.USDT);
         executor = new KeeperExecutor(
             IV3SwapRouter(F.SWAP_ROUTER_02),

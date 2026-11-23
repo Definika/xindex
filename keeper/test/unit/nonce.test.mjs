@@ -206,6 +206,37 @@ test("RZ-15: a fill's deadline comes back with its outcome, whichever transactio
   assert.equal((await t.onBlock(12, 50n)).deadline, null);
 });
 
+test("RZ-8: nothing is sent over a pending nonce the bot is not following, and the reason is said once", async () => {
+  const chain = fakeChain();
+  const lines = [];
+  const t = new TxTracker(chain, (line) => lines.push(line));
+  assert.equal(await t.clearStuck(20, 50n, 2_000_000_000n), false, "nothing pending at startup");
+  // Something else signs with the key: its transaction holds nonce 5, which the bot may not clear (XS-12).
+  chain.pending = 6n;
+  assert.equal(await t.clearStuck(21, 50n, 2_000_000_000n), false);
+  // A fill whose fees are far above it would have replaced it; signed on nonce 5, every send was so refused or did.
+  const rich = { ...FILL, maxFeePerGas: 10n ** 12n, maxPriorityFeePerGas: 10n ** 11n };
+  for (let block = 22; block < 26; block++) {
+    assert.equal(await t.send(rich, { label: "fill", targetBlock: block + 1 }), null);
+    assert.equal(t.busy(), false);
+  }
+  assert.equal(chain.sent.length, 0, "nothing sent over it");
+  assert.equal(lines.filter((l) => /nonce 5 is held by a pending transaction/.test(l)).length, 1, "said once");
+  assert.ok(!lines.some((l) => /retrying higher/.test(l)), "and no promise of a retry nothing makes");
+
+  // Mined: the next send takes the next nonce.
+  chain.latest = 6n;
+  await t.send(FILL, { label: "fill", targetBlock: 30 });
+  assert.equal(chain.sent[0].nonce, 6n);
+
+  // A first send refused as underpriced (the pending nonce read a block behind) says so, and is not in flight.
+  const u = new TxTracker(fakeChain(), (line) => lines.push(line));
+  u.io.failNext = new Error("replacement transaction underpriced");
+  assert.equal(await u.send(FILL, { label: "fill", targetBlock: 11 }), null);
+  assert.equal(u.busy(), false);
+  assert.match(lines.at(-1), /nonce 5: refused as underpriced, another transaction holds it: not sent/);
+});
+
 test("RZ-6: a receipt the node could not be asked for leaves the fill in flight, and its outcome is kept", async () => {
   const chain = fakeChain();
   const lines = [];

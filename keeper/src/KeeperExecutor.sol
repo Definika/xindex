@@ -7,10 +7,12 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {IWeightedHub} from "xindex/src/interfaces/IWeightedHub.sol";
 import {IWeightedIndexFactory} from "xindex/src/interfaces/IWeightedIndexFactory.sol";
 import {IMintRequests} from "xindex/src/interfaces/IMintRequests.sol";
+import {IPythPrices} from "xindex/src/interfaces/IPythPrices.sol";
 import {IRebalanceExecutor} from "xindex/src/interfaces/IRebalanceExecutor.sol";
 import {PathLib} from "xindex/src/libraries/PathLib.sol";
 import {IV3SwapRouter} from "./interfaces/IV3SwapRouter.sol";
 import {ITokenBridge} from "./interfaces/ITokenBridge.sol";
+import {IPyth} from "./interfaces/IPyth.sol";
 
 /// @title KeeperExecutor
 /// @notice The keeper bot's executor for `WeightedHub` auctions and `MintRequests` requests. It sells what an index
@@ -38,6 +40,11 @@ import {ITokenBridge} from "./interfaces/ITokenBridge.sol";
 ///      treasury key can bridge stock only to the owner's pinned recipients and hold at most the owner's cap of USDC
 ///      off the float (RS-2), so the hot keys together can lose the working capital the owner handed the bot, and
 ///      nothing beyond it. The executor holds no role in the protocol: filling an auction is open to anyone.
+///      An index on a factory with an oracle accepts a fill only against Pyth prices of the last minute, which reach
+///      Pyth's contract only when someone posts them. So {fill} may carry Pyth's signed update and posts it first, in
+///      the same transaction, paying Pyth's fee with the ether the call carries and with nothing else: the call must
+///      carry exactly that fee, the Pyth contract is the one the index's own factory reads, and the executor never
+///      spends ether of its own.
 contract KeeperExecutor is IRebalanceExecutor {
     /// @notice Uniswap's SwapRouter02.
     IV3SwapRouter public immutable ROUTER;
@@ -103,6 +110,33 @@ contract KeeperExecutor is IRebalanceExecutor {
     event UsdcDrawn(uint256 amount);
     /// @notice The treasury repaid `amount` of USDC into the float.
     event UsdcRepaid(uint256 amount);
+
+    /// @notice An auction fill, for {fill}. A struct, because eight arguments, four of them arrays, do not fit the
+    ///         compiler's stack.
+    /// @param index The index whose auction is filled, one the factory created.
+    /// @param newUnits The recorded units each component is to have, in component order, as `executeRebalance` takes
+    ///        them. The bot chooses them from its own view of the market; the floor below is what protects the float.
+    /// @param routes One per component: an exact-input Uniswap V3 path from the component to USDC, which read as an
+    ///        exact-output path buys the component with USDC; empty for a coin served from inventory, and for USDC.
+    /// @param maxAmountsIn Passed to the hub: the fill reverts if the index asks for more of any component.
+    /// @param maxSupply The most shares the index may have when the fill runs. The settlement grows with the supply,
+    ///        so an issue ahead of the fill that would break `maxAmountsIn` is refused here, for one read, rather than
+    ///        by the hub after its own checks (XS-4).
+    /// @param minUsdcDelta The least the USDC float may change by: negative accepts a cost, positive requires a gain.
+    /// @param deadline The latest block timestamp the fill may be mined at.
+    /// @param pythUpdate Pyth's signed update for the legs the fill moves, posted to Pyth's contract before the fill;
+    ///        empty to post none, as on a factory without an oracle. The call must carry exactly Pyth's fee for it,
+    ///        and no ether without it (`WrongPythFee`).
+    struct AuctionFill {
+        IWeightedHub index;
+        uint256[] newUnits;
+        bytes[] routes;
+        uint256[] maxAmountsIn;
+        uint256 maxSupply;
+        int256 minUsdcDelta;
+        uint256 deadline;
+        bytes[] pythUpdate;
+    }
 
     /// @notice A request fill, for {fillMint} and {fillRedeem}.
     /// @param id The request.
@@ -202,6 +236,11 @@ contract KeeperExecutor is IRebalanceExecutor {
     /// @notice The index needs more of `token` than the executor may deliver from stock (what it holds, capped by the
     ///         owner's stock allowance), and `token` has no route to buy the rest.
     error NoRoute(address token);
+    /// @notice A fill carried `sent` wei where Pyth's fee for its update is `fee`: more or less than the fee, or any
+    ///         ether with no update to pay for.
+    error WrongPythFee(uint256 sent, uint256 fee);
+    /// @notice A fill carried a Pyth update for an index whose factory has no oracle.
+    error NoOracle();
     /// @notice `caller` called back outside a fill of its own.
     error UnexpectedCaller(address caller);
     /// @notice The fill changed the float by `usdcDelta`, below `minUsdcDelta`.
@@ -340,41 +379,45 @@ contract KeeperExecutor is IRebalanceExecutor {
         emit RestockAllowanceSet(token, amount);
     }
 
-    /// @notice Keeper only. Fills `index`'s auction at the units the keeper names. The index reads no price: it
-    ///         accepts the units when their weighted gain clears its auction's bar.
-    /// @param newUnits The recorded units each component is to have, in component order, as `executeRebalance` takes
-    ///        them. The bot chooses them from its own view of the market; the floor below is what protects the float.
-    /// @param routes One per component: an exact-input Uniswap V3 path from the component to USDC, which read as an
-    ///        exact-output path buys the component with USDC; empty for a coin served from inventory, and for USDC.
-    /// @param maxAmountsIn Passed to the hub: the fill reverts if the index asks for more of any component.
-    /// @param maxSupply The most shares the index may have when the fill runs. The settlement grows with the supply,
-    ///        so an issue ahead of the fill that would break `maxAmountsIn` is refused here, for one read, rather than
-    ///        by the hub after its own checks (XS-4).
-    /// @param minUsdcDelta The least the USDC float may change by: negative accepts a cost, positive requires a gain.
-    /// @param deadline The latest block timestamp the fill may be mined at.
+    /// @notice Keeper only. Fills `f.index`'s auction at the units the keeper names. The index judges them on units
+    ///         first: it accepts them when their weighted gain clears its auction's bar. On a factory with an oracle
+    ///         it then checks them against Pyth's prices of the last minute, which `f.pythUpdate` posts first.
     /// @return usdcDelta What the fill changed the float by.
     /// @return gasUsed The gas the call used inside this function, for the bot's simulation.
-    function fill(
-        IWeightedHub index,
-        uint256[] calldata newUnits,
-        bytes[] calldata routes,
-        uint256[] calldata maxAmountsIn,
-        uint256 maxSupply,
-        int256 minUsdcDelta,
-        uint256 deadline
-    ) external returns (int256 usdcDelta, uint256 gasUsed) {
+    function fill(AuctionFill calldata f) external payable returns (int256 usdcDelta, uint256 gasUsed) {
         uint256 gasStart = gasleft();
         _checkKeeper();
-        if (block.timestamp > deadline) revert Expired(deadline);
-        if (!FACTORY.isIndex(address(index))) revert NotIndex(address(index));
-        _checkSupply(index, maxSupply);
-        _checkRoutes(index.componentTokens(), routes);
+        if (block.timestamp > f.deadline) revert Expired(f.deadline);
+        if (!FACTORY.isIndex(address(f.index))) revert NotIndex(address(f.index));
+        _postPrices(f.index, f.pythUpdate);
+        _checkSupply(f.index, f.maxSupply);
+        _checkRoutes(f.index.componentTokens(), f.routes);
 
         uint256 before = IERC20(USDC).balanceOf(address(this));
-        _settle(index, newUnits, routes, maxAmountsIn);
+        _settle(f.index, f.newUnits, f.routes, f.maxAmountsIn);
         usdcDelta = SafeCast.toInt256(IERC20(USDC).balanceOf(address(this))) - SafeCast.toInt256(before);
-        if (usdcDelta < minUsdcDelta) revert TooCostly(usdcDelta, minUsdcDelta);
+        if (usdcDelta < f.minUsdcDelta) revert TooCostly(usdcDelta, f.minUsdcDelta);
         gasUsed = gasStart - gasleft();
+    }
+
+    /// @dev Posts `pythUpdate`, Pyth's signed prices, to the Pyth contract that `index`, a factory index, is checked
+    ///      against, and pays Pyth's fee with the ether this call carries, which must be exactly that fee. With no
+    ///      update the call must carry none. So the executor forwards the caller's own ether and never its own, and
+    ///      only to the Pyth contract the index's factory deployed its price reader with.
+    function _postPrices(IWeightedHub index, bytes[] calldata pythUpdate) private {
+        if (pythUpdate.length == 0) {
+            if (msg.value != 0) revert WrongPythFee(msg.value, 0);
+            return;
+        }
+        address prices = index.PRICES();
+        if (prices == address(0)) revert NoOracle();
+        IPyth pyth = IPyth(IPythPrices(prices).PYTH());
+        uint256 fee = pyth.getUpdateFee(pythUpdate);
+        if (msg.value != fee) revert WrongPythFee(msg.value, fee);
+        // The destination is nobody's to choose: it is the Pyth contract that the price reader of `index`, a factory
+        // index, was deployed with. And the ether is this call's own, exactly Pyth's fee.
+        // forge-lint: disable-next-line(arbitrary-send-eth)
+        pyth.updatePriceFeeds{value: fee}(pythUpdate);
     }
 
     /// @dev The hub's bounded settlement of `index`, with this contract marked as filling it for the callback.

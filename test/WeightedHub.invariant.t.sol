@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
+import {WeightedMath} from "../src/WeightedMath.sol";
 import {Test} from "forge-std/Test.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {WeightedIndexFactory} from "../src/WeightedIndexFactory.sol";
@@ -588,21 +589,25 @@ contract WeightedHandler is Test {
     // ---------------------------------------------------------------------
 
     /// @dev Tries a start a second early, which must fail, then warps to the first moment the caller may start, or up to
-    ///      three days later, and starts. The earliest moment is the model's: the index's 14-day interval after the
-    ///      last settlement, or only MIN_REBALANCE_INTERVAL after one with a keep mask (XS-3, RX-46).
+    ///      three days later, and starts. The earliest moment is the model's. For a stranger: the index's 14-day
+    ///      interval after the last settlement, or only MIN_REBALANCE_INTERVAL after one with a keep mask (XS-3,
+    ///      RX-46). For the guardian: MIN_REBALANCE_INTERVAL after any fill, and before the index's first fill the
+    ///      stranger's own wait.
     function startRebalance(uint256 seed, uint256 maskSeed, bool asGuardian) external {
         (uint256 eta,) = index.pendingRebalance();
         if (eta != 0 && block.timestamp <= eta + index.AUCTION_DURATION()) return;
         uint256 earliest = index.lastRebalance()
             + (lastFillMasked ? index.MIN_REBALANCE_INTERVAL() : index.config().rebalanceInterval);
         restartMisjudged = restartMisjudged || index.earliestRebalance() != earliest;
-        if (block.timestamp < earliest - 1) vm.warp(earliest - 1);
-        if (block.timestamp < earliest) {
-            vm.prank(guardian);
-            (bool early,) = address(index).call(abi.encodeWithSignature("startRebalance(uint256)", 0));
-            restartMisjudged = restartMisjudged || early;
-        }
-        if (!asGuardian) {
+        uint256 rolesEarliest =
+            index.rebalanceNonce() == 0 ? earliest : index.lastRebalance() + index.MIN_REBALANCE_INTERVAL();
+        if (block.timestamp < rolesEarliest - 1) vm.warp(rolesEarliest - 1);
+        if (block.timestamp < rolesEarliest) restartMisjudged = restartMisjudged || _startsEarly(guardian);
+        if (asGuardian) {
+            earliest = rolesEarliest;
+        } else {
+            if (block.timestamp < earliest - 1) vm.warp(earliest - 1);
+            if (block.timestamp < earliest) restartMisjudged = restartMisjudged || _startsEarly(_actor(seed));
             uint256 afterExpiry = eta == 0 ? 0 : eta + index.AUCTION_DURATION() + index.REBALANCE_DELAY();
             uint256 holdOff = Math.max(index.restartAllowedAt(), afterExpiry);
             // The hold-off's other side: the second before it ends, with the interval over, a stranger is refused and
@@ -629,6 +634,12 @@ contract WeightedHandler is Test {
         if (comps.length - kept < 2) mask = 0;
         vm.prank(asGuardian ? guardian : _actor(seed));
         index.startRebalance(mask);
+    }
+
+    /// @dev Whether a start by `who` goes through now, a second before the model lets it.
+    function _startsEarly(address who) internal returns (bool started) {
+        vm.prank(who);
+        (started,) = address(index).call(abi.encodeWithSignature("startRebalance(uint256)", 0));
     }
 
     function cancelRebalance() external {
@@ -855,7 +866,7 @@ contract WeightedHubInvariantTest is Test {
         vm.warp(1_800_000_000);
         address owner = makeAddr("owner");
         address guardian = makeAddr("guardian");
-        factory = new WeightedIndexFactory(owner, guardian);
+        factory = new WeightedIndexFactory(owner, guardian, address(0), address(new WeightedMath()));
         // This contract creates both indexes, then hands each creator role to an account that was never approved.
         vm.prank(owner);
         factory.setApprovedCreator(address(this), true);

@@ -2,7 +2,13 @@
 
 What the contracts do not protect against, and what an app built on them has to show its users.
 
-- **A lone executor keeps the index's distance from its weights.** No contract reads a price: the executor names
+- **A lone executor keeps the index's distance from its weights.** That is the bound on units alone, and Pyth's
+  check narrows it: on a factory with an oracle, which every mainnet factory is, a fill must bring in, at Pyth's
+  prices of the last minute, at least what it takes less a tolerance that rises from nothing to 2% over the
+  auction, so an executor bidding alone keeps at most 2% of what it trades, and an earlier fill keeps less. Pyth's
+  check can only refuse. If Pyth is stale or missing, no fill that moves the affected coins lands until it is back;
+  if it is wrong or hostile, a fill is bounded by the units alone, as on a factory without an oracle, and the rest
+  of this entry is that bound. The executor names
   the units a rebalance settles at, and the index accepts them when their weighted gain clears a bar that falls
   through the auction. Executors compete by filling earlier, at a higher bar, which leaves more with the holders. With
   an honest executor bidding, the keeper first, holders keep the whole distance less its costs. With none, an
@@ -18,14 +24,17 @@ What the contracts do not protect against, and what an app built on them has to 
   the coins it gives have gained on the coins it takes since the quote, never beyond what the bar itself allows
   (CA-M5). A stranger's start carries no quote, so the guardian replaces such a proposal within its six hours, and a
   quote too tight for six hours of market lets its proposal expire unfilled. An index created off its weights
-  carries its distance from its first day:
-  units and weights are the creator's to name, and no contract can compare them without a price. A creator could name
-  units far from the weights, let others mint, and fill its own auction: 15.5% of a 50/50 index created 90/10 by
-  value in one fill, at the worst a fifth of an index per fill. That is why only wallets the factory's owner approved
-  create an index (`setApprovedCreator`): the team creates on the weights, at the app's prices, and the app shows
-  every index's coins against its weights.
-- **No contract reads a price.** Nothing checks what a coin is worth, and nothing needs to: a fill is judged on
-  units. Whatever the executor offers, one fill sends out at most 20% of each component's own units and at most
+  would carry its distance from its first day: on units alone a creator could name units far from the weights, let
+  others mint, and fill its own auction, 15.5% of a 50/50 index created 90/10 by value in one fill. So a creation
+  reverts unless every component's units lie within 5% of its weight at Pyth's prices (`OffWeights`), on a factory
+  with an oracle; and only wallets the factory's owner approved create an index (`setApprovedCreator`). A creator
+  who later changes the weights (`proposeWeights`, 7 days of notice) opens such a distance on purpose: Pyth's check
+  holds what its own last-second fill keeps to the tolerance of what it trades, each interval, and holders have the
+  notice to leave in. The app shows every index's coins against its weights, and every pending change of weights.
+- **No mint, redeem or claim reads a price.** They are in kind, so nothing checks what a coin is worth when shares
+  are issued or burned, and the app values an index from sources of its own. A fill is judged on units first, and
+  Pyth's prices can only refuse it, so where Pyth has a coin's worth wrong the units are the whole bound. Whatever
+  the executor offers, one fill sends out at most 20% of each component's own units and at most
   doubles a component (V5-M2, RX-15), at most once every `MIN_REBALANCE_INTERVAL`, and it must raise the weighted
   product of the units. So a coin that is worthless and free to mint, by its issuer or through a forged bridge
   message, takes a bounded share of the rest per fill: a coin at 10% of an index, at most 5.8% of the other
@@ -74,6 +83,14 @@ What the contracts do not protect against, and what an app built on them has to 
   fill ahead of a redeem or a guardian cancel it sees in the public mempool. No bound moves; during the auction, use a
   private relay (RT-02). Shares minted while a rebalance is pending share the outcome of any fill that lands after
   them, whatever the ordering.
+- **Minting can be paused; redeeming cannot.** The factory's owner or guardian can stop the issue of new shares, on
+  one index or on every index (`pauseMinting`), and only the owner lifts it (`resumeMinting`). It is meant for an
+  index or a build found to have a fault, so that no new deposit enters it. A hostile or compromised guardian can
+  use it to stop every mint, and again after the owner lifts it, until the owner replaces that guardian, 7 days of
+  notice it cannot cancel. It moves no funds and it stops no exit: no redeem, `redeemSkipping`, claim, transfer or
+  rebalance reads it. While it holds, a mint through the zap, the basket builder's `mint`, a keeper's fill of a mint
+  request that issues, and a creation with a first issue all revert `NotAllowedMinter`; an app reads
+  `mintingPaused(index)` and `mintingPaused(address(0))` before it offers a mint.
 - **The guardian can stall rebalancing.** `cancelRebalance` has no window and no rate limit, so a hostile or
   compromised guardian can cancel each proposal at the last second of its auction and hold rebalancing off while the
   index drifts from its weights. It moves no funds, holders redeem throughout, and the owner ends it by replacing that
@@ -82,9 +99,13 @@ What the contracts do not protect against, and what an app built on them has to 
   filled with a gift to that sliver. Its fill restarts only `MIN_REBALANCE_INTERVAL` for a rebalance without a keep mask, not
   the index's own interval, so the stall can outlast the guardian's replacement by up to a week (XS-3), and by a
   keep-mask auction the outgoing guardian left pending, `REBALANCE_DELAY` + `AUCTION_DURATION` more (RX-44); the owner and
-  the new guardian can start a keep-mask rebalance then too. A quote stalls longer than a keep mask: one that refuses
+  the new guardian can start a keep-mask rebalance then too. A quote stalls the same way: one that refuses
   every trade worth making still lets a gift through, and a fill without a keep mask restarts the index's whole
-  interval, up to 91 days, which the owner and the new guardian wait out as everyone does (RW-3).
+  interval, up to 91 days, for strangers. The owner and the guardian may start again a week after any fill
+  (since 2026-11-23), so that hold too outlasts the guardian's replacement by a week at most (RW-3). The same rule
+  gives a hostile guardian a window of its own, from a week after a fill to the end of the index's interval, in
+  which it can start and settle a sliver every week and keep strangers from ever starting; the owner can start in
+  that window too, and ends it for good by replacing the guardian.
   While a replacement is pending, the owner cancels the outgoing guardian's
   keep-mask proposals, and monitors alert on `RebalanceStarted` with a non-zero `keepMask` (RT-07). The owner has only
   `REBALANCE_DELAY`, 2 hours, to cancel one before the guardian's own executor can fill it at `eta`.

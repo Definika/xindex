@@ -81,10 +81,33 @@ test("XS-5: a kept leg's quote follows its amount and its age, not the first loo
   other.px = 2_000_000n;
   const r = createRoutes(other, cfg, { v3Factory: [], v3Pool: [], quoter: [] });
   assert.equal(await sell(r, 2_000n * E18, 100n), path(Z, 100, MAINNET.usdc));
-  await sell(r, 9_000n * E18, 100n + ROUTE_REQUOTE_BLOCKS - 1n);
-  assert.equal(other.quotes, 1);
-  assert.equal(await sell(r, 9_000n * E18, 100n + ROUTE_REQUOTE_BLOCKS), path(Z, 100, MAINNET.usdc));
+  await sell(r, 1_500n * E18, 100n + ROUTE_REQUOTE_BLOCKS - 1n);
+  assert.equal(other.quotes, 1, "an amount it quoted, or less, is not quoted again within the period");
+  assert.equal(await sell(r, 2_000n * E18, 100n + ROUTE_REQUOTE_BLOCKS), path(Z, 100, MAINNET.usdc));
   assert.equal(other.quotes, 2, "one quote along the chosen route");
+});
+
+test("RZ-11: a chosen route is quoted again when its amount grows, so a purchase's bound covers what it costs", async () => {
+  const c = fakeChain();
+  c.px = 2_000_000n; // the pool sells Z at $2, Pyth's price
+  const r = createRoutes(c, cfg, { v3Factory: [], v3Pool: [], quoter: [] });
+  const buy = (amount, blockNumber) =>
+    r.best({ key: KEY, token: Z, side: "buy", amount, fairUsd: (Number(amount) / 1e18) * 2, blockNumber });
+  const cost = (amount) => r.quoteOf({ key: KEY, token: Z, side: "buy", amount });
+  assert.equal(await buy(100n * E18, 100n), path(Z, 100, MAINNET.usdc));
+  assert.equal(cost(100n * E18), 200n * 10n ** 6n);
+  assert.equal(cost(50n * E18), 100n * 10n ** 6n, "a smaller purchase costs at most its share");
+
+  // Two blocks on, the stock has shrunk and the shortfall is 150 Z: the route is quoted again at 150, within the
+  // period, and its cost covers 150 Z. Answered from the 100's cost, the fill's bound was $200 for $300 of Z.
+  assert.equal(await buy(150n * E18, 102n), path(Z, 100, MAINNET.usdc));
+  assert.equal(c.quotes, 2, "quoted again for the larger amount");
+  assert.equal(cost(150n * E18), 300n * 10n ** 6n);
+
+  // A sale that grows is quoted again too, so its floor is the larger sale's and not the smaller one's proceeds.
+  assert.equal(await sell(r, 10n * E18, 103n), path(Z, 100, MAINNET.usdc));
+  assert.equal(await sell(r, 40n * E18, 104n), path(Z, 100, MAINNET.usdc));
+  assert.equal(r.quoteOf({ key: KEY, token: Z, side: "sell", amount: 40n * E18 }), 80n * 10n ** 6n);
 });
 
 test("RX-13: a chosen route the pool no longer supports is dropped, and a reverted fill drops it at once", async () => {

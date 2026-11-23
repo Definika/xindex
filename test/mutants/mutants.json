@@ -33,8 +33,8 @@
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
       {
-        "old": "if (pendingEta != 0 && block.timestamp <= pendingEta + AUCTION_DURATION) {\n            revert RebalancePending(",
-        "new": "if (pendingEta != 0 && block.timestamp < pendingEta + AUCTION_DURATION) {\n            revert RebalancePending("
+        "old": "        if (block.timestamp < earliest) revert RebalanceTooSoon(earliest);\n        uint256 pendingEta = _eta;\n        if (pendingEta != 0 && block.timestamp <= pendingEta + AUCTION_DURATION) {\n            revert RebalancePending(",
+        "new": "        if (block.timestamp < earliest) revert RebalanceTooSoon(earliest);\n        uint256 pendingEta = _eta;\n        if (pendingEta != 0 && block.timestamp < pendingEta + AUCTION_DURATION) {\n            revert RebalancePending("
       }
     ]
   },
@@ -436,8 +436,8 @@
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
       {
-        "old": "        if (elapsed > AUCTION_DURATION) revert IWeightedHub.AuctionOver(elapsed);\n",
-        "new": ""
+        "old": "        if (elapsed > AUCTION_DURATION) revert IWeightedHub.AuctionOver(elapsed);\n        uint256 halvings",
+        "new": "        uint256 halvings"
       }
     ]
   },
@@ -592,8 +592,8 @@
     "test": "test/WeightedIndexFactory.t.sol",
     "edits": [
       {
-        "old": "                if (inits[j].token == token) revert DuplicateToken(token);\n",
-        "new": "                inits[j];\n"
+        "old": "            if (_seen(token)) revert DuplicateToken(token);\n",
+        "new": "            _seen(token);\n"
       }
     ]
   },
@@ -1202,14 +1202,14 @@
   },
   {
     "id": "Q6",
-    "what": "the quote's floor rounds down, one unit in the executor's favour",
+    "what": "the value floor, the quote's and Pyth's, rounds down, one unit in the executor's favour",
     "origin": "design/2026-11-10-oracle-free-rebalance.md, section 10: the quote posted with a start",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
       {
-        "old": "        uint256 floor = Math.mulDiv(valueOut, WAD - tolerance, WAD, Math.Rounding.Ceil);\n",
-        "new": "        uint256 floor = Math.mulDiv(valueOut, WAD - tolerance, WAD);\n"
+        "old": "        floor = Math.mulDiv(valueOut, WAD - tolerance, WAD, Math.Rounding.Ceil);\n",
+        "new": "        floor = Math.mulDiv(valueOut, WAD - tolerance, WAD);\n"
       }
     ]
   },
@@ -2907,6 +2907,1188 @@
       {
         "old": "    /// @dev AT&T INC / US DOLLAR (Equity.US.T/USD): US market hours only.\n    bytes32 internal constant TON = 0x63e9f918ab91507c3574cca011da4dccda30cf54d46124d03b70279142ff81f3;",
         "new": "    /// @dev TONCOIN / US DOLLAR (Crypto.TON/USD): the Ondo token's own feed.\n    bytes32 internal constant TON = 0x8963217838ab4cf5cadc172203c1f0b763fbaa45f346d8ee50ba994bbcac3026;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "PY1",
+    "what": "no fill is checked against Pyth",
+    "origin": "design/2026-11-22-pyth-check.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (PRICES != address(0)) {\n            uint256[] memory values",
+        "new": "        if (false) {\n            uint256[] memory values"
+      }
+    ]
+  },
+  {
+    "id": "PY2",
+    "what": "the hub checks Pyth at the auction's last second whenever it fills, so the tolerance never starts low",
+    "origin": "design/2026-11-22-pyth-check.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "            IWeightedMath(MATH).oracleCheck(units, newUnits, values, elapsed);",
+        "new": "            IWeightedMath(MATH).oracleCheck(units, newUnits, values, AUCTION_DURATION);"
+      }
+    ]
+  },
+  {
+    "id": "PY3",
+    "what": "the tolerance is the most from the first second",
+    "origin": "design/2026-11-22-pyth-check.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "        return MAX_ORACLE_TOLERANCE * elapsed / AUCTION_DURATION;",
+        "new": "        return MAX_ORACLE_TOLERANCE;"
+      }
+    ]
+  },
+  {
+    "id": "PY4",
+    "what": "the tolerance rounds up, toward the executor",
+    "origin": "design/2026-11-22-pyth-check.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "        return MAX_ORACLE_TOLERANCE * elapsed / AUCTION_DURATION;",
+        "new": "        return Math.ceilDiv(MAX_ORACLE_TOLERANCE * elapsed, AUCTION_DURATION);"
+      }
+    ]
+  },
+  {
+    "id": "PY5",
+    "what": "a tolerance is given past the auction",
+    "origin": "design/2026-11-22-pyth-check.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "        if (elapsed > AUCTION_DURATION) revert IWeightedHub.AuctionOver(elapsed);\n        // Rounded down",
+        "new": "        // Rounded down"
+      }
+    ]
+  },
+  {
+    "id": "PY6",
+    "what": "Pyth's refusal reads as a quote's",
+    "origin": "design/2026-11-22-pyth-check.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "        if (valueIn < floor) revert IWeightedHub.BelowOracleValue(valueIn, floor);",
+        "new": "        if (valueIn < floor) revert IWeightedHub.BelowQuote(valueIn, floor);"
+      }
+    ]
+  },
+  {
+    "id": "PY7",
+    "what": "Pyth's confidence is ignored",
+    "origin": "design/2026-11-22-pyth-check.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        uint256 edge = leaving ? price + p.conf : price - p.conf;",
+        "new": "        uint256 edge = price;"
+      }
+    ]
+  },
+  {
+    "id": "PY8",
+    "what": "the confidence leans toward the executor",
+    "origin": "design/2026-11-22-pyth-check.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        uint256 edge = leaving ? price + p.conf : price - p.conf;",
+        "new": "        uint256 edge = leaving ? price - p.conf : price + p.conf;"
+      }
+    ]
+  },
+  {
+    "id": "PY9",
+    "what": "a leaving leg's value rounds down",
+    "origin": "design/2026-11-22-pyth-check.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "            leaving ? Math.Rounding.Ceil : Math.Rounding.Floor",
+        "new": "            Math.Rounding.Floor"
+      }
+    ]
+  },
+  {
+    "id": "PY10",
+    "what": "a price of any age is read",
+    "origin": "design/2026-11-22-pyth-check.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (p.publishTime + MAX_PRICE_AGE < block.timestamp) revert StalePrice(token, p.publishTime);",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "PY11",
+    "what": "a price exactly a minute old is refused",
+    "origin": "design/2026-11-22-pyth-check.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (p.publishTime + MAX_PRICE_AGE < block.timestamp)",
+        "new": "        if (p.publishTime + MAX_PRICE_AGE <= block.timestamp)"
+      }
+    ]
+  },
+  {
+    "id": "PY12",
+    "what": "a price no wider than its confidence is read",
+    "origin": "design/2026-11-22-pyth-check.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (price <= p.conf) revert UnusablePrice(token);",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "PY13",
+    "what": "every leg is valued, the ones that keep their units included",
+    "origin": "design/2026-11-22-pyth-check.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "            if (next != current) values[i] = _value(tokens[i], next < current);",
+        "new": "            values[i] = _value(tokens[i], next < current);"
+      }
+    ]
+  },
+  {
+    "id": "PY14",
+    "what": "a vault is valued as one asset a token",
+    "origin": "design/2026-11-22-pyth-check.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (kind == FeedKind.Token) return (1, one);",
+        "new": "        if (kind == FeedKind.Token || kind == FeedKind.Vault) return (1, one);"
+      }
+    ]
+  },
+  {
+    "id": "PY15",
+    "what": "a stock token's multiplier is ignored",
+    "origin": "design/2026-11-22-pyth-check.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        return (IMultiplierToken(token).multiplier(), WAD * one);",
+        "new": "        return (1, one);"
+      }
+    ]
+  },
+  {
+    "id": "PY16",
+    "what": "a value past what the math can sum is read",
+    "origin": "design/2026-11-22-pyth-check.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (value == 0 || value > MAX_VALUE) revert UnusablePrice(token);",
+        "new": "        if (value == 0) revert UnusablePrice(token);"
+      }
+    ]
+  },
+  {
+    "id": "PY17",
+    "what": "a token without a feed is valued at feed zero",
+    "origin": "design/2026-11-22-pyth-check.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (feed.kind == FeedKind.None) revert NoPriceFeed(token);",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "PY18",
+    "what": "a price feed executes before its delay",
+    "origin": "design/2026-11-22-pyth-check.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/PythPrices.t.sol",
+    "edits": [
+      {
+        "old": "        if (block.timestamp < eta) revert PriceFeedNotReady(token, eta);\n        if (block.timestamp > eta + PROPOSAL_WINDOW) revert PriceFeedExpired",
+        "new": "        if (block.timestamp > eta + PROPOSAL_WINDOW) revert PriceFeedExpired"
+      }
+    ]
+  },
+  {
+    "id": "PY19",
+    "what": "a price feed executes after its window",
+    "origin": "design/2026-11-22-pyth-check.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/PythPrices.t.sol",
+    "edits": [
+      {
+        "old": "        if (block.timestamp > eta + PROPOSAL_WINDOW) revert PriceFeedExpired(token, eta + PROPOSAL_WINDOW);\n\n        IPythPrices.PriceFeed memory feed",
+        "new": "\n        IPythPrices.PriceFeed memory feed"
+      }
+    ]
+  },
+  {
+    "id": "PY20",
+    "what": "a feed with no id is accepted",
+    "origin": "design/2026-11-22-pyth-check.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/PythPrices.t.sol",
+    "edits": [
+      {
+        "old": "if ((feed.kind == IPythPrices.FeedKind.None) != (feed.id == bytes32(0))) revert InvalidPriceFeed(feed.id);",
+        "new": "if (feed.kind == IPythPrices.FeedKind.None && feed.id != bytes32(0)) revert InvalidPriceFeed(feed.id);"
+      }
+    ]
+  },
+  {
+    "id": "PY21",
+    "what": "anyone cancels a pending feed",
+    "origin": "design/2026-11-22-pyth-check.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/PythPrices.t.sol",
+    "edits": [
+      {
+        "old": "    function cancelPriceFeed(address token) external onlyOwnerOrGuardian {",
+        "new": "    function cancelPriceFeed(address token) external {"
+      }
+    ]
+  },
+  {
+    "id": "PY22",
+    "what": "a second proposal replaces a pending one",
+    "origin": "design/2026-11-22-pyth-check.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/PythPrices.t.sol",
+    "edits": [
+      {
+        "old": "        if (pending != 0 && block.timestamp <= pending + PROPOSAL_WINDOW) revert PriceFeedPending(token, pending);",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "PY23",
+    "what": "an index is created off its weights: no price check at creation",
+    "origin": "design/2026-11-22-pyth-check.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (PRICES != address(0)) _checkOnWeights(inits);",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "PY24",
+    "what": "a leg may start 6% off its weight, not 5%",
+    "origin": "design/2026-11-22-pyth-check.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "    uint256 public constant MAX_WEIGHT_DEVIATION = 0.05e18;",
+        "new": "    uint256 public constant MAX_WEIGHT_DEVIATION = 0.06e18;"
+      }
+    ]
+  },
+  {
+    "id": "PY25",
+    "what": "a leg exactly 5% off its weight is refused",
+    "origin": "design/2026-11-22-pyth-check.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "            if (gap > Math.mulDiv(target, MAX_WEIGHT_DEVIATION, 1e18)) {",
+        "new": "            if (gap >= Math.mulDiv(target, MAX_WEIGHT_DEVIATION, 1e18)) {"
+      }
+    ]
+  },
+  {
+    "id": "PY26",
+    "what": "a creation leaves its duplicate marks for the next one in the transaction",
+    "origin": "design/2026-11-22-pyth-check.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "            _unsee(inits[i].token);",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "PY27",
+    "what": "the duplicate check never sees a token twice",
+    "origin": "design/2026-11-22-pyth-check.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "            already := tload(token)",
+        "new": "            already := 0"
+      }
+    ]
+  },
+  {
+    "id": "CW1",
+    "what": "anyone proposes an index's weights",
+    "origin": "design/2026-11-23-changeable-weights.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (msg.sender != creatorOf[index]) revert Unauthorized(msg.sender);\n        if (PRICES == address(0)) revert NoOracle();\n",
+        "new": "        if (PRICES == address(0)) revert NoOracle();\n"
+      }
+    ]
+  },
+  {
+    "id": "CW2",
+    "what": "a factory without an oracle takes a proposal",
+    "origin": "design/2026-11-23-changeable-weights.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (PRICES == address(0)) revert NoOracle();\n        // A view on our own clone",
+        "new": "        // A view on our own clone"
+      }
+    ]
+  },
+  {
+    "id": "CW3",
+    "what": "a proposed weight may be zero",
+    "origin": "design/2026-11-23-changeable-weights.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "            if (weight == 0 || weight > TOTAL_WEIGHT) revert InvalidWeights();",
+        "new": "            if (weight > TOTAL_WEIGHT) revert InvalidWeights();"
+      }
+    ]
+  },
+  {
+    "id": "CW4",
+    "what": "proposed weights need not sum to TOTAL_WEIGHT",
+    "origin": "design/2026-11-23-changeable-weights.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (total != TOTAL_WEIGHT) revert InvalidWeights();\n        uint256 eta = block.timestamp + WEIGHTS_DELAY;",
+        "new": "        uint256 eta = block.timestamp + WEIGHTS_DELAY;"
+      }
+    ]
+  },
+  {
+    "id": "CW5",
+    "what": "a change applies with no notice",
+    "origin": "design/2026-11-23-changeable-weights.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        uint256 eta = block.timestamp + WEIGHTS_DELAY;",
+        "new": "        uint256 eta = block.timestamp;"
+      }
+    ]
+  },
+  {
+    "id": "CW6",
+    "what": "a change applies after its window",
+    "origin": "design/2026-11-23-changeable-weights.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (block.timestamp > eta + PROPOSAL_WINDOW) revert WeightsExpired(index, eta + PROPOSAL_WINDOW);",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "CW7",
+    "what": "anyone cancels a pending change",
+    "origin": "design/2026-11-23-changeable-weights.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (msg.sender != creatorOf[index] && !isOwnerOrGuardian(msg.sender)) revert Unauthorized(msg.sender);",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "CW8",
+    "what": "anyone writes an index's weights",
+    "origin": "design/2026-11-23-changeable-weights.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "    function setWeights(uint256[] calldata weights) external nonReentrant onlyInitialized {\n        if (msg.sender != FACTORY) revert NotFactory();\n",
+        "new": "    function setWeights(uint256[] calldata weights) external nonReentrant onlyInitialized {\n"
+      }
+    ]
+  },
+  {
+    "id": "CW9",
+    "what": "a change applies during a live rebalance",
+    "origin": "design/2026-11-23-changeable-weights.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (msg.sender != FACTORY) revert NotFactory();\n        uint256 pendingEta = _eta;\n        if (pendingEta != 0 && block.timestamp <= pendingEta + AUCTION_DURATION) {\n            revert RebalancePending(pendingEta + AUCTION_DURATION);\n        }\n        uint256 n = _weights.length;",
+        "new": "        if (msg.sender != FACTORY) revert NotFactory();\n        uint256 n = _weights.length;"
+      }
+    ]
+  },
+  {
+    "id": "CW10",
+    "what": "a factory takes a math without code",
+    "origin": "design/2026-11-23-changeable-weights.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (math.code.length == 0) revert NotAContract(math);",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "CW11",
+    "what": "a change applies before its notice ends",
+    "origin": "design/2026-11-23-changeable-weights.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (block.timestamp < eta) revert WeightsNotReady(index, eta);",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "CW12",
+    "what": "a proposal may name more or fewer weights than components",
+    "origin": "design/2026-11-23-changeable-weights.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (weights.length != IWeightedHub(index).componentWeights().length) revert InvalidWeights();",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "FB1",
+    "what": "the first issue pulls its basket from the factory, the caller, instead of the creator",
+    "origin": "CLAUDE.md, Product decisions: creating an index is buying it (2026-11-23)",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "        if (first_.shares != 0) _issue(first_.from, first_.shares, first_.to, address(0));",
+        "new": "        if (first_.shares != 0) _issue(msg.sender, first_.shares, first_.to, address(0));"
+      }
+    ]
+  },
+  {
+    "id": "FB2",
+    "what": "the first shares go to the payer instead of the recipient the creator named",
+    "origin": "CLAUDE.md, Product decisions: creating an index is buying it (2026-11-23)",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "        if (first_.shares != 0) _issue(first_.from, first_.shares, first_.to, address(0));",
+        "new": "        if (first_.shares != 0) _issue(first_.from, first_.shares, first_.from, address(0));"
+      }
+    ]
+  },
+  {
+    "id": "FB3",
+    "what": "the initializer, and so the first issue, runs outside the reentrancy guard",
+    "origin": "CLAUDE.md, Product decisions: creating an index is buying it (2026-11-23)",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "    ) external nonReentrant initializer {",
+        "new": "    ) external initializer {"
+      }
+    ]
+  },
+  {
+    "id": "FB4",
+    "what": "createAndIssue with no shares silently creates an empty index",
+    "origin": "CLAUDE.md, Product decisions: creating an index is buying it (2026-11-23)",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "        if (shares == 0) revert IWeightedHub.ZeroShares();\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "FB5",
+    "what": "the factory names the recipient, not its caller, as the first issue's payer",
+    "origin": "CLAUDE.md, Product decisions: creating an index is buying it (2026-11-23)",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "IWeightedHub.FirstIssue(msg.sender, shares, to)",
+        "new": "IWeightedHub.FirstIssue(to, shares, to)"
+      }
+    ]
+  },
+  {
+    "id": "FB6",
+    "what": "createAndIssue without the approval check, so anyone creates an index by paying for it",
+    "origin": "CLAUDE.md, Product decisions: creating an index is buying it (2026-11-23)",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "        _checkApprovedCreator();\n        // Zero shares would create the index with none, which is {createIndex}'s to say.",
+        "new": "        // Zero shares would create the index with none, which is {createIndex}'s to say."
+      }
+    ]
+  },
+  {
+    "id": "FB7",
+    "what": "createIndex without the approval check, now a call of its own in each creation",
+    "origin": "CLAUDE.md, Product decisions: creating an index is buying it (2026-11-23)",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "        _checkApprovedCreator();\n        return _createIndex(name, symbol, components, params, IWeightedHub.FirstIssue(address(0), 0, address(0)));",
+        "new": "        return _createIndex(name, symbol, components, params, IWeightedHub.FirstIssue(address(0), 0, address(0)));"
+      }
+    ]
+  },
+  {
+    "id": "RS1",
+    "what": "the owner or guardian may start at any time after a fill, with no week's wait",
+    "origin": "CLAUDE.md, Design rules: the owner or guardian restarts a week after any fill (2026-11-23)",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "        if (_restartsEarly(earliest)) earliest = lastRebalance + MIN_REBALANCE_INTERVAL;",
+        "new": "        if (_restartsEarly(earliest)) earliest = 0;"
+      }
+    ]
+  },
+  {
+    "id": "RS2",
+    "what": "a stranger takes the short wait meant for the owner and guardian",
+    "origin": "CLAUDE.md, Design rules: the owner or guardian restarts a week after any fill (2026-11-23)",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "        return block.timestamp < earliest && rebalanceNonce != 0\n            && IWeightedIndexFactory(FACTORY).isOwnerOrGuardian(msg.sender);",
+        "new": "        return block.timestamp < earliest && rebalanceNonce != 0;"
+      }
+    ]
+  },
+  {
+    "id": "RS3",
+    "what": "the owner and guardian wait out the index's whole interval after a sliver, as before the rule",
+    "origin": "CLAUDE.md, Design rules: the owner or guardian restarts a week after any fill (2026-11-23)",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "        if (_restartsEarly(earliest)) earliest = lastRebalance + MIN_REBALANCE_INTERVAL;",
+        "new": "        if (_restartsEarly(earliest)) earliest = _earliestRebalance();"
+      }
+    ]
+  },
+  {
+    "id": "KP1",
+    "what": "a fill's Pyth update is never posted, so the index meets stale prices",
+    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.pyth.t.sol",
+    "edits": [
+      {
+        "old": "        pyth.updatePriceFeeds{value: fee}(pythUpdate);",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "KP2",
+    "what": "a fill may carry any ether with its update, not exactly Pyth's fee",
+    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.pyth.t.sol",
+    "edits": [
+      {
+        "old": "        if (msg.value != fee) revert WrongPythFee(msg.value, fee);\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "KP3",
+    "what": "a fill without an update may carry ether, which the executor then holds",
+    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "            if (msg.value != 0) revert WrongPythFee(msg.value, 0);\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "KP4",
+    "what": "the executor pays Pyth with every wei it holds, not with the fill's own fee",
+    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.pyth.t.sol",
+    "edits": [
+      {
+        "old": "        pyth.updatePriceFeeds{value: fee}(pythUpdate);",
+        "new": "        pyth.updatePriceFeeds{value: address(this).balance}(pythUpdate);"
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "KP5",
+    "what": "an update for an index without an oracle is not refused by name",
+    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "        if (prices == address(0)) revert NoOracle();\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "UO1",
+    "what": "the bot rounds Pyth's tolerance up where the hub rounds it down",
+    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "file": "keeper/bot/units.mjs",
+    "test": "keeper/test/unit/units.test.mjs",
+    "edits": [
+      {
+        "old": "  return (MAX_ORACLE_TOLERANCE * e) / AUCTION_DURATION;",
+        "new": "  return ceilDiv(MAX_ORACLE_TOLERANCE * e, AUCTION_DURATION);"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "UO2",
+    "what": "the bot values a leg that leaves at the price of one that arrives",
+    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "file": "keeper/bot/units.mjs",
+    "test": "keeper/test/unit/units.test.mjs",
+    "edits": [
+      {
+        "old": "const value = newUnits[i] < units[i] ? leaving[i] : newUnits[i] > units[i] ? arriving[i] : 0n;",
+        "new": "const value = newUnits[i] < units[i] ? arriving[i] : newUnits[i] > units[i] ? leaving[i] : 0n;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "UO3",
+    "what": "the bot names units without Pyth's check, so its fills revert at the hub",
+    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "file": "keeper/bot/units.mjs",
+    "test": "keeper/test/unit/units.test.mjs",
+    "edits": [
+      {
+        "old": "    if (oracle !== null) {",
+        "new": "    if (oracle !== null && false) {"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "UO4",
+    "what": "a moving leg Pyth cannot value counts as worthless instead of stopping the fill",
+    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "file": "keeper/bot/units.mjs",
+    "test": "keeper/test/unit/units.test.mjs",
+    "edits": [
+      {
+        "old": "    if (value === null || value === undefined) return null;\n    values.push(value);",
+        "new": "    values.push(value ?? 0n);"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "UO5",
+    "what": "the ether a fill carries, Pyth's fee, is left out of what the fill costs",
+    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/math.test.mjs",
+    "edits": [
+      {
+        "old": "  (Number(used * (nextBase + tip) + value) / 1e18) * ethUsd;",
+        "new": "  (Number(used * (nextBase + tip)) / 1e18) * ethUsd;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "PY28",
+    "what": "a value of nothing is taken as a price, so a leg that leaves at a zero multiplier or rate is free by Pyth's measure",
+    "origin": "CLAUDE.md, where it stands: the adversarial read of 2026-11-23",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (value == 0 || value > MAX_VALUE) revert UnusablePrice(token);",
+        "new": "        if (value > MAX_VALUE) revert UnusablePrice(token);"
+      }
+    ]
+  },
+  {
+    "id": "RS4",
+    "what": "the owner or guardian starts a week after an index's creation, before anything has filled it",
+    "origin": "CLAUDE.md, Design rules: the owner or guardian restarts a week after any fill (2026-11-23)",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.fees.t.sol",
+    "edits": [
+      {
+        "old": "        return block.timestamp < earliest && rebalanceNonce != 0\n            && IWeightedIndexFactory(FACTORY).isOwnerOrGuardian(msg.sender);",
+        "new": "        return block.timestamp < earliest && IWeightedIndexFactory(FACTORY).isOwnerOrGuardian(msg.sender);"
+      }
+    ]
+  },
+  {
+    "id": "PW1",
+    "what": "the bot takes a leg's arriving value for its leaving one",
+    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "file": "keeper/bot/pyth.mjs",
+    "test": "keeper/test/unit/pyth.test.mjs",
+    "edits": [
+      {
+        "old": "const [out, into] = [values[2 * k], values[2 * k + 1]];",
+        "new": "const [out, into] = [values[2 * k + 1], values[2 * k]];"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "PW2",
+    "what": "a leg the reader values one way only is still traded",
+    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "file": "keeper/bot/pyth.mjs",
+    "test": "keeper/test/unit/pyth.test.mjs",
+    "edits": [
+      {
+        "old": "if (out.ok && into.ok)",
+        "new": "if (out.ok || into.ok)"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "PW3",
+    "what": "a leg without a feed is asked of Hermes and of the reader",
+    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "file": "keeper/bot/pyth.mjs",
+    "test": "keeper/test/unit/pyth.test.mjs",
+    "edits": [
+      {
+        "old": ".filter((f) => f.kind !== 0);",
+        "new": ".filter(() => true);"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "PW4",
+    "what": "the call that posts the update carries no fee, so the simulation is not the fill",
+    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "file": "keeper/bot/pyth.mjs",
+    "test": "keeper/test/unit/pyth.test.mjs",
+    "edits": [
+      {
+        "old": "args: [updates], value: fee };",
+        "new": "args: [updates], value: 0n };"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "PW5",
+    "what": "a leg the keeper may not move is asked about, and its failure stops the round",
+    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "file": "keeper/bot/pyth.mjs",
+    "test": "keeper/test/unit/pyth.test.mjs",
+    "edits": [
+      {
+        "old": "const asked = movable.map((m, i) => (m ? i : -1)).filter((i) => i >= 0);",
+        "new": "const asked = movable.map((m, i) => i);"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "PW6",
+    "what": "the legs are valued before the update is posted, at whatever stale price Pyth holds",
+    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "file": "keeper/bot/pyth.mjs",
+    "test": "keeper/test/unit/pyth.test.mjs",
+    "edits": [
+      {
+        "old": "await chain.callAfter([post, ...fed.flatMap((f) => [valueOf(f.i, true), valueOf(f.i, false)])], L.number, over);",
+        "new": "await chain.callAfter([...fed.flatMap((f) => [valueOf(f.i, true), valueOf(f.i, false)]), post], L.number, over);"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "MP1",
+    "what": "an index's own pause stops no issue",
+    "origin": "CLAUDE.md, Product decisions: a pause of minting that no exit reads (2026-11-23)",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "allowed = !mintingPaused[address(0)] && !mintingPaused[index]",
+        "new": "allowed = !mintingPaused[address(0)]"
+      }
+    ]
+  },
+  {
+    "id": "MP2",
+    "what": "the pause of every index stops no issue",
+    "origin": "CLAUDE.md, Product decisions: a pause of minting that no exit reads (2026-11-23)",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "allowed = !mintingPaused[address(0)] && !mintingPaused[index]",
+        "new": "allowed = !mintingPaused[index]"
+      }
+    ]
+  },
+  {
+    "id": "MP3",
+    "what": "the guardian that paused can resume, so a pause the owner set does not hold",
+    "origin": "CLAUDE.md, Product decisions: a pause of minting that no exit reads (2026-11-23)",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "function resumeMinting(address index) external onlyOwner {",
+        "new": "function resumeMinting(address index) external onlyOwnerOrGuardian {"
+      }
+    ]
+  },
+  {
+    "id": "MP4",
+    "what": "anyone pauses minting",
+    "origin": "CLAUDE.md, Product decisions: a pause of minting that no exit reads (2026-11-23)",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "function pauseMinting(address index) external onlyOwnerOrGuardian {",
+        "new": "function pauseMinting(address index) external {"
+      }
+    ]
+  },
+  {
+    "id": "MP5",
+    "what": "a pause of an address that is no index is recorded",
+    "origin": "CLAUDE.md, Product decisions: a pause of minting that no exit reads (2026-11-23)",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "        if (index != address(0) && !isIndex[index]) revert NotIndex(index);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "MP6",
+    "what": "a redeem asks the factory whether minting is allowed, so a pause stops an exit",
+    "origin": "CLAUDE.md, Product decisions: a pause of minting that no exit reads (2026-11-23)",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "        _checkRecipient(to);\n        Config memory cfg = _config;\n        uint256 feeShares = _redeemFeeShares(shares, cfg);",
+        "new": "        _checkRecipient(to);\n        Config memory cfg = _config;\n        (bool mayMint,,) = _feeTerms(to);\n        if (!mayMint) revert NotAllowedMinter(to);\n        uint256 feeShares = _redeemFeeShares(shares, cfg);"
+      }
+    ]
+  },
+  {
+    "id": "MP7",
+    "what": "a resume lifts nothing",
+    "origin": "CLAUDE.md, Product decisions: a pause of minting that no exit reads (2026-11-23)",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "        mintingPaused[index] = false;",
+        "new": "        mintingPaused[index] = true;"
+      }
+    ]
+  },
+  {
+    "id": "HK1",
+    "what": "the callback's mark is not cleared when its fill ends, so the index just filled can call it again in the same transaction (HK-01)",
+    "origin": "audit/2026-11-23-attack-replay.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.attacks.t.sol",
+    "edits": [
+      {
+        "old": "        _filling = address(0);\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "HK2",
+    "what": "the executor's callback answers any caller, so a swap inside a fill takes the stock (HK-01)",
+    "origin": "audit/2026-11-23-attack-replay.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.attacks.t.sol",
+    "edits": [
+      {
+        "old": "        if (msg.sender != _filling) revert UnexpectedCaller(msg.sender);\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "HK3",
+    "what": "the weights change without the guard, so an executor changes them from inside its own fill (HK-08)",
+    "origin": "audit/2026-11-23-attack-replay.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/Attacks.t.sol",
+    "edits": [
+      {
+        "old": "    function setWeights(uint256[] calldata weights) external nonReentrant onlyInitialized {",
+        "new": "    function setWeights(uint256[] calldata weights) external onlyInitialized {"
+      }
+    ]
+  },
+  {
+    "id": "HK4",
+    "what": "an accrual runs without the guard, so the creator role moves from inside a fill (HK-08)",
+    "origin": "audit/2026-11-23-attack-replay.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/Attacks.t.sol",
+    "edits": [
+      {
+        "old": "    function accrueFees() external nonReentrant onlyInitialized {",
+        "new": "    function accrueFees() external onlyInitialized {"
+      }
+    ]
+  },
+  {
+    "id": "HK5",
+    "what": "a handover leaves the outgoing creator's weights pending, to take effect under the new creator (HK-16)",
+    "origin": "audit/2026-11-23-attack-replay.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/Attacks.t.sol",
+    "edits": [
+      {
+        "old": "        if (weightsEta[index] != 0) {\n            delete weightsEta[index];\n            delete _pendingWeights[index];\n            // forge-lint: disable-next-line(reentrancy-events)\n            emit WeightsCancelled(index);\n        }\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "HK6",
+    "what": "a creation forwards the factory's whole ether balance, so ether forced into it moves (HK-14)",
+    "origin": "audit/2026-11-23-attack-replay.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/Attacks.t.sol",
+    "edits": [
+      {
+        "old": "        if (msg.value != 0) Address.sendValue(payable(recipient), msg.value);",
+        "new": "        if (msg.value != 0) Address.sendValue(payable(recipient), address(this).balance);"
+      }
+    ]
+  },
+  {
+    "id": "HK7",
+    "what": "an index's address leaves its creator out, so another creator takes the address an approval was given to (HK-03)",
+    "origin": "audit/2026-11-23-attack-replay.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/Attacks.t.sol",
+    "edits": [
+      {
+        "old": "        return keccak256(abi.encode(creator, nameHash, symbolHash, contents));",
+        "new": "        return keccak256(abi.encode(nameHash, symbolHash, contents));"
+      }
+    ]
+  },
+  {
+    "id": "RB5",
+    "what": "the zap refuses only the index of the call as a recipient, so another index keeps what it is sent (RB-5)",
+    "origin": "audit/2026-10-28-rebalance-review.md",
+    "file": "src/IndexZap.sol",
+    "test": "test/IndexZap.t.sol",
+    "edits": [
+      {
+        "old": "                || FACTORY.isIndex(to)\n        ) revert InvalidRecipient(to);",
+        "new": "                || to == index\n        ) revert InvalidRecipient(to);"
+      }
+    ]
+  },
+  {
+    "id": "Z7",
+    "what": "a send signs over a pending nonce the bot is not following, replacing it or refused every block (RZ-8)",
+    "origin": "audit/2026-10-31-red-team-ii.md",
+    "file": "keeper/bot/nonce.mjs",
+    "test": "keeper/test/unit/nonce.test.mjs",
+    "edits": [
+      {
+        "old": "if ((await this.io.pendingNonce()) > nonce) {",
+        "new": "if ((await this.io.pendingNonce()) > nonce + 1_000n) {"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "Z8",
+    "what": "a scan re-reads every known request whatever the budget (RZ-10)",
+    "origin": "audit/2026-10-31-red-team-ii.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/requests.test.mjs",
+    "edits": [
+      {
+        "old": "for (; k < open.length && ids.length < budget; k++)",
+        "new": "for (; k < open.length; k++)"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "Z9",
+    "what": "a scan reads every new request whatever the budget (RZ-10)",
+    "origin": "audit/2026-10-31-red-team-ii.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/requests.test.mjs",
+    "edits": [
+      {
+        "old": "id <= count && ids.length < newLimit; id++",
+        "new": "id <= count; id++"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "Z10",
+    "what": "a chosen route answers a larger amount from its smaller quote within the period (RZ-11)",
+    "origin": "audit/2026-10-31-red-team-ii.md",
+    "file": "keeper/bot/routes.mjs",
+    "test": "keeper/test/unit/routes.test.mjs",
+    "edits": [
+      {
+        "old": "c.route !== null && amount <= c.amount && age < ROUTE_REQUOTE_BLOCKS",
+        "new": "c.route !== null && age < ROUTE_REQUOTE_BLOCKS"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "Z11",
+    "what": "stock held beyond its stock allowance is bought again (RZ-20)",
+    "origin": "audit/2026-10-31-red-team-ii.md",
+    "file": "keeper/restock/plan.mjs",
+    "test": "keeper/test/unit/restock-plan.test.mjs",
+    "edits": [
+      {
+        "old": "        if (balance + credited >= need) continue;\n",
+        "new": ""
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "Z12",
+    "what": "a shortfall is counted from the deliverable stock, not what the executor holds (RZ-20)",
+    "origin": "audit/2026-10-31-red-team-ii.md",
+    "file": "keeper/restock/plan.mjs",
+    "test": "keeper/test/unit/restock-plan.test.mjs",
+    "edits": [
+      {
+        "old": "const short = want - balance - credited;",
+        "new": "const short = want - usable - credited;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "Z13",
+    "what": "coins at home below RESTOCK_MIN_USD are bridged in on their own beside the round's buy (RZ-21)",
+    "origin": "audit/2026-10-31-red-team-ii.md",
+    "file": "keeper/restock/plan.mjs",
+    "test": "keeper/test/unit/restock-plan.test.mjs",
+    "edits": [
+      {
+        "old": "      if (bringUsd >= cfg.minUsd) bringIn();\n      else if (bring > 0n)",
+        "new": "      bringIn();\n      if (bring > 0n)"
       }
     ],
     "runner": "node"

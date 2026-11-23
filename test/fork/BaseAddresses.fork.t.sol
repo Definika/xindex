@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
+import {WeightedMath} from "../../src/WeightedMath.sol";
 import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
@@ -16,6 +17,10 @@ import {IIndexHub} from "../../src/interfaces/IIndexHub.sol";
 import {IRebalanceExecutor} from "../../src/interfaces/IRebalanceExecutor.sol";
 import {IUniversalRouterSwaps} from "../../src/interfaces/IUniversalRouterSwaps.sol";
 import {IXindexErrors} from "../../src/interfaces/IXindexErrors.sol";
+import {IWeightedHub} from "../../src/interfaces/IWeightedHub.sol";
+import {IPythPrices} from "../../src/interfaces/IPythPrices.sol";
+import {IPythReader} from "../../src/interfaces/IPythReader.sol";
+import {PriceFeeds} from "../../script/PriceFeeds.sol";
 import {PathKey} from "../../src/libraries/UniswapV4Types.sol";
 import {CheckToken} from "../../script/CheckToken.s.sol";
 import {ConfigureWeighted} from "../../script/ConfigureWeighted.s.sol";
@@ -71,10 +76,9 @@ contract BaseAddressesForkTest is Test, IRebalanceExecutor {
     uint24 constant F500 = 500;
     uint24 constant F3000 = 3000;
 
-    // 0.001 WETH + 1 AERO + 1 VIRTUAL per index token
-    uint256 constant U_WETH = 1e15;
-    uint256 constant U_AERO = 1e18;
-    uint256 constant U_VIRTUAL = 1e18;
+    /// @dev What a share of the test's three-coin index is worth at Pyth's prices, in dollars: about what 0.001 WETH,
+    ///      one AERO and one VIRTUAL a share came to, before creation was checked against the weights.
+    uint256 constant THREE_DOLLARS = 6;
 
     address alice = makeAddr("alice");
 
@@ -237,7 +241,13 @@ contract BaseAddressesForkTest is Test, IRebalanceExecutor {
     {
         DeployWeighted deployer = new DeployWeighted();
         (factory, zap, builder, requests) = deployer.deploy(
-            address(this), address(new BaseGuardianSafe()), address(0), address(0), address(0), address(this)
+            address(this),
+            address(new BaseGuardianSafe()),
+            address(0),
+            address(0),
+            address(0),
+            address(0),
+            address(this)
         );
         deployer.checkDeployment(factory, zap, builder, requests);
     }
@@ -256,14 +266,50 @@ contract BaseAddressesForkTest is Test, IRebalanceExecutor {
         assertEq(requests.USDT(), B.USDT);
     }
 
-    /// @dev Lists `tokens` on `factory`, whose owner is this test.
+    /// @dev Lists `tokens` on `factory`, whose owner is this test, and on a factory with an oracle gives each the feed
+    ///      `script/PriceFeeds.sol` names for it, behind the same delay.
     function _list(WeightedIndexFactory factory, address[] memory tokens) internal {
+        bool priced = factory.PRICES() != address(0);
+        (address[] memory known, IPythPrices.PriceFeed[] memory feeds) = PriceFeeds.table(B.CHAIN_ID);
         for (uint256 i = 0; i < tokens.length; ++i) {
             factory.proposeListing(tokens[i]);
+            if (priced) factory.proposePriceFeed(tokens[i], PriceFeeds.find(tokens[i], known, feeds));
         }
         vm.warp(block.timestamp + factory.LISTING_DELAY());
         for (uint256 i = 0; i < tokens.length; ++i) {
             factory.executeListing(tokens[i]);
+            if (priced) factory.executePriceFeed(tokens[i]);
+        }
+    }
+
+    /// @dev Has Base's Pyth answer each of `tokens`' stored prices as if published at this block's time. Pyth is a pull
+    ///      oracle: a creator or a filler posts an update Pyth's keys signed, which a test cannot sign, so the tests
+    ///      that are not about prices date the stored price to their own clock. The tests of Pyth's check read the
+    ///      stored prices as they are, at the time they were published.
+    function _freshPrices(WeightedIndexFactory factory, address[] memory tokens) internal {
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            bytes32 id = factory.priceFeedOf(tokens[i]).id;
+            IPythReader.Price memory p = IPythReader(B.PYTH).getPriceUnsafe(id);
+            p.publishTime = block.timestamp;
+            vm.mockCall(B.PYTH, abi.encodeCall(IPythReader.getPriceUnsafe, (id)), abi.encode(p));
+        }
+    }
+
+    /// @dev Specs of `tokens` at `weights`, `dollars` a share at Pyth's prices as `createIndex` reads them, so the index
+    ///      is created on its weights.
+    function _specsOnWeights(
+        WeightedIndexFactory factory,
+        address[] memory tokens,
+        uint256[] memory weights,
+        uint256 dollars
+    ) internal view returns (IWeightedIndexFactory.ComponentSpec[] memory specs) {
+        IPythPrices prices = IPythPrices(factory.PRICES());
+        specs = new IWeightedIndexFactory.ComponentSpec[](tokens.length);
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            uint256 value = prices.valueOf(tokens[i], false);
+            specs[i] = IWeightedIndexFactory.ComponentSpec({
+                token: tokens[i], weight: weights[i], units: dollars * 1e36 * weights[i] / 10_000 / value
+            });
         }
     }
 
@@ -285,7 +331,8 @@ contract BaseAddressesForkTest is Test, IRebalanceExecutor {
     function testFork_theBaseListMatchesTheChain() public {
         assertEq(new ConfigureWeighted().resolveList("base").length, B.COUNT);
         address[] memory list = _evmList();
-        WeightedIndexFactory factory = new WeightedIndexFactory(address(this), address(0));
+        WeightedIndexFactory factory =
+            new WeightedIndexFactory(address(this), address(0), address(0), address(new WeightedMath()));
         _list(factory, list);
         for (uint256 i = 0; i < list.length; ++i) {
             assertTrue(factory.isWhitelisted(list[i]));
@@ -332,21 +379,21 @@ contract BaseAddressesForkTest is Test, IRebalanceExecutor {
     }
 
     /// @dev An index of every coin of the Base list this EVM can execute, on a deployment from the book, the coins
-    ///      weighted alike.
+    ///      weighted alike, $220 a share, created on its weights.
     function _wholeListIndex() internal returns (WeightedHub index, address[] memory list) {
         (WeightedIndexFactory factory,,,) = _deploy();
         list = _evmList();
-        _list(factory, list);
-        factory.setApprovedCreator(address(this), true);
-        IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](list.length);
+        uint256[] memory weights = new uint256[](list.length);
         for (uint256 i = 0; i < list.length; ++i) {
-            // 22 coins: 455 for each of the first twelve and 454 for each other is 10,000. A thousandth of a coin of
-            // 18 decimals a share, and 1e5 raw units of the Coinbase Wrapped coins, of 6 or 8.
-            specs[i] = IWeightedIndexFactory.ComponentSpec({
-                token: list[i], weight: i < 12 ? 455 : 454, units: IERC20Metadata(list[i]).decimals() == 18 ? 1e15 : 1e5
-            });
+            // 22 coins: 455 for each of the first twelve and 454 for each other is 10,000.
+            weights[i] = i < 12 ? 455 : 454;
         }
-        index = WeightedHub(factory.createIndex("Base Twenty-Two", "BASE22", specs, _params()));
+        _list(factory, list);
+        _freshPrices(factory, list);
+        factory.setApprovedCreator(address(this), true);
+        index = WeightedHub(
+            factory.createIndex("Base Twenty-Two", "BASE22", _specsOnWeights(factory, list, weights, 220), _params())
+        );
     }
 
     /// @dev Issues `shares` of `index` to `to` from coins dealt to it. Returns what the index took of each.
@@ -406,6 +453,7 @@ contract BaseAddressesForkTest is Test, IRebalanceExecutor {
         }
         (uint256 eta,) = index.pendingRebalance();
         vm.warp(eta + 2 hours);
+        _freshPrices(WeightedIndexFactory(index.FACTORY()), list);
         uint256[] memory amountsOut;
         uint256[] memory amountsIn;
         {
@@ -434,17 +482,20 @@ contract BaseAddressesForkTest is Test, IRebalanceExecutor {
         }
     }
 
-    /// @dev An index of WETH, AERO and VIRTUAL on `factory`, three coins Uniswap routes on Base.
+    /// @dev An index of WETH, AERO and VIRTUAL on `factory`, three coins Uniswap routes on Base, created on its weights.
     function _three(WeightedIndexFactory factory) internal returns (WeightedHub index) {
         address[] memory three = new address[](3);
         (three[0], three[1], three[2]) = (B.WETH, B.AERO, B.VIRTUAL);
+        uint256[] memory weights = new uint256[](3);
+        (weights[0], weights[1], weights[2]) = (3334, 3333, 3333);
         _list(factory, three);
+        _freshPrices(factory, three);
         factory.setApprovedCreator(address(this), true);
-        IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](3);
-        specs[0] = IWeightedIndexFactory.ComponentSpec({token: B.WETH, weight: 3334, units: U_WETH});
-        specs[1] = IWeightedIndexFactory.ComponentSpec({token: B.AERO, weight: 3333, units: U_AERO});
-        specs[2] = IWeightedIndexFactory.ComponentSpec({token: B.VIRTUAL, weight: 3333, units: U_VIRTUAL});
-        index = WeightedHub(factory.createIndex("Base Three", "BASE3", specs, _params()));
+        index = WeightedHub(
+            factory.createIndex(
+                "Base Three", "BASE3", _specsOnWeights(factory, three, weights, THREE_DOLLARS), _params()
+            )
+        );
     }
 
     /// @dev `MintRequests` on Base's deployment in each of its two stablecoins, six decimals each: a mint request
@@ -554,9 +605,10 @@ contract BaseAddressesForkTest is Test, IRebalanceExecutor {
         assertEq(index.balanceOf(alice), shares);
         assertGt(spent, 0);
         assertEq(IERC20(B.USDC).balanceOf(alice), budget - spent, "what the swaps did not take came back");
-        assertEq(IERC20(B.WETH).balanceOf(address(index)), shares * U_WETH / 1e18, "the index holds ether in kind");
-        assertEq(IERC20(B.AERO).balanceOf(address(index)), shares * U_AERO / 1e18);
-        assertEq(IERC20(B.VIRTUAL).balanceOf(address(index)), shares * U_VIRTUAL / 1e18);
+        uint256[] memory units = index.recordedUnits();
+        assertEq(IERC20(B.WETH).balanceOf(address(index)), shares * units[0] / 1e18, "the index holds ether in kind");
+        assertEq(IERC20(B.AERO).balanceOf(address(index)), shares * units[1] / 1e18);
+        assertEq(IERC20(B.VIRTUAL).balanceOf(address(index)), shares * units[2] / 1e18);
         assertEq(IERC20(B.USDC).balanceOf(address(zap)), 0, "nothing stays in the zap");
 
         // Exact-input paths run from the component to what the user is paid in.
@@ -613,5 +665,115 @@ contract BaseAddressesForkTest is Test, IRebalanceExecutor {
         vm.stopPrank();
         (bool sent,) = address(zap).call{value: 1}("");
         assertFalse(sent, "the zap takes no ether");
+    }
+
+    // ---------------------------------------------------------------------
+    // Pyth's check, on Pyth's own contract
+    // ---------------------------------------------------------------------
+
+    /// @dev The publish time of the batch Pyth's contract on Base last stored cbXRP's, cbDOGE's, cbLTC's and cbADA's
+    ///      coins' prices in, read on 2026-11-22: the fill below runs half a minute after it.
+    uint256 constant COINBASE_BATCH = 1_795_197_594;
+
+    /// @dev A deployment from the book checks its fills against Base's Pyth through `PythPrices`: an index of four
+    ///      Coinbase Wrapped coins, created 4% off its weights, within the 5% creation allows, fills on its weights at
+    ///      Pyth's stored prices, is
+    ///      refused a fill that keeps 3% of what it should bring in, at a tolerance of 1.5%, and a minute later is
+    ///      refused for a stale price. The clock is moved back to the batch's time, since a filler posts its own
+    ///      update and the test cannot sign one: the contract, its proxy, its storage and its answer are Pyth's.
+    function testFork_aFillIsCheckedAgainstPythsOwnContract() public {
+        (WeightedIndexFactory factory,,,) = _deploy();
+        assertEq(IPythPrices(factory.PRICES()).PYTH(), B.PYTH, "the deployment reads the book's Pyth");
+        address[] memory coins = new address[](4);
+        (coins[0], coins[1], coins[2], coins[3]) = (B.CBXRP, B.CBDOGE, B.CBLTC, B.CBADA);
+        uint256 fill = COINBASE_BATCH + 30;
+        vm.warp(fill - 2 days - 7 days - 2 hours - 3 hours);
+        _list(factory, coins);
+
+        // Dollars per raw unit at 1e36, at Pyth's stored price: what the creator names the units from.
+        uint256[] memory market = new uint256[](4);
+        IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](4);
+        for (uint256 i = 0; i < coins.length; ++i) {
+            IPythReader.Price memory p = IPythReader(B.PYTH).getPriceUnsafe(factory.priceFeedOf(coins[i]).id);
+            assertEq(p.publishTime, COINBASE_BATCH, "one batch");
+            uint8 decimals = IERC20Metadata(coins[i]).decimals();
+            market[i] = uint256(int256(p.price)) * 1e28 / 10 ** decimals;
+            // $26, $24, $25 and $25 a share, against weights of a quarter each.
+            uint256 dollars = i == 0 ? 26 : i == 1 ? 24 : 25;
+            specs[i] =
+                IWeightedIndexFactory.ComponentSpec({token: coins[i], weight: 2500, units: dollars * 1e36 / market[i]});
+        }
+        factory.setApprovedCreator(address(this), true);
+        WeightedHub index = WeightedHub(factory.createIndex("Coinbase Four", "CB4", specs, _params()));
+        _issueInKind(index, alice, 100e18);
+
+        vm.warp(index.earliestRebalance());
+        index.startRebalance(0);
+        (uint256 eta,) = index.pendingRebalance();
+        vm.warp(fill);
+        assertEq(fill - eta, 3 hours, "three quarters into the auction, a tolerance of 1.5%");
+
+        uint256[] memory fair = _onWeights(index, market);
+        uint256[] memory greedy = _keeping(index, fair, 300);
+        vm.expectPartialRevert(IWeightedHub.BelowOracleValue.selector);
+        index.previewRebalance(greedy);
+        for (uint256 i = 0; i < coins.length; ++i) {
+            deal(coins[i], address(this), 1e30);
+        }
+        uint256 before = gasleft();
+        index.executeRebalance(fair, "");
+        emit log_named_uint("a fill of four legs under Pyth's check, real Pyth", before - gasleft());
+        assertEq(index.recordedUnits(), fair);
+    }
+
+    /// @dev The same index's next fill, a minute and a second after the batch, reads a price older than a minute.
+    function testFork_aStalePythPriceStopsAFill() public {
+        (WeightedIndexFactory factory,,,) = _deploy();
+        address[] memory coins = new address[](2);
+        (coins[0], coins[1]) = (B.CBXRP, B.CBDOGE);
+        vm.warp(COINBASE_BATCH + 61 - 2 days - 7 days - 2 hours - 3 hours);
+        _list(factory, coins);
+        uint256[] memory weights = new uint256[](2);
+        (weights[0], weights[1]) = (5000, 5000);
+        factory.setApprovedCreator(address(this), true);
+        // On its weights at the stored prices, $100 a share: the batch's time is still ahead of the clock here.
+        WeightedHub index = WeightedHub(
+            factory.createIndex("Coinbase Two", "CB2", _specsOnWeights(factory, coins, weights, 100), _params())
+        );
+        _issueInKind(index, alice, 10e18);
+        vm.warp(index.earliestRebalance());
+        index.startRebalance(0);
+        vm.warp(COINBASE_BATCH + 61);
+        uint256[] memory units = index.recordedUnits();
+        units[0] = units[0] * 9 / 10;
+        units[1] = units[1] * 12 / 10;
+        vm.expectRevert(abi.encodeWithSelector(IPythPrices.StalePrice.selector, coins[0], COINBASE_BATCH));
+        index.previewRebalance(units);
+    }
+
+    /// @dev The units that put `index` on its weights at `market` without changing its value there, each rounded up.
+    function _onWeights(WeightedHub index, uint256[] memory market) internal view returns (uint256[] memory units) {
+        units = index.recordedUnits();
+        uint256[] memory weights = index.componentWeights();
+        uint256 value = 0;
+        for (uint256 i = 0; i < units.length; ++i) {
+            value += units[i] * market[i];
+        }
+        for (uint256 i = 0; i < units.length; ++i) {
+            units[i] = (value * weights[i] + 1e4 * market[i] - 1) / (1e4 * market[i]);
+        }
+    }
+
+    /// @dev `fair` with each rising leg's increase cut by `cutBps`.
+    function _keeping(WeightedHub index, uint256[] memory fair, uint256 cutBps)
+        internal
+        view
+        returns (uint256[] memory units)
+    {
+        uint256[] memory current = index.recordedUnits();
+        units = new uint256[](fair.length);
+        for (uint256 i = 0; i < fair.length; ++i) {
+            units[i] = fair[i] > current[i] ? current[i] + (fair[i] - current[i]) * (1e4 - cutBps) / 1e4 : fair[i];
+        }
     }
 }
