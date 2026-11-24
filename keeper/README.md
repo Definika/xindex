@@ -44,7 +44,7 @@ Every block L, with T = L's timestamp + 12 (the one block a fill sent now can la
      against its auction, as any reverted fill does, and is simulated again once its back-off ends. The index's
      weights are read every round: its creator may change them behind a notice. The step that builds the update
      and reads the values is `bot/pyth.mjs`, tested on its own (`test/unit/pyth.test.mjs`); the calls around it
-     need viem and have run only as far as `node --check`.
+     run in the end-to-end test, against Pyth's real contract on a mainnet fork (45 of 45 on 2026-11-24).
    - A leg it cannot value keeps its units: a kept leg, a coin outside the catalogue, a share-priced Ondo leg
      (RX-2), and a coin whose price is not the signed one, is older than a minute or carries a confidence interval
      wider than 2% (RX-1, RX-9). A leg within `TRADE_COST_BPS` of its weight is not traded for its own sake.
@@ -268,7 +268,9 @@ what nobody needs. It is a separate process with its own key, the **treasury**, 
      (RS-1). A coin whose restock allowance is spent is neither bought nor brought in, and the service names the call.
      Stock the executor holds beyond its stock allowance counts as held: nothing is bought for it, and the service
      asks the owner for `setStockAllowance` instead (RZ-20). Coins at home worth less than `RESTOCK_MIN_USD` wait,
-     in a round that buys, for the buy's coins, and come in with them in one transfer (RZ-21);
+     in a round that buys, for the buy's coins, and come in with them in one transfer (RZ-21). Of a coin that is its
+     home chain's own gas coin (SUI, APT, ALGO), twice the chain's gas minimum stays in the wallet, never sold or
+     bridged, and the signer refuses a sale or a transfer that would leave less than the minimum (CA-M14);
    - a covered coin's coins at home first top the stock up to the needs and the buffer, as far as the restock
      allowance goes, and only the rest is sold (RS-10); stock the executor holds beyond the needs, the buffer and
      `RESTOCK_KEEP_USD`, not counting what is on its way (RS-9), is bridged out to the treasury's wallet on its home
@@ -393,7 +395,7 @@ From the repo root:
     forge build                          # the hub and factory ABIs come from abi/, the executor's from keeper/out
     forge build --root keeper
     # deploy src/KeeperExecutor.sol: (SwapRouter02, USDC, FACTORY, MintRequests, Wormhole's Token Bridge, OWNER, keeper
-    # address); send it a USDC float
+    # address), each the chain's own from bot/config.mjs's CHAINS; send it a USDC float
 
 Then in `keeper/`:
 
@@ -401,6 +403,31 @@ Then in `keeper/`:
     RPC_URL=... KEEPER_KEY=... FACTORY=... EXECUTOR=... PYTH_API_KEY=... npm start
 
 The RPC must honour `eth_call` block overrides (Tenderly, publicnode and geth do; the bot checks at startup).
+
+**On BNB Chain and Base** (`CHAIN_ID=56` or `8453`, since 2026-11-24) the same bot runs, one process and one
+executor per chain, each under its own keeper key and with its own float. What differs, all from the chain's entry in
+`bot/config.mjs`:
+
+- **Prices.** A token's Pyth id is its feed as the factory records it (`priceFeedOf`), the very feed its hubs check a
+  fill against, not a catalogue of the bot's. Only a token's own price (`FeedKind.Token`) is valued: a multiplier
+  token's feed (Coinbase's stock tokens on Base) prices a share the bot cannot turn into the token's value, so such a
+  leg keeps its units, as a share-priced Ondo leg does (RX-2). `PRICE_IDS` still sets or overrides a token's id.
+- **Timing.** Blocks come every 450 ms on BNB Chain and 200 ms on Base (measured 2026-11-24), so a fill cannot aim at
+  the next block alone. It is priced at the earliest second it can land, which is where the bar is highest and Pyth's
+  tolerance narrowest, and carries a deadline three seconds on; it is replaced only once those seconds' blocks have
+  passed. The windows the bot keeps in blocks (its start and request rounds, re-quotes, back-offs) are Ethereum's
+  twelve-second blocks scaled to the chain, so they last the same time.
+- **Money.** BNB Chain's USDC and USDT have eighteen decimals; the bot reads both stablecoins' decimals from the
+  request escrow at startup and refuses a float whose decimals are not the table's. Gas is valued at the gas coin's
+  price, BNB's on BNB Chain, and on Base the L1 data fee is added at GasPriceOracle's upper bound for the
+  transaction's size. `MAX_FEE_GWEI` and `PRIORITY_FEE_GWEI` default to 1 and 0.1 on BNB Chain, 1 and 0.01 on Base.
+- **Venue.** Uniswap V3 through SwapRouter02, as on Ethereum, with the wrapped gas coin as the routing hub. PancakeSwap
+  and Aerodrome, where most of those chains' depth is, are not routed: a coin Uniswap does not trade within
+  `ROUTE_MAX_LOSS_BPS` is served from the executor's stock, which the operator adds there (the restock serves Ethereum
+  alone).
+
+`test/KeeperExecutor.chains.fork.t.sol` deploys the executor on each chain's real market, checks every address the
+table names against the chain, and fills a real mint request through Uniswap V3 (BNB_RPC_URL, BASE_RPC_URL).
 
 To attest a token on Solana or Sui for its Wormhole copy on Ethereum (the owner's step before a copy can be listed,
 `design/2026-10-10-one-index-wormhole-legs.md`, section 2a), with the restock service's settings:
@@ -420,6 +447,7 @@ raising to what EIP-8037 allows (RX-36).
 | Variable | Default | Meaning |
 |---|---|---|
 | `RPC_URL` | required | The JSON-RPC of the chain `CHAIN_ID` names. |
+| `RPC_TIMEOUT_MS` | `15000` | How long one RPC request may take before the round it is in fails; longer for a slow but sound RPC, as the end-to-end test's cold fork is. |
 | `KEEPER_KEY` | required | The executor's keeper key (32-byte hex). |
 | `FACTORY` | required | The `WeightedIndexFactory`. |
 | `EXECUTOR` | required | This bot's `KeeperExecutor`. |
@@ -434,11 +462,11 @@ raising to what EIP-8037 allows (RX-36).
 | `SLIPPAGE_BPS` | `30` | Room the floor leaves for the pools to move, on the volume the routes trade. |
 | `SUPPLY_TOLERANCE_BPS` | `10` | How much an issue may grow the index's supply, and with it the settlement, before the fill reverts, in its first lines. It is also the griefing threshold: an issue of more than this share of the supply ahead of a fill makes it revert, though cheaply, and the bot leaves an auction after three such reverts. |
 | `ROUTE_MAX_LOSS_BPS` | `100` | Most a route may lose against the keeper's price of the coin. |
-| `MAX_FEE_GWEI` | `100` | No transaction while the base fee and tip exceed this, and no replacement's fees above it. |
-| `PRIORITY_FEE_GWEI` | `2` | Tip. |
+| `MAX_FEE_GWEI` | `100` (`1` on BNB Chain and Base) | No transaction while the base fee and tip exceed this, and no replacement's fees above it. |
+| `PRIORITY_FEE_GWEI` | `2` (`0.1` on BNB Chain, `0.01` on Base) | Tip. |
 | `FILL_REQUESTS` | `1` | `1` fills `MintRequests` requests too, `0` serves auctions only. The escrow is the one the executor was built with. |
 | `FILL_AUCTIONS` | `1` | `1` starts and fills auctions, `0` serves requests only, as on Sepolia, whose hub predates this keeper's start and preview. |
-| `CHAIN_ID` | `1` | The chain whose market the bot trades: `1` Ethereum, `11155111` Sepolia's test deployment (`bot/config.mjs`, `docs/deployment.md`). The bot refuses an RPC on any other chain. |
+| `CHAIN_ID` | `1` | The chain whose market the bot trades: `1` Ethereum, `56` BNB Chain, `8453` Base, `11155111` Sepolia's test deployment (`bot/config.mjs`, `docs/deployment.md`). The bot refuses an RPC on any other chain. |
 | `SHARE_STOCK_USD` | `0` | The dollars of each index's own shares the request filler aims to hold as stock: a batch keeps its sellers' shares up to this instead of redeeming them, and delivers them to buyers within the owner's stock allowance for that index. Zero keeps and delivers none. |
 | `NEEDS_FILE` | none | Where to write what fills deliver from stock, for the restock service. |
 | `PRESTOCK_LEAD_SECONDS` | `86400` | How long before an index may be started the stock its auction would need goes on `NEEDS_FILE`, so the restock brings it in before the auction rather than during it. Zero reports an auction only once it can be started. A proposal waiting out its notice is reported either way. |
@@ -491,13 +519,13 @@ What it does when it cannot see (the audit of 2026-11-21):
 |---|---|---|
 | `RPC_URL` | required | The JSON-RPC of the chain `CHAIN_ID` names; it must serve logs from `FROM_BLOCK` (publicnode prunes Sepolia's). |
 | `FACTORY` | required | The `WeightedIndexFactory`. |
-| `CHAIN_ID` | `1` | `1` Ethereum, `11155111` Sepolia. |
+| `CHAIN_ID` | `1` | `1` Ethereum, `56` BNB Chain, `8453` Base, `11155111` Sepolia. |
 | `REQUESTS` | none | `MintRequests`, whose escrows are checked when set. |
 | `BUILDER` | none | The `BasketBuilder`, whose escrows are checked when set; needs `FROM_BLOCK`. |
 | `FROM_BLOCK` | none | The deployment's first block: where the builder's events and the notices start. Unset, notices start now. |
 | `POLL_SECONDS` | `60` | How often it reads. |
 | `MAX_HEAD_AGE_SECONDS` | `180` | How old the RPC's latest block may be before the round counts as failed. |
-| `LOG_CHUNK` | `10000` | The widest block range one `eth_getLogs` asks for. |
+| `LOG_CHUNK` | `10000` | The widest block range one `eth_getLogs` asks for; public BNB Chain and Base nodes may want less. |
 | `ALERT_WEBHOOK` | none | A Slack or Discord incoming webhook. |
 
 Its first run, on 2026-11-01 against Sepolia's deployment (block 12,040,646): four indexes, no finding. On an anvil fork

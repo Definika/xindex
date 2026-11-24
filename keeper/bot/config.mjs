@@ -4,11 +4,26 @@
 import { MAINNET_PRICE_IDS } from "./price-ids.mjs";
 
 const WETH_ID = "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace";
+/// BNB/USD, the gas coin's price on BNB Chain (script/PythIds.sol `BNB`).
+const BNB_ID = "0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f";
 
 /// The chains the keeper runs on, by chain id (`CHAIN_ID`): the addresses it trades through on each, and the keeper's
-/// own price source there. No contract reads a price (since 2026-11-10): `pyth` is Pyth's contract, which the keeper
-/// alone asks to confirm that a price Hermes served is the signed one (RX-9, RY-7), and `priceIds` maps each coin the
-/// keeper can value to its Pyth id. A coin without an entry is one the keeper leaves alone.
+/// own price source there. `pyth` is Pyth's contract, which the keeper asks to confirm that a price Hermes served is
+/// the signed one (RX-9, RY-7), and through which its executor posts the update a fill on a factory with an oracle
+/// carries. `priceIds` maps each coin the keeper can value to its Pyth id, a coin without an entry being one it leaves
+/// alone; with `feedsFromFactory` the ids are instead each token's feed as the factory records it (`priceFeedOf`),
+/// the very feed its hubs check a fill against. Each entry also says:
+/// - `usdcDecimals`: the float's decimals (USDC's six, eighteen for BNB Chain's Binance-Peg USDC);
+/// - `ethPriceId`: the gas coin's Pyth id (ETH's, BNB's on BNB Chain), at which gas is valued;
+/// - `blockMs`, `fillWindowSeconds`: how often a block comes, and how long a fill sent now may take to land, past
+///   which it reverts on its deadline (`M.landing`); windows the bot keeps in blocks scale with `blockMs`;
+/// - `l1FeeOracle`: on an OP Stack chain, the predeploy that prices a transaction's data posted to Ethereum, which the
+///   chain charges on top of its gas;
+/// - `maxFeeGwei`, `priorityFeeGwei`: the defaults of MAX_FEE_GWEI and PRIORITY_FEE_GWEI there.
+/// Every address of BNB Chain's and Base's entries was read on chain on 2026-11-24: SwapRouter02 and QuoterV2 answer
+/// `factory()` with the address book's Uniswap V3 factory and `WETH9()` with its wrapped gas coin, and the Token
+/// Bridge answers `chainId()` with Wormhole's id for the chain (4, 30); `test/unit/chains.test.mjs` pins the rest
+/// against `script/BnbChainAddresses.sol` and `script/BaseAddresses.sol`.
 export const CHAINS = Object.freeze({
   1: Object.freeze({
     name: "Ethereum",
@@ -23,6 +38,13 @@ export const CHAINS = Object.freeze({
     ethPriceId: WETH_ID,
     pyth: "0x4305FB66699C3B2702D4d05CF36551390A4c69C6",
     priceIds: MAINNET_PRICE_IDS,
+    feedsFromFactory: false,
+    usdcDecimals: 6,
+    blockMs: 12_000,
+    fillWindowSeconds: 12,
+    l1FeeOracle: null,
+    maxFeeGwei: "100",
+    priorityFeeGwei: "2",
   }),
   // The test deployment's market (docs/deployment.md, "Testnet (Sepolia)"): Uniswap V3 pools against tUSDC, the
   // FaucetToken the deployment mints with. Read on chain on 2026-10-31: SwapRouter02 and QuoterV2 answer factory()
@@ -47,6 +69,59 @@ export const CHAINS = Object.freeze({
       "0xc02f993785fc45cf48bf61c24dcbb11f9085a4e4": "0x8ac0c70fff57e9aefdf5edf44b51d62c2d433653cbb2cf5cc06bb115af04d221", // tLINK
       "0xc34fe6c23897ae506368cf3acb0db96d6d63bf85": "0x78d185a741d07edb3412b09008b7c5cfb9bbbd7d568bf00ba737b456ba171501", // tUNI
     }),
+    feedsFromFactory: false,
+    usdcDecimals: 6,
+    blockMs: 12_000,
+    fillWindowSeconds: 12,
+    l1FeeOracle: null,
+    maxFeeGwei: "100",
+    priorityFeeGwei: "2",
+  }),
+  // BNB Chain: a block every 450 ms (measured 2026-11-24: 200 blocks in 90 s), no base fee and a gas price of 0.05
+  // gwei, gas paid in BNB. Uniswap V3 is the keeper's venue as on Ethereum; it routes six of the twelve coins of 2026-11-13
+  // and the rest are served from stock. Both stablecoins have eighteen decimals. The Token Bridge is Wormhole's,
+  // which the executor's constructor requires and nothing here uses: the restock serves Ethereum alone.
+  56: Object.freeze({
+    name: "BNB Chain",
+    chainId: 56,
+    swapRouter02: "0xB971eF87ede563556b2ED4b1C0b0019111Dd85d2",
+    quoterV2: "0x78D78E420Da98ad378D7799bE8f4AF69033EB077",
+    v3Factory: "0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7",
+    weth: "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c", // WBNB, the routing hub
+    usdc: "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",
+    tokenBridge: "0xB6F6D86a8f9879A9c87f643768d9efc38c1Da6E7",
+    ethPriceId: BNB_ID,
+    pyth: "0x4D7E825f80bDf85e913E0DD2A2D54927e9dE1594",
+    priceIds: Object.freeze({}),
+    feedsFromFactory: true,
+    usdcDecimals: 18,
+    blockMs: 450,
+    fillWindowSeconds: 3,
+    l1FeeOracle: null,
+    maxFeeGwei: "1",
+    priorityFeeGwei: "0.1",
+  }),
+  // Base: a block every 200 ms (measured 2026-11-24: 200 blocks in 40 s), gas paid in ETH, and the L1 data fee on top,
+  // which GasPriceOracle prices (OP Stack's predeploy at 0x42…0F).
+  8453: Object.freeze({
+    name: "Base",
+    chainId: 8453,
+    swapRouter02: "0x2626664c2603336E57B271c5C0b26F421741e481",
+    quoterV2: "0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a",
+    v3Factory: "0x33128a8fC17869897dcE68Ed026d694621f6FDfD",
+    weth: "0x4200000000000000000000000000000000000006",
+    usdc: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    tokenBridge: "0x8d2de8d2f73F1F4cAB472AC9A881C9b123C79627",
+    ethPriceId: WETH_ID,
+    pyth: "0x8250f4aF4B972684F7b336503E2D6dFeDeB1487a",
+    priceIds: Object.freeze({}),
+    feedsFromFactory: true,
+    usdcDecimals: 6,
+    blockMs: 200,
+    fillWindowSeconds: 3,
+    l1FeeOracle: "0x420000000000000000000000000000000000000F",
+    maxFeeGwei: "1",
+    priorityFeeGwei: "0.01",
   }),
 });
 
@@ -448,14 +523,13 @@ const DEFAULTS = {
   SUPPLY_TOLERANCE_BPS: "10",
   ROUTE_MAX_LOSS_BPS: "100",
   TRADE_COST_BPS: "30",
-  MAX_FEE_GWEI: "100",
-  PRIORITY_FEE_GWEI: "2",
   FILL_REQUESTS: "1",
   FILL_AUCTIONS: "1",
   CHAIN_ID: "1",
   SUBSIDY_BUDGET_USD: "0",
   SHARE_STOCK_USD: "0",
   PRESTOCK_LEAD_SECONDS: "86400",
+  RPC_TIMEOUT_MS: "15000",
 };
 
 /// The checks every setting of `env` goes through, with `defaults` for the ones left unset. Each records what is wrong
@@ -492,10 +566,17 @@ export function envReader(env, defaults) {
 
 /// Parses and checks `env`. Throws one Error naming every problem, so a misconfigured keeper never starts.
 export function parseConfig(env) {
-  const { problems, get, required, number, bps } = envReader(env, DEFAULTS);
+  // The gas defaults are the chain's own: Ethereum's 100 and 2 gwei would pay a BNB Chain or Base fill dozens of
+  // times what its block asks.
+  const named = CHAINS[(env.CHAIN_ID ?? DEFAULTS.CHAIN_ID).trim()];
+  const defaults = { ...DEFAULTS, MAX_FEE_GWEI: named?.maxFeeGwei ?? "100", PRIORITY_FEE_GWEI: named?.priorityFeeGwei ?? "2" };
+  const { problems, get, required, number, bps } = envReader(env, defaults);
 
   const config = {
     rpcUrl: required("RPC_URL", /^https?:\/\/\S+$/, "an http(s) URL"),
+    // How long one RPC request may take before it fails, and the round with it: fifteen seconds, the most a fill on
+    // Ethereum can wait; longer for an RPC that is slow but sound, as a fork with a cold cache is.
+    rpcTimeoutMs: number("RPC_TIMEOUT_MS", { integer: true, positive: true }),
     keeperKey: required("KEEPER_KEY", KEY, "a 32-byte hex private key"),
     factory: required("FACTORY", ADDRESS, "an address"),
     executor: required("EXECUTOR", ADDRESS, "an address"),

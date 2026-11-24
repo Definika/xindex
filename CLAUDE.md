@@ -414,7 +414,7 @@ built on it and found in it.
   - Not done: the keeper's end-to-end tests on this change; a new Sepolia deployment, the
     executor included; the app and the backend (the bound request calls, `cancelRebalance(proposalId)` in the Safe
     batches, `Underbacked` as a state to show); and before the non-EVM signers run, CA-M14, CA-L7, CA-R2-12 and
-    CA-R2-13.
+    CA-R2-13 (fixed on 2026-11-24, the bullet "The last open findings and the keeper's dependency").
 - **Backed's wrapped xStocks, listed 2026-11-21 and removed 2026-11-22.** On 2026-11-21 the owner replaced the 17
   Ondo stocks with 109 of Backed's wrapped xStocks on Ethereum and 104 on BNB Chain, and the keeper learned to value a
   wrapper at its feed times its `convertToAssets`. On 2026-11-22, shown that Ondo covers about three times as much
@@ -637,10 +637,12 @@ built on it and found in it.
     all killed.
   - **Not run:** `callAfter`, the oracle branch of `preview`, and `priceFill`, which need viem. `keeper/node_modules`
     is absent where this was built, so `keeper.mjs` and `chain.mjs` were only parsed (`node --check`), and neither
-    the request harness nor the end-to-end test ran. Since the night of 2026-11-23 the end-to-end script deploys
-    its factory with Pyth's real contract (feeds, an update before each creation, a creation off its weights
-    refused, every fill carrying Pyth's update), but it has not run either. Treat that wiring as unproven until
-    `npm ci` and an end-to-end run on a fork.
+    the request harness nor the end-to-end test ran then. Run on 2026-11-24, after `npm ci` (the owner's yes): the
+    request harness 15 of 15, and the end-to-end test 45 of 45 on a mainnet fork at block 26,480,113, its factory
+    on Pyth's real contract: feeds proposed and executed, an update before each creation, a creation off its
+    weights refused (`OffWeights`), and every fill carrying Pyth's update and paying exactly Pyth's fee for it, zero
+    on all three chains that day. The runs before it failed on the fork's cold reads alone, which `RPC_TIMEOUT_MS`
+    and the test's own waits now allow for.
 - **A read of the price reader and the weight changes as an attacker** (2026-11-23, by the session that built the
   three changes above, so not an independent review). One finding, fixed: `PythPrices` valued a leg at zero when a
   stock token's multiplier or a vault's rate read zero, or a price was too small for the scale, and a leg that
@@ -705,6 +707,52 @@ built on it and found in it.
     through the new zap hash; BNB Chain at block 135,326,394, 18 of 18; Base at block 61,360,828, 14 of 16, the two
     Pyth tests written against the batch at Base's pin failing as before, and `BaseStocks.fork` 2 of 2. Not run:
     the hub's whole-list tests and `CheckToken.fork` (archive node), the keeper's end-to-end test (`npm ci`).
+- **XA-34 and RZ-33, fixed on 2026-11-24.** The WBTC pause drill expects WBTC's own refusal, a revert with no data the
+  hub relays unchanged, read from the drill's trace on a fork (it passed at Ethereum's head that day). The settlement
+  vectors are 455: 24 of a generator of their own (`edges()`) settle through products past 2^256 with a leg at exactly
+  `UINT96_MAX`, or overflow one raw unit past it; mutant V25, a backing in 256 bits, survives the 431 before them and
+  dies on these. `proofs.py` passes on the model unchanged.
+- **The keeper on BNB Chain and Base** (2026-11-24, the owner's call to complete the code that day). The bot and its
+  executor ran on Ethereum alone: a float of six decimals, twelve-second blocks, gas valued at ETH, a chain table of
+  Ethereum and Sepolia. No contract changed. `CHAIN_ID=56` and `8453` now run the same bot, one process and executor
+  per chain (`keeper/bot/config.mjs`, each address read on chain that day and pinned against the address books by
+  `keeper/test/unit/chains.test.mjs`):
+  - Prices: a token's id is its feed as the factory records it (`priceFeedOf`), the one its hubs check a fill
+    against; a multiplier token's (Coinbase's stocks on Base) is left alone, as a share-priced leg is.
+  - Timing: blocks every 450 ms (BNB Chain) and 200 ms (Base), measured that day. A fill is priced at the earliest
+    second it can land (`M.landing`), where the bar is highest and Pyth's tolerance narrowest, with a deadline three
+    seconds on, and replaced only after those seconds' blocks; every window kept in blocks is Ethereum's, scaled to
+    the chain (`M.blockScale`), so it lasts the same time. On Ethereum nothing changes: the next block is both.
+  - Money: the float's and the request stablecoins' decimals (eighteen on BNB Chain) are the chain's, checked at
+    startup; gas is valued at the gas coin (BNB's price on BNB Chain); Base's L1 data fee is added at GasPriceOracle's
+    upper bound. Gas defaults are each chain's own (1 and 0.1 gwei on BNB Chain, 1 and 0.01 on Base).
+  - Venue: Uniswap V3 alone, as on Ethereum; a coin it does not route is served from the operator's stock (the
+    restock serves Ethereum alone). PancakeSwap and Aerodrome hold most of those chains' depth and are not routed.
+  - Proof: the bot's unit suites (264), the request harness with a BNB Chain case (15), mutants CH1 to CH8, and
+    `keeper/test/KeeperExecutor.chains.fork.t.sol`, which on each chain's real market deploys the executor, checks
+    every address the table names, and fills a real mint request through Uniswap V3: BNB Chain 2 of 2 and Base 2 of
+    2 at the heads that day; the end-to-end test on Ethereum, 45 of 45, runs the changed bot there. Not run: a keeper
+    end-to-end test on either new chain, and the bot's auction path there, which needs an oracle factory on the fork
+    and Pyth's update signed for it.
+- **The last open findings and the keeper's dependency** (2026-11-24, the same day's call). No contract changed.
+  - The audit's four left for the non-EVM signers, fixed in the restock (`audit/2026-11-21-consolidated-audit.md`,
+    "Status of the fixes"): a home wallet keeps twice its chain's gas minimum of a coin that is its own gas coin, SUI,
+    APT and ALGO, which the plan never sells or bridges and the signer refuses to (CA-M14, `spendable` in
+    `keeper/restock/plan.mjs`, `keepGas` in `keeper/restock/signer-home.mjs`); a buy the plan sized at
+    `RESTOCK_MIN_USD` is held to the minimum in the coin's units, not by its value recomputed in floats (CA-R2-12);
+    a received Solana burn stays in the journal until its event account's rent is reclaimed (CA-R2-13,
+    `rentToReclaim`); and the signers end with the run, so `--once` exits (CA-L7, `ask.close`). Tests named
+    `CA-M14: ...`, `CA-R2-12: ...`, `CA-R2-13: ...` and `CA-L7: ...` in `keeper/test/unit/`, mutants C44 to C51.
+    The signers themselves have still never sent a transaction: their coins left the list on 2026-11-18, and a live
+    run needs funded wallets on each home chain.
+  - RZ-17 and RZ-27, which the red team's record still showed open, were retired with Pyth on 2026-11-10
+    (`audit/2026-11-10-oracle-retirement.md` says so); their rows say so now. The price reader of 2026-11-22 reads no
+    moving average, and a start carries no update.
+  - The keeper's viem moved from 2.21.54 to 2.57.7, the app's version (published 2026-10-14): the older one pulled in
+    a `ws` with two advisories (GHSA-58qx-3vcg-4xpx, GHSA-96hv-2xvq-fx4p), over a transport the keeper does not use.
+    `npm audit` finds none now. On it the request harness passed 15 of 15 and the end-to-end test 45 of 45 again, at
+    block 26,480,113.
+  - Gates: the keeper's 269 unit tests; every one of the mutation gate's 323 edits applies, C44 to C51 killed.
 - **An independent review of the work of 2026-11-23** (a reviewer agent that had not seen the author's reasoning,
   reading only; no critical or high finding). Fixed the same day:
   - The keeper kept an index's weights from its first read, and weights can change since 2026-11-23: it would have
@@ -951,7 +999,7 @@ stablecoins from that chain's address book and refuses any other address
      `test/WeightedHub.rebalance.t.sol` and `test/WeightedHub.states.t.sol`; CA-H2's and CA-M1's on mainnet
      Tether in `test/fork/Security.fork.t.sol` (`test_CAH2_CAM1_...`, `test_CAH2_...`); CA-M4's in `test/Scripts.t.sol`;
      CA-R2-17's and CA-R2-18's in `test/CheckToken.t.sol`; the bot's, the restock's and the checker's in
-     `keeper/test/unit/`, with their mutants C1 to C43. The record's "Status of the fixes" names every test, the
+     `keeper/test/unit/`, with their mutants C1 to C51. The record's "Status of the fixes" names every test, the
      ids fixed by documentation alone, the ones left as they are, and the wiring fixes that have no unit suite
      (CA-M8, CA-R2-04, CA-R2-11, CA-R2-20, CA-L12).
    - The attack replay of 2026-11-23: `HK-1`..`HK-20` (`audit/2026-11-23-attack-replay.md`), a test named

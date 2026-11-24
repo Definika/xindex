@@ -39,14 +39,22 @@ export const batchHash = (requests) =>
 const same = (a, b) => a.toLowerCase() === b.toLowerCase();
 const sharePriced = (id) => SHARE_PRICED_IDS.includes(id.toLowerCase());
 
-export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth, staticsOf, log, needs }) {
+export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth, stableDecimals = null, staticsOf, log, needs }) {
+  // Windows kept in Ethereum's blocks span the same time on a faster chain (M.blockScale).
+  const scale = M.blockScale(cfg.chain);
+  /// The earliest second a fill sent at block L can land at, which it is simulated at, and its deadline (M.landing).
+  const land = (L) => M.landing(L.timestamp, cfg.chain);
+  /// A request's stablecoin's decimals, as the request escrow's token reports them at startup: both of BNB Chain's
+  /// have eighteen, Ethereum's and Base's six.
+  const decimalsOf = (stable) => stableDecimals?.get(stable.toLowerCase()) ?? cfg.chain.usdcDecimals;
+  const floatDecimals = cfg.chain.usdcDecimals;
   const known = new Map(); // id -> request, every request seen that was still open at the last scan
   const said = new Map(); // id -> the last reason logged, so a waiting request is not logged every block
   const info = new Map(); // lowercased index -> {shareUsd, mintAllowed}, read at the last scan (XS-7)
-  const failed = failedRequests(); // `request:id` -> simulations that reverted (XS-7)
-  const reverts = revertedRequestFills(); // `request:id`, `requester:a`, `index:a` -> fills that reverted (XS-7, RX-10)
-  const skips = skippedRequests(); // `request:id` -> checks that declined it without a revert (RX-24)
-  const waits = shortRequests(); // `request:id` -> checks that found the executor short of stock for it
+  const failed = failedRequests(scale); // `request:id` -> simulations that reverted (XS-7)
+  const reverts = revertedRequestFills(scale); // `request:id`, `requester:a`, `index:a` -> fills that reverted (XS-7, RX-10)
+  const skips = skippedRequests(scale); // `request:id` -> checks that declined it without a revert (RX-24)
+  const waits = shortRequests(scale); // `request:id` -> checks that found the executor short of stock for it
   let scanned = 0n; // the last id read, every one before it read too
   let cursor = 0; // where the next scan starts reading the known requests again (RZ-10)
   const recheck = new Set(); // ids forgotten since the last scan, read once more at the next (RZ-13)
@@ -219,7 +227,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
           routedUsd += M.amountUsd(amount, dec, p);
           if (quoteUsdc) legLimits[i] = down(quoteUsdc);
         }
-        inventoryUsd += M.stockChangeUsd({ out: amount, in: 0n, held: 0n, routed: route !== null, decimals: dec, price: p, quoteUsdc, sharePriced: shared });
+        inventoryUsd += M.stockChangeUsd({ out: amount, in: 0n, held: 0n, routed: route !== null, decimals: dec, price: p, quoteUsdc, sharePriced: shared, usdcDecimals: floatDecimals });
       }
       if (route) routeOf[i] = route;
     }
@@ -229,7 +237,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
   /// The route of one stablecoin leg (`{token, side, amount}`), its bound at the quote plus SLIPPAGE_BPS (RX-10) and
   /// its dollars, or null when no route joins that stablecoin and USDC.
   async function stableQuote(key, stable, L) {
-    const fairUsd = Number(stable.amount) / 1e6;
+    const fairUsd = Number(stable.amount) / 10 ** decimalsOf(stable.token);
     const route = await routes.best({ key, ...stable, fairUsd, blockNumber: L.number });
     if (!route) return null;
     const q = routes.quoteOf({ key, token: stable.token, side: stable.side, amount: stable.amount });
@@ -254,14 +262,15 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
       stableLimit = s.limit;
       routedUsd += s.fairUsd;
     }
-    return { routes: b.routes, legLimits: b.legLimits, stableRoute, stableLimit, inventoryUsd: b.inventoryUsd, routedVolumeUsdc: M.usdToUsdcCeil(routedUsd), short: b.short, stocked: b.stocked };
+    return { routes: b.routes, legLimits: b.legLimits, stableRoute, stableLimit, inventoryUsd: b.inventoryUsd, routedVolumeUsdc: M.usdToUsdcCeil(routedUsd, floatDecimals), short: b.short, stocked: b.stocked };
   }
 
-  /// One fill, simulated as block L+1 would run it and priced: `fill(minUsdcDelta)` builds the argument of
-  /// `functionName` at a floor. Returns its profit after gas and the transaction to send, or why not. A request fill
-  /// is never subsidised: a negative MIN_PROFIT_USD applies to auctions only (RX-16).
+  /// One fill, simulated as block L+1 would run it at the earliest second it can land, and priced: `fill(minUsdcDelta)`
+  /// builds the argument of `functionName` at a floor, with the deadline `land(L).by`. Returns its profit after gas
+  /// and the transaction to send, or why not. A request fill is never subsidised: a negative MIN_PROFIT_USD applies to
+  /// auctions only (RX-16).
   async function price(functionName, fill, { inventoryUsd, routedVolumeUsdc }, L, ethUsd, tip, feeCap) {
-    const T = L.timestamp + 12n;
+    const { at: T, by: deadline } = land(L);
     const minProfitUsd = Math.max(cfg.minProfitUsd, 0);
     const over = { block: { number: L.number + 1n, time: T } };
     const args = [fill(INT256_MIN)];
@@ -277,10 +286,12 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
     if (used > TX_GAS_CAP) return { skip: `${functionName} needs ${used} gas, above EIP-7825's cap`, declined: true };
     const nextBase = M.nextBaseFee(L);
     if (nextBase + tip > feeCap) return { skip: `base fee ${M.weiToGwei(nextBase)} gwei above MAX_FEE_GWEI` };
-    const gasUsd = M.fillCostUsd({ used, nextBase, tip, ethUsd });
-    const profit = M.profitUsd({ usdcDelta, inventoryUsd, gasUsd });
+    // Base charges the L1 data fee on top of gas: both are the gas coin the fill spends.
+    const l1Fee = await chain.l1Fee(encodeFunctionData({ abi: ABI.executor, functionName, args }), L.number);
+    const gasUsd = M.fillCostUsd({ used, nextBase, tip, ethUsd, l1Fee });
+    const profit = M.profitUsd({ usdcDelta, inventoryUsd, gasUsd, decimals: floatDecimals });
     if (profit < minProfitUsd) return { skip: `waiting: profit ${profit.toFixed(2)} USD below MIN_PROFIT_USD`, declined: true };
-    const floor = M.usdcFloor({ simDelta: usdcDelta, minProfitUsd, gasUsd, inventoryUsd, routedVolumeUsdc, slippageBps: cfg.slippageBps });
+    const floor = M.usdcFloor({ simDelta: usdcDelta, minProfitUsd, gasUsd, inventoryUsd, routedVolumeUsdc, slippageBps: cfg.slippageBps, decimals: floatDecimals });
     const gas = M.min(M.gasLimitFor(used), TX_GAS_CAP);
     const sent = [fill(floor)];
     // The call again, with the limit the transaction will carry: a fill that fits only the node's default limit, or
@@ -298,7 +309,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
       maxFeePerGas: M.min(2n * nextBase + tip, feeCap),
       maxPriorityFeePerGas: tip,
     };
-    return { profit, usdcDelta, gasUsd, inventoryUsd, tx, deadline: T };
+    return { profit, usdcDelta, gasUsd, inventoryUsd, tx, deadline };
   }
 
   /// Request `id`, as a fill this bot could send now: its profit after gas and the transaction, or why not. With
@@ -307,8 +318,8 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
   /// and clears what it reported alone: its batch reports the one basket that serves all its requests, and the
   /// board adds its reports up, so the same request would be counted twice (CA-M8).
   async function evaluate(id, r, L, ethUsd, tip, feeCap, { probe = false, batched = false } = {}) {
-    if (ethUsd === null) return { skip: "no ETH price to value gas" };
-    const T = L.timestamp + 12n;
+    if (ethUsd === null) return { skip: "no price of the gas coin to value gas" };
+    const T = land(L).by; // the fill's deadline
     const st = await staticsOf(r.index, L.number);
     const functionName = r.isMint ? "fillMint" : "fillRedeem";
     const amount = r.limit; // exactly the limit: the surplus over it would be the requester's
@@ -352,8 +363,8 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
   /// sold for the rest (`M.planBatch`). An index holding a share-priced leg has shares the bot cannot value, so it
   /// keeps and delivers none of them (RX-2).
   async function evaluateBatch(g, L, ethUsd, tip, feeCap) {
-    if (ethUsd === null) return { skip: "no ETH price to value gas" };
-    const T = L.timestamp + 12n;
+    if (ethUsd === null) return { skip: "no price of the gas coin to value gas" };
+    const T = land(L).by; // the fill's deadline, which its requests must be open through
     const st = await staticsOf(g.index, L.number);
     const unit = 10n ** 18n;
     // The requests again, at this block: one closed since the last scan would stop the whole batch (XS-6).
@@ -427,7 +438,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
       stableRoute = s.route;
       if (taken > 0n) stableMinOut = s.limit;
       else stableMaxIn = s.limit;
-      routedUsd += s.fairUsd + (taken > 0n ? Number(paid) / 1e6 : 0);
+      routedUsd += s.fairUsd + (taken > 0n ? Number(paid) / 10 ** decimalsOf(g.stable) : 0);
     }
 
     const inventoryUsd = leg.inventoryUsd + (stockable ? M.shareStockUsd(plan.stockDelta, shareWorth, cfg.slippageBps) : 0);
@@ -451,7 +462,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
       minUsdcDelta,
       deadline: T,
     });
-    const priced = await price("fillBatch", fill, { inventoryUsd, routedVolumeUsdc: M.usdToUsdcCeil(routedUsd) }, L, ethUsd, tip, feeCap);
+    const priced = await price("fillBatch", fill, { inventoryUsd, routedVolumeUsdc: M.usdToUsdcCeil(routedUsd, floatDecimals) }, L, ethUsd, tip, feeCap);
     return priced.skip ? priced : { ids: members.map((m) => m.id), ...priced };
   }
 
@@ -483,10 +494,10 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
     }
     // A request is never subsidised, so one that cannot pay MIN_PROFIT_USD at its limit is not simulated (RY-8).
     const minProfitUsd = Math.max(cfg.minProfitUsd, 0);
-    const T = L.timestamp + 12n;
+    const T = land(L).by; // the deadline a fill sent now carries: a request must be open through it
 
     // With a share stock one request is a batch too: the stock may fill it without a basket.
-    const formed = M.batchGroups(batchable, T, indexes, info, { minSize: cfg.shareStockUsd > 0 ? 1 : 2, minProfitUsd });
+    const formed = M.batchGroups(batchable, T, indexes, info, { minSize: cfg.shareStockUsd > 0 ? 1 : 2, minProfitUsd, decimalsOf });
     const groups = formed.filter((g) => !failed.blocked(M.batchKey(g), L.number) && !skips.blocked(M.batchKey(g), L.number));
     // One report per request on the restock's board: its batch's while it is in one, its own otherwise (CA-M8). A
     // batch that no longer forms leaves its report to lapse: for a while the board may count a request twice, which
@@ -512,7 +523,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
     });
 
     const alone = entries.filter((e) => !inBatch.has(e.id) && known.has(e.id));
-    const { chosen: candidates, skipped } = M.fillableRequests(alone, T, indexes, info, M.MAX_REQUEST_CHECKS, minProfitUsd);
+    const { chosen: candidates, skipped } = M.fillableRequests(alone, T, indexes, info, M.MAX_REQUEST_CHECKS, minProfitUsd, decimalsOf);
     for (const { id, reason } of skipped) {
       needs?.report(`request:${id}`, "request", []); // nor does it hold stock on the restock's board (RY-8)
       say(id, `not simulated: ${reason}`);

@@ -1,5 +1,5 @@
-// The keeper's view of Ethereum, through viem: pinned reads, calls with state and block overrides, revert names,
-// and signed sends. ABIs come from the repo's committed `abi/` and from the executor's own build (`keeper/out`).
+// The keeper's view of its chain (Ethereum, BNB Chain or Base), through viem: pinned reads, calls with state and block
+// overrides, revert names, and signed sends. ABIs come from the repo's committed `abi/` and from the executor's own build (`keeper/out`).
 
 import { readFileSync } from "node:fs";
 import {
@@ -14,7 +14,7 @@ import {
   parseAbi,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { mainnet, sepolia } from "viem/chains";
+import { base, bsc, mainnet, sepolia } from "viem/chains";
 import { HUB_SLOTS } from "./config.mjs";
 import { barAt, BAR_HALF_LIFE } from "./units.mjs";
 
@@ -57,6 +57,8 @@ export const ABI = {
     "function quoteExactOutput(bytes path, uint256 amountOut) returns (uint256 amountIn, uint160[], uint32[], uint256)",
   ]),
   v3Factory: parseAbi(["function getPool(address, address, uint24) view returns (address)"]),
+  // OP Stack's GasPriceOracle predeploy: what posting a transaction of `size` bytes to Ethereum may cost, at most.
+  l1FeeOracle: parseAbi(["function getL1FeeUpperBound(uint256 size) view returns (uint256)"]),
   v3Pool: parseAbi([
     "function slot0() view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, uint8 feeProtocol, bool unlocked)",
   ]),
@@ -115,13 +117,14 @@ const hex = (x) => numberToHex(x);
 const word = (x) => pad(numberToHex(x), { size: 32 });
 
 /// viem's definition of each chain the keeper runs on: its multicall refuses a block before the chain's own Multicall3
-/// was deployed, and mainnet's dates from block 14,353,601, past Sepolia's head.
-const VIEM_CHAINS = { 1: mainnet, 11155111: sepolia };
+/// was deployed, and mainnet's dates from block 14,353,601, past Sepolia's head. Without one, viem has no Multicall3
+/// to call at all.
+export const VIEM_CHAINS = { 1: mainnet, 11155111: sepolia, 56: bsc, 8453: base };
 
 export function createChain(cfg) {
   const client = createPublicClient({
     chain: VIEM_CHAINS[cfg.chain.chainId],
-    transport: http(cfg.rpcUrl, { timeout: 15_000, retryCount: 2 }),
+    transport: http(cfg.rpcUrl, { timeout: cfg.rpcTimeoutMs ?? 15_000, retryCount: 2 }),
   });
   const account = privateKeyToAccount(cfg.keeperKey);
 
@@ -214,6 +217,16 @@ export function createChain(cfg) {
     send,
   };
 
+  /// What the chain charges on top of gas for posting a transaction of `data` to Ethereum, at most, in the gas coin's
+  /// wei: Base's L1 data fee, read from its GasPriceOracle at `blockNumber`; zero on a chain that charges none. The
+  /// bound is the oracle's own for the transaction's size, the calldata plus what a signed EIP-1559 envelope adds, so
+  /// a fill is never counted cheaper than it is.
+  async function l1Fee(data, blockNumber) {
+    if (!cfg.chain.l1FeeOracle) return 0n;
+    const size = BigInt((data.length - 2) / 2 + 200);
+    return read(cfg.chain.l1FeeOracle, ABI.l1FeeOracle, "getL1FeeUpperBound", [size], blockNumber);
+  }
+
   /// Refuses to run against anything but the deployment and RPC this keeper is built for.
   async function checkSetup() {
     const chainId = await client.getChainId();
@@ -229,6 +242,16 @@ export function createChain(cfg) {
     if (!same(factory, cfg.factory)) throw new Error(`the executor fills ${factory}'s indexes, not FACTORY's`);
     const requestsFactory = await read(requests, ABI.requests, "FACTORY", [], at);
     if (!same(requestsFactory, factory)) throw new Error(`the executor's request escrow ${requests} is on another factory`);
+    // Every dollar the bot counts in the float is the float's raw units over its decimals, which the chain table
+    // states: a token that says otherwise is not the float the bot was set up for. The request escrow's two
+    // stablecoins are read with theirs, which value its requests (BNB Chain's both have eighteen).
+    const floatDecimals = Number(await read(usdc, ABI.erc20, "decimals", [], at));
+    if (floatDecimals !== cfg.chain.usdcDecimals) {
+      throw new Error(`the float has ${floatDecimals} decimals, not the ${cfg.chain.usdcDecimals} ${cfg.chain.name}'s USDC has`);
+    }
+    const stables = await Promise.all(["USDC", "USDT"].map((fn) => read(requests, ABI.requests, fn, [], at)));
+    const stableDecimals = new Map();
+    for (const stable of stables) stableDecimals.set(stable.toLowerCase(), Number(await read(stable, ABI.erc20, "decimals", [], at)));
 
     const implementation = await read(cfg.factory, ABI.factory, "IMPLEMENTATION", [], at);
     const duration = await read(implementation, ABI.hub, "AUCTION_DURATION", [], at);
@@ -257,7 +280,7 @@ export function createChain(cfg) {
       }
       if (bar !== barAt(BAR_HALF_LIFE)) throw new Error("WeightedHub's bar is not the one the keeper computes");
     }
-    return { implementation, pyth: cfg.chain.pyth, duration, delay, requests };
+    return { implementation, pyth: cfg.chain.pyth, duration, delay, requests, stableDecimals };
   }
 
   return {
@@ -272,5 +295,6 @@ export function createChain(cfg) {
     isRevert,
     blockNumber: () => client.getBlockNumber({ cacheTime: 0 }),
     block: (blockNumber) => client.getBlock({ blockNumber }),
+    l1Fee,
   };
 }

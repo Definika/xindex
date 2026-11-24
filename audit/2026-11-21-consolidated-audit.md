@@ -23,8 +23,10 @@ changes to `src/` among them. Each fix came with its test, and each test with th
 two rated High, one is a real break of a bound this repository states (`CA-H1`, the keeper's own share stock, with a
 stolen keeper key), and one is real and conditional on an issuer destroying a pooled balance (`CA-H2`, rated medium
 here). Most of the mediums are faults of the keeper's bot, the restock service and the invariant checker that cost
-their operator money or leave him blind, not the holders. Thirty-three of the sixty-one are fixed in code, seven by
-documentation, and twenty-one are left as they are, each with its reason below.
+their operator money or leave him blind, not the holders. Thirty-three of the sixty-one were fixed in code that day,
+seven by documentation, and twenty-one were left as they are, each with its reason below. Four of those, the non-EVM
+signers' (CA-M14, CA-R2-12, CA-R2-13, CA-L7), were fixed in code on 2026-11-24, before those signers have run:
+thirty-seven are fixed in code now, and seventeen left as they are.
 
 ## The findings
 
@@ -98,7 +100,7 @@ nothing: the follow-up's "request demand can outlive viability".
 | CA-M11 | Medium | A mined transaction is recorded at one confirmation and no block hash is kept, so a re-org that removes it leaves its move waiting for an attestation that never comes | Not changed: it holds a coin or a chain until its operator looks, and moves nothing. Recorded here as open |
 | CA-M12 | Medium | Two restock processes each load the journal once and save it whole, so each erased the other's moves | Confirmed. Fixed: a lock file beside the journal, taken before it is loaded |
 | CA-M13 | Medium | `RESTOCK_DAILY_USD` was charged with what a buy was worth, and its swap may lose `ROUTE_MAX_LOSS_BPS` on top: $20,200 where the README said $20,000 at most | Confirmed, low here. Fixed: the budget bounds what the buys may cost, and the journal counts each at that |
-| CA-M14 | Medium | A native coin's gas reserve is not held back from what the plan may sell | Not changed, open: it is Sui's, Aptos's and Algorand's coins, which left the list on 2026-11-18 and whose signers have never run. To be fixed before they do, with CA-L7, CA-R2-12 and CA-R2-13 |
+| CA-M14 | Medium | A native coin's gas reserve is not held back from what the plan may sell | Confirmed: the plan's input said the home balance left the reserve out, and nothing did. Sui's, Aptos's and Algorand's coins are their chains' gas coins, so a sale or a bridge transfer could take a wallet's whole balance and leave it no gas for the redeem, the sale or the buy that follow. Fixed on 2026-11-24, before those signers have run: the plan sells or bridges only what is above twice the chain's `GAS_MIN` (2 SUI, 1 APT and 4 ALGO stay), and none of it for a chain with no minimum (`spendable`, `keeper/restock/plan.mjs`); the signer home refuses a sale or a transfer of the gas coin that would leave the wallet under the minimum itself, read when it acts (`signer-home.mjs`) |
 | CA-M15 | Medium | Two CCTP burns alike in amount and endpoints could be told apart only by Iris answering for the right transaction | Not changed: it needs Circle's service to answer one transaction's hash with another's message. Recorded |
 | CA-R2-06 | Medium | A round's prices are checked fresh once and used for every action of the round, some of which wait minutes for an approval | Not changed, open: each trade is still held to its loss bound against that price |
 | CA-R2-07 | Medium | A buy counts against the day from its signing, and ages out while still pending | Not changed: the window is by signing on purpose, and its test says so |
@@ -106,9 +108,9 @@ nothing: the follow-up's "request demand can outlive viability".
 | CA-R2-09 | Medium | Spare stock was bridged out to a chain whose wallet had no gas to redeem it | Confirmed. Fixed: the bridge-out waits for gas, as every other move to that chain does |
 | CA-R2-10 | Medium | A funding was planned as what the buys wait for plus the float's whole target. A treasury that could pay for the buy and not for the target got a funding nothing could pay, every round | Confirmed. Fixed: a funding is planned out of what the treasury holds and may draw, the buys' part first |
 | CA-R2-11 | Medium | One home chain whose node did not answer stopped the plan for every chain | Confirmed. Fixed: that chain is left out of the round |
-| CA-R2-12 | Low | The non-EVM signer refuses a minimum-size buy that rounds a millionth of a dollar under the minimum | Not changed, open, with CA-M14 |
-| CA-R2-13 | Low | The journal can prune a received Solana burn before its rent is reclaimed | Not changed, open, with CA-M14 |
-| CA-L7 | Low | A signer subprocess keeps a `--once` run alive | Not changed, open, with CA-M14 |
+| CA-R2-12 | Low | The non-EVM signer refuses a minimum-size buy that rounds a millionth of a dollar under the minimum | Confirmed: the plan sizes a buy in the coin's units, rounded down, and the signer home held its value, recomputed in floats, to `RESTOCK_MIN_USD`, so a buy at the minimum was never tried, as RZ-22 had found on EVM. Fixed on 2026-11-24: a trade's whole is held to the minimum in the coin's units, as the plan sizes it, and only its halvings by their value; a buy one unit under the minimum, or with no price, is still refused |
+| CA-R2-13 | Low | The journal can prune a received Solana burn before its rent is reclaimed | Confirmed: a received burn was pruned a week after its receipt, so a reclaim that failed until then, or a service down past it, lost the record that reclaims the event account's rent. Fixed on 2026-11-24: a received burn whose rent is still to reclaim is not pruned until it is reclaimed (`rentToReclaim`, `keeper/restock/journal.mjs`), and `restock.mjs` reclaims by the same rule |
+| CA-L7 | Low | A signer subprocess keeps a `--once` run alive | Confirmed: a signer's open pipes hold the parent's event loop and nothing ended them, so a `--once` run never exited, nor a service stopped by a signal. Fixed on 2026-11-24: after its loop `restock.mjs` closes every home's signer, which exits once its input closes and is killed if it still runs ten seconds on; the exit code is the round's (CA-R2-20) |
 | CA-L8 | Low | The four signer launchers took a URL's pathname for a file's path, which a folder with a space or an accent breaks | Fixed: `fileURLToPath` |
 
 ### The invariant checker
@@ -167,6 +169,7 @@ A mutant's suite is the suite of the test that kills it. The node tests are in `
 | CA-M10 | `CA-M10: a completing transaction that was mined proves nothing: the other side is read back` in `restock-advance.test.mjs` | C40, C41 |
 | CA-M12 | `CA-M12: the journal has one writer at a time, and a lock nobody holds is taken over` in `restock-journal.test.mjs` | C42 |
 | CA-M13 | `CA-M13: a day of buys may cost RESTOCK_DAILY_USD at most, each one's loss bound included` in `restock-plan.test.mjs`, and the journal's budget test | C38, C39 |
+| CA-M14 | `CA-M14: a chain's own gas coin keeps twice the chain's gas minimum at home, never sold or bridged` in `restock-plan.test.mjs`; `CA-M14: a chain's own gas coin is sold or bridged only while the wallet keeps the chain's gas minimum` in `restock-signer-home.test.mjs` | C44, C45; C46 |
 | CA-M16 | `CA-M16: a cursor moves past a range only once it has been read` in `invariants.test.mjs` | C31 |
 | CA-M17 | `CA-M17: a finding stands while what it is about cannot be read` in `invariants.test.mjs` | C30 |
 | CA-M18 | `CA-M18: an alert the webhook did not take stays queued, in order, until it does` in `invariants.test.mjs` | C32 |
@@ -178,6 +181,8 @@ A mutant's suite is the suite of the test that kills it. The node tests are in `
 | CA-R2-09 | `CA-R2-09: spare stock is not sent to a chain whose wallet is short of gas` in `restock-plan.test.mjs` | C37 |
 | CA-R2-10 | `CA-R2-10: what a buy waits for is funded first, and the float's target with what the treasury has left` in `restock-plan.test.mjs` | C36 |
 | CA-R2-11 | none: the restock's own loop has no unit suite | none |
+| CA-R2-12 | `CA-R2-12: a buy the plan sized at RESTOCK_MIN_USD is tried, though its worth in floats is a millionth under it; one below it is not` in `restock-signer-home.test.mjs` | C47, C48 |
+| CA-R2-13 | `CA-R2-13: a received burn whose event account holds its rent is kept until the rent is reclaimed` in `restock-journal.test.mjs` | C49 |
 | CA-R2-14 | `CA-R2-14: a head that has stopped moving is a reader finding, raised once however old it grows` in `invariants.test.mjs` | C34 |
 | CA-R2-15 | `test_CAR215_theTokenPaidOutIsNoRecipient` in `test/BasketBuilder.t.sol` | C9, C10 |
 | CA-R2-16 | `test_CAR216_aDepositThatDeliversNothingIsRefused` in `test/BasketBuilder.t.sol` | C11 |
@@ -185,6 +190,7 @@ A mutant's suite is the suite of the test that kills it. The node tests are in `
 | CA-R2-18 | `test_classify` in `test/CheckToken.t.sol` | C21 |
 | CA-R2-20 | none: the two services' loops have no unit suite | none |
 | CA-L6 | `CA-L6: a board that is not what the keeper writes is unknown, never read in part` in `needs.test.mjs` | C24, C25 |
+| CA-L7 | `CA-L7: the signer ends when the run does, so a one-shot run exits once its round is over` in `restock-signer-home.test.mjs`, which runs a signer and a run of its own and reads `restock.mjs` for the close after its loop | C50, C51 |
 | CA-L8 | `CA-L8: a signer is launched by its file's path, which a URL's pathname is not` in `restock-signer-home.test.mjs` | C43 |
 | CA-L9 | the escrow test of `invariants.test.mjs` | C33 |
 | CA-L10 | `CA-L10: every event the checker watches is an event of the committed ABIs, plain starts and quotes among them` in `invariants.test.mjs` | C35 |
@@ -193,8 +199,8 @@ A mutant's suite is the suite of the test that kills it. The node tests are in `
 | The request short of stock, and the request its index has moved on from | the last tests of `backoff.test.mjs` and `requests.test.mjs`, and the harness's test of the stale request | C28, C27 |
 
 Fixed by documentation alone, with no test: CA-M3, CA-M5, CA-S06, CA-S07, CA-S08, CA-L1, CA-L2. Not changed, with no
-test: CA-M2, CA-M9, CA-M11, CA-M14, CA-M15, CA-M19, CA-S03, CA-S04, CA-S05, CA-L3, CA-L4, CA-L5, CA-L7, CA-R2-01,
-CA-R2-05, CA-R2-06, CA-R2-07, CA-R2-08, CA-R2-12, CA-R2-13, CA-R2-19.
+test: CA-M2, CA-M9, CA-M11, CA-M15, CA-M19, CA-S03, CA-S04, CA-S05, CA-L3, CA-L4, CA-L5, CA-R2-01, CA-R2-05,
+CA-R2-06, CA-R2-07, CA-R2-08, CA-R2-19.
 
 The hub's R11 test re-enters thirteen entry points now, the partial claim and the bound cancel among them.
 
@@ -231,6 +237,8 @@ Run on the working tree of 2026-11-21, on the branch `fix/audit-2026-11-21`:
   drills, BNB Chain's suite 13 of 13 with a Safe for its guardian, and the executor's fork test 3 of 3.
   `IndexZap.fork` 11 of 12: `testFork_mintWithUSDC` misses its sanity floor of $100, the basket being worth $86.54 at
   the head, as on 2026-11-18 (price, not code).
+- On 2026-11-24, for the four non-EVM fixes: `node --test keeper/test/unit/*.test.mjs` 269 passing, none failing;
+  mutants C44 to C51 killed, and every mutant of the table still applies (`--check`).
 
 ## Open
 
@@ -262,6 +270,7 @@ xStocks listing). The first two items below are settled, and the third in part:
 - **A new Sepolia deployment**, the executor included, before the bot of this build serves anything there.
 - **The app and the backend**: the bound request calls, `cancelRebalance(proposalId)` in the Safe batches, and
   `Underbacked` as a state to show.
-- **Before the non-EVM signers run**: CA-M14, CA-L7, CA-R2-12, CA-R2-13.
+- **Before the non-EVM signers run**: a live run of each, with funded wallets. Their four findings of this audit,
+  CA-M14, CA-R2-12, CA-R2-13 and CA-L7, are fixed since 2026-11-24, by unit tests and mutants C44 to C51 alone.
 - **Left as they are**, each with its reason above: CA-M11, CA-M15, CA-M19, CA-R2-01, CA-R2-06, CA-R2-08, and the
   follow-up's unnumbered findings.

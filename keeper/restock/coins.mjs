@@ -72,7 +72,8 @@ export const CHAINS = Object.freeze({
 
 /// The fourteen coins: the Ethereum copy (`MainnetAddresses`' constant `name`), its home chain and the token there,
 /// its decimals (the copy's and the home token's are the same), its Pyth feed, and the venue the service trades it on.
-/// `isGas` marks a coin that is its home chain's gas coin, of which the service always keeps a reserve.
+/// `isGas` marks a coin that is its home chain's gas coin, of which the service always keeps a reserve: twice the
+/// chain's GAS_MIN, which the plan never sells or bridges (`plan.mjs` spendable, CA-M14).
 export const COINS = Object.freeze(
   [
     { symbol: "XRP", name: "XRP", copy: "0xc730d8256B8A1030eEA67f1Bc7ebed3898f7A535", chain: "bsc", home: "0x1d2f0da169ceb9fc7b3144628db156f3f6c60dbe", decimals: 18, venue: "pancakeswap-v3" },

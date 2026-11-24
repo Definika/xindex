@@ -133,9 +133,9 @@ process.on("uncaughtException", (error) => {
 });
 
 const chain = { ...mainnet, rpcUrls: { default: { http: [RPC] } } };
-const pub = createPublicClient({ chain, transport: transport(RPC, { timeout: 120_000 }) });
-const test = createTestClient({ chain, mode: "anvil", transport: transport(RPC, { timeout: 120_000 }) });
-const wallet = createWalletClient({ chain, transport: transport(RPC, { timeout: 120_000 }) });
+const pub = createPublicClient({ chain, transport: transport(RPC, { timeout: 600_000 }) });
+const test = createTestClient({ chain, mode: "anvil", transport: transport(RPC, { timeout: 600_000 }) });
+const wallet = createWalletClient({ chain, transport: transport(RPC, { timeout: 600_000 }) });
 
 /// The receipt of `hash`, asked for until the local chain has it. viem's own wait reads a receipt again only when
 /// the block number moves, every four seconds at best; a chain that mines each transaction as it arrives moves it
@@ -342,7 +342,8 @@ const unitsAt = (coins, weights, value) =>
   const refused = await pub
     .simulateContract({ account: creator, address: factory, abi: FACTORY.abi, functionName: "createIndex", args: ["OFF", "OFF", specs, params] })
     .then(() => null, (error) => error);
-  ok(refused !== null && /OffWeights/.test(String(refused?.shortMessage ?? refused?.message ?? refused)), "a creation off its weights at Pyth's prices is refused (OffWeights)");
+  const why = refused === null ? "it was accepted" : String(refused.cause?.data?.errorName ?? refused.shortMessage ?? refused.message ?? refused);
+  ok(/OffWeights/.test(why) || /OffWeights/.test(String(refused?.message ?? "")), `a creation off its weights at Pyth's prices is refused (OffWeights; got: ${why.split("\n")[0]})`);
 }
 
 /// An index of `coins` with `weights` (bps), `shares` of it issued in kind, each share worth `value` dollars.
@@ -453,6 +454,8 @@ const keeper = spawn(process.execPath, ["keeper.mjs"], {
     MIN_PROFIT_USD: "1",
     MIN_TVL_USD: "1000",
     KEEPER_DEBUG: "1",
+    // A fork with a cold cache fetches every new slot from upstream: slower than any RPC the keeper meets live.
+    RPC_TIMEOUT_MS: "120000",
     NEEDS_FILE,
     // JUP's and APT's copies left the list, and the keeper's catalogue, on 2026-11-18, and Ondo's NVDAon on
     // 2026-11-21; they stay this test's coins, priced as an operator prices a coin the catalogue does not hold.
@@ -481,7 +484,8 @@ keeper.on("exit", (code) => {
 });
 
 /// Waits until the keeper has handled the chain's head, including any block its own transactions mined.
-async function settle(timeoutMs = 240_000) {
+// A cold fork answers the first rounds slowly: each is waited for up to fifteen minutes.
+async function settle(timeoutMs = 900_000) {
   const end = Date.now() + timeoutMs;
   for (;;) {
     const at = await pub.getBlockNumber({ cacheTime: 0 });
@@ -508,8 +512,17 @@ const proposals = async (index) => read(index, HUB, "proposalCount");
 const nonceOf = async (index) => read(index, HUB, "rebalanceNonce");
 const logged = (text) => logLines.some((l) => l.includes(text));
 /// Whether the board asks for `coin` under `index`'s proposal `proposal`, reported at `source`.
+/// A board not written yet, before the keeper's first round that looked at everything, asks for nothing.
+const board = () => {
+  try {
+    return JSON.parse(readFileSync(NEEDS_FILE, "utf8"));
+  } catch (error) {
+    if (error.code === "ENOENT") return { needs: [] };
+    throw error;
+  }
+};
 const onBoard = (index, proposal, source, coin) =>
-  JSON.parse(readFileSync(NEEDS_FILE, "utf8")).needs.some(
+  board().needs.some(
     (n) => n.key.toLowerCase() === `${index}:${proposal}`.toLowerCase() && n.source === source && n.token === coin.a.toLowerCase() && BigInt(n.amount) > 0n,
   );
 
@@ -608,10 +621,11 @@ for (const index of [LQ, MIX, SHR]) {
     `${names[index]} filled by the keeper at a bar of ${Number(s.bar) / 1e18}, its gain ${Number(s.gain) / 1e18}`,
   );
   // The hub valued the fill at Pyth's prices, read in the same transaction from the update the keeper posted.
-  ok(
-    s.call.functionName === "fill" && s.call.args[0].pythUpdate.length > 0 && s.value > 0n,
-    `${names[index]}'s fill carried Pyth's update and its fee (${s.value} wei)`,
-  );
+  const update = s.call.functionName === "fill" ? s.call.args[0].pythUpdate : [];
+  ok(update.length > 0, `${names[index]}'s fill carried Pyth's update (${update.length} of them)`);
+  // Pyth's fee is its contract's own: zero on Ethereum, BNB Chain and Base on 2026-11-24, whatever it is then.
+  const fee = update.length ? await read(PYTH, pythAbi, "getUpdateFee", [update]) : -1n;
+  ok(s.value === fee, `and paid exactly Pyth's fee for it (${s.value} wei of ${fee})`);
 }
 const lq = await settlement(LQ);
 // `fill(AuctionFill)` since the keeper posts Pyth's update with it (2026-11-23): one struct, its routes a field.

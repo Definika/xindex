@@ -323,6 +323,36 @@ def boundary(rng):
         return pair
 
 
+def edges():
+    """RZ-33: settlements whose amounts pass through a product above 2^256, which only a full-precision mulDiv carries
+    (shares times units times scale, with a supply from 2e30 to 1e40 on legs near the 96-bit ceiling), and a leg growing
+    to exactly UINT96_MAX, which settles, or one raw unit past it, which overflows. From a generator of their own, so no
+    other vector moves."""
+    rng = random.Random(SEED + 4)
+    out = []
+    while len(out) < 24:
+        n = rng.choice([2, 3, 4])
+        weights = partition(rng, n)
+        units = [rng.randrange(UINT96_MAX // 2 + 1, UINT96_MAX) for _ in range(n)]
+        supply = log_uniform(rng, 2 * 10**30, 10**40)
+        new_units = trade(rng, units, weights, 0, 0.05)
+        over = len(out) % 3 == 2
+        new_units[rng.randrange(n)] = UINT96_MAX + (1 if over else 0)
+        first = first_second(units, new_units, weights)
+        elapsed = first if first is not None else AUCTION_DURATION
+        v = with_outcome(dict(kind="edge", elapsed=elapsed, supply=supply, scale=WAD, units=units, newUnits=new_units,
+                              weights=weights, keepMask=0))
+        if v["outcome"] != (OVERFLOW if over else SETTLES):
+            continue
+        out.append(v)
+    wide = [v for v in out if v["outcome"] == SETTLES and any(
+        v["supply"] * abs(b - a) * v["scale"] >= 2**256 for a, b in zip(v["units"], v["newUnits"]))]
+    assert len(wide) >= 12, ("settlements past 2^256", len(wide))
+    assert all(UINT96_MAX in v["newUnits"] for v in out if v["outcome"] == SETTLES), "each settles a leg at the ceiling"
+    assert sum(v["outcome"] == OVERFLOW and v["badUnits"] == UINT96_MAX + 1 for v in out) >= 6
+    return out
+
+
 def with_outcome(v):
     r = settle(v["elapsed"], v["supply"], v["scale"], v["units"], v["newUnits"], v["weights"], v["keepMask"])
     v = dict(v)
@@ -452,6 +482,7 @@ def main():
     vectors = [with_outcome(make(rng, kind)) for kind, count in plan for _ in range(count)]
     for _ in range(20):
         vectors.extend(with_outcome(v) for v in boundary(rng))
+    vectors.extend(edges())
     counts = dict(
         settles=sum(v["outcome"] == SETTLES for v in vectors),
         empty=sum(v["outcome"] == EMPTY for v in vectors),

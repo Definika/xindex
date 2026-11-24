@@ -214,6 +214,40 @@ test("CA-R2-09: spare stock is not sent to a chain whose wallet is short of gas"
   assert.deepEqual(kinds(funded), ["bridgeOut"], "at the reserve it goes");
 });
 
+test("CA-M14: a chain's own gas coin keeps twice the chain's gas minimum at home, never sold or bridged", () => {
+  const MIST = 10n ** 9n; // one SUI
+  const cfg = { ...CFG, gasMin: new Map([["sui", MIST]]) };
+  // The wallet's SUI is its gas as well: the signer reads both from the one balance.
+  const wallet = (held, over = {}) =>
+    plan(
+      round({
+        coins: [SUI],
+        prices: new Map([["SUI", 3]]),
+        cfg,
+        home: { coins: new Map([["SUI", held]]), floats: new Map([["sui", usdc(1_000)]]), gas: new Map([["sui", held]]), funding: new Map() },
+        ...over,
+      }),
+    );
+  const spare = wallet(1_000n * MIST);
+  assert.deepEqual(kinds(spare), ["sell"]);
+  assert.equal(spare.actions[0].amount, 998n * MIST, "nobody needs it: all is sold but the 2 SUI the wallet's next moves pay their gas with");
+
+  const short = wallet(500n * MIST, { needs: new Map([[SUI.copy, 600n * MIST]]) });
+  assert.deepEqual(kinds(short), ["bridgeIn", "buy"]);
+  assert.equal(short.actions[0].amount, 498n * MIST, "needed: brought in, all but the reserve");
+  assert.equal(short.actions[1].amountOut, 660n * MIST - 498n * MIST, "and the rest of the need and its buffer bought");
+
+  assert.deepEqual(kinds(wallet(40n * MIST)), ["sell"], "38 SUI, $114, above the reserve: sold");
+  assert.equal(wallet(40n * MIST).actions[0].amount, 38n * MIST);
+  assert.deepEqual(kinds(wallet(2n * MIST + 1n)), [], "at the reserve, nothing leaves");
+  const unknown = wallet(1_000n * MIST, { cfg: CFG });
+  assert.deepEqual(kinds(unknown), [], "with no gas minimum known for the chain, none of its gas coin is sold or bridged");
+
+  // A coin that is not its chain's gas coin is sold whole, the chain's gas being another coin (BNB for XRP).
+  const xrp = plan(round({ cfg: { ...CFG, gasMin: new Map([["bsc", E18]]) }, home: { ...round().home, coins: new Map([["XRP", 300n * E18]]) } }));
+  assert.equal(xrp.actions[0].amount, 300n * E18);
+});
+
 test("CA-M13: a day of buys may cost RESTOCK_DAILY_USD at most, each one's loss bound included", () => {
   const cfg = { ...CFG, dailyUsd: 20_000, maxTransferUsd: 25_000 };
   const first = plan(round({ cfg, needs: new Map([[XRP.copy, 15_000n * E18]]), home: floats50k }));

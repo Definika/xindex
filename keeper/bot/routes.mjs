@@ -11,11 +11,14 @@ import { routeLossBps } from "./math.mjs";
 
 const ZERO = "0x0000000000000000000000000000000000000000";
 
-/// A chain's Uniswap V3, from its entry in `CHAINS`: the market the keeper's fills trade on there.
+/// A chain's Uniswap V3, from its entry in `CHAINS`: the market the keeper's fills trade on there, its float in the
+/// chain's own decimals (eighteen on BNB Chain), and `blockScale`, how many of the chain's blocks span one of
+/// Ethereum's, by which the re-quote and pool windows below are stretched to last the same time.
 export const marketOf = (chain) =>
   Object.freeze({
     usdc: chain.usdc,
-    usdcDecimals: 6,
+    usdcDecimals: chain.usdcDecimals ?? 6,
+    blockScale: chain.blockMs ? BigInt(Math.max(1, Math.ceil(12_000 / chain.blockMs))) : 1n,
     weth: chain.weth,
     v3Factory: chain.v3Factory,
     quoterV2: chain.quoterV2,
@@ -44,6 +47,8 @@ export const path = (...hops) =>
 /// `isRevert(error)`; `abi` is `{v3Factory, v3Pool, quoter}`; `market` names the pools and the quoter, and "USDC" below
 /// is its `usdc`, in `usdcDecimals`.
 export function createRoutes(chain, cfg, abi, market = ETHEREUM_MARKET) {
+  const routeRequote = ROUTE_REQUOTE_BLOCKS * (market.blockScale ?? 1n);
+  const poolRefresh = POOL_REFRESH_BLOCKS * (market.blockScale ?? 1n);
   const candidatesOf = new Map(); // token -> {paths, block}: paths whose pools exist and are initialized, read at block
   // `${index}:${proposal}:${token}:${side}` -> {route, amount, usdc, block}, for one auction or request: the route
   // chosen (null when none), and the best quote at `amount`, in USDC's raw units, at `block`; `usdc` is null when no
@@ -53,7 +58,7 @@ export function createRoutes(chain, cfg, abi, market = ETHEREUM_MARKET) {
   async function candidates(token, blockNumber) {
     const t = token.toLowerCase();
     const known = candidatesOf.get(t);
-    if (known && BigInt(blockNumber) - known.block < POOL_REFRESH_BLOCKS) return known.paths;
+    if (known && BigInt(blockNumber) - known.block < poolRefresh) return known.paths;
     const options = market.directFees.map((fee) => ({ pool: [token, market.usdc, fee], path: path(token, fee, market.usdc) }));
     if (t !== market.weth.toLowerCase()) {
       for (const fee of market.viaWethFees) {
@@ -103,7 +108,7 @@ export function createRoutes(chain, cfg, abi, market = ETHEREUM_MARKET) {
     const k = `${key}:${token.toLowerCase()}:${side}`;
     const c = chosen.get(k);
     const age = c ? BigInt(blockNumber) - c.block : 0n;
-    if (c && c.route !== null && amount <= c.amount && age < ROUTE_REQUOTE_BLOCKS) return c.route;
+    if (c && c.route !== null && amount <= c.amount && age < routeRequote) return c.route;
     if (c && c.route === null && amount <= c.amount && age < REQUOTE_BLOCKS) return null;
     if (c && c.route !== null) {
       const usdc = await quote(side, c.route, amount, blockNumber);

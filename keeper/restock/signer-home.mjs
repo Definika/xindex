@@ -11,6 +11,7 @@
 // (Solana and Sui, PD-7).
 
 import { spawn } from "node:child_process";
+import { unitsOf } from "./plan.mjs";
 
 /// How long a move's transaction is watched before it is left to the next round's resume.
 const CONFIRM_SECONDS = 90;
@@ -21,6 +22,7 @@ export const evmWord = (address) => `0x${address.toLowerCase().replace(/^0x/, ""
 /// The signer at `path` as a request-answer channel: `ask(op, args)` resolves with the answer's result. The signer
 /// starts with `env` and nothing else of this process's environment, and starts again on the next request after it
 /// exits. Lines that are not answers are skipped: libraries print to stderr, but a stray line must not break it.
+/// `ask.close()` ends the signer.
 export function startSigner({ env, path, label = "signer", timeoutMs = 120_000 }) {
   let child = null;
   let next = 1;
@@ -72,7 +74,7 @@ export function startSigner({ env, path, label = "signer", timeoutMs = 120_000 }
       failAll(new Error(`the ${label} signer exited (${code})`));
     });
   }
-  return function ask(op, args = {}, ms = timeoutMs) {
+  function ask(op, args = {}, ms = timeoutMs) {
     if (!child) start();
     const id = next++;
     return new Promise((resolve, reject) => {
@@ -83,13 +85,31 @@ export function startSigner({ env, path, label = "signer", timeoutMs = 120_000 }
       pending.set(id, { resolve, reject, timer });
       child.stdin.write(`${JSON.stringify({ id, op, args })}\n`);
     });
+  }
+  /// Ends the signer, if one runs: its input is closed, so it answers what it was asked and exits (`signer-protocol.mjs`
+  /// serve), and one still running `graceMs` later is killed. Resolves once it has exited, with `{code, signal}`, or
+  /// null when none ran. A child whose pipes are open holds this process's event loop, so a `--once` run whose round
+  /// had started a signer never ended (CA-L7).
+  ask.close = (graceMs = 10_000) => {
+    const self = child;
+    if (!self) return Promise.resolve(null);
+    child = null;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => self.kill("SIGKILL"), graceMs);
+      self.once("exit", (code, signal) => {
+        clearTimeout(timer);
+        resolve({ code, signal });
+      });
+      self.stdin.end();
+    });
   };
+  return ask;
 }
 
 /// The home on chain `name` (a key of `coins.mjs` CHAINS, `def` its entry), through the signer at `signerPath` with
 /// `env`. `coins` are the coins served there; `floatId` the float's token as the chain names it; `verifyVaa` is
 /// Ethereum's core check, which vouches for the VAAs redeemed here too, the guardian set being the same (D5); `cfg` is
-/// the plan's `{minUsd}`.
+/// the plan's `{minUsd, gasMin}`.
 export function createSignerHome({ name, def, signerPath, env, coins, floatId, journal, cfg, verifyVaa, ask: given = null }) {
   const ask = given ?? startSigner({ env, path: signerPath, label: name });
   const mints = coins.map((c) => c.home);
@@ -133,10 +153,28 @@ export function createSignerHome({ name, def, signerPath, env, coins, floatId, j
     return { id, receipt: null };
   }
 
+  /// Whether `units` of coin `c` at `price` are a trade of RESTOCK_MIN_USD or more, counted in the coin's units as the
+  /// plan sizes one, not by their value recomputed in floats: a buy the plan sized at the minimum, in floored units, is
+  /// worth a millionth of a dollar under it that way, and was refused (CA-R2-12, RZ-22's on EVM). No price, no trade.
+  const atLeastMin = (units, c, price) => Number.isFinite(price) && price > 0 && units >= unitsOf(cfg.minUsd, c.decimals, price);
+
+  /// Refuses to sell or bridge `amount` of coin `c` when it is the chain's own gas coin (`isGas`) and the wallet would
+  /// keep less than the chain's gas minimum, or the chain has none: the plan keeps twice it back (`plan.mjs`
+  /// spendable), and this holds against the wallet's balance now, whatever the plan read (CA-M14).
+  async function keepGas(c, amount) {
+    if (!c.isGas) return;
+    const least = cfg.gasMin?.get(name);
+    const gas = await home.balance(null);
+    if (least === undefined || gas < amount + least) {
+      throw new Error(`${c.symbol}: ${amount} would leave the wallet ${gas - amount} of its gas coin, under its minimum ${least ?? "(none set)"}`);
+    }
+  }
+
   /// A swap through the signer in the largest batch, halving down to RESTOCK_MIN_USD, whose route pays the batch's
-  /// share of `minOut`: `{amount, usd, signed}` or null.
-  async function batch({ inputMint, outputMint, amount, minOut, usd }) {
-    for (let a = amount, m = minOut, u = usd; a > 0n && u >= cfg.minUsd; a /= 2n, m /= 2n, u /= 2) {
+  /// share of `minOut`: `{amount, usd, signed}` or null. The whole `amount` is tried when `whole` says it is a trade of
+  /// RESTOCK_MIN_USD or more (`atLeastMin`); only its halvings are held to the minimum by their value.
+  async function batch({ inputMint, outputMint, amount, minOut, usd, whole }) {
+    for (let a = amount, m = minOut, u = usd; a > 0n && (a === amount ? whole : u >= cfg.minUsd); a /= 2n, m /= 2n, u /= 2) {
       const r = await ask("buildSwap", { inputMint, outputMint, amount: String(a), minOut: String(m) });
       // A venue whose route takes a little less than asked says what it spends (Sui's aggregator).
       const spent = r.spent === undefined ? a : BigInt(r.spent);
@@ -159,23 +197,27 @@ export function createSignerHome({ name, def, signerPath, env, coins, floatId, j
       const b = await ask("balances", { mints: token === null ? [] : [token] });
       return BigInt(token === null ? b.gas : b.tokens[token]);
     },
-    /// Spends `a.amountIn` of the float for at least `a.minOut` of coin `c`, or the largest batch of it a route pays.
-    async buy(a, c) {
-      const pick = await batch({ inputMint: floatId, outputMint: c.home, amount: a.amountIn, minOut: a.minOut, usd: a.usd });
+    /// Spends `a.amountIn` of the float for at least `a.minOut` of coin `c`, at `price`, or the largest batch of it a
+    /// route pays.
+    async buy(a, c, price) {
+      const whole = atLeastMin(a.amountOut, c, price);
+      const pick = await batch({ inputMint: floatId, outputMint: c.home, amount: a.amountIn, minOut: a.minOut, usd: a.usd, whole });
       if (!pick) return null;
       await commit({ ...a, usd: pick.usd, amountIn: pick.amount }, pick.signed);
       return { usd: pick.usd };
     },
-    /// Sells `a.amount` of coin `c` for at least `a.minOut` of the float, or the largest batch a route pays.
+    /// Sells `a.amount` of coin `c`, at `price`, for at least `a.minOut` of the float, or the largest batch a route pays.
     async sell(a, c, price) {
+      await keepGas(c, a.amount);
       const usd = (Number(a.amount) / 10 ** c.decimals) * price;
-      const pick = await batch({ inputMint: c.home, outputMint: floatId, amount: a.amount, minOut: a.minOut, usd });
+      const pick = await batch({ inputMint: c.home, outputMint: floatId, amount: a.amount, minOut: a.minOut, usd, whole: atLeastMin(a.amount, c, price) });
       if (!pick) return null;
       await commit({ ...a, amount: pick.amount }, pick.signed);
       return { usd: pick.usd };
     },
     /// Bridges `a.amount` of coin `c` to `executor` (a word) on Ethereum, as a transfer with a payload.
     async bridgeIn(a, c, executor) {
+      await keepGas(c, a.amount);
       const signed = await ask("buildBridgeIn", { mint: c.home, amount: String(a.amount), executor });
       const { id, receipt } = await commit(a, signed);
       // A node that does not serve the landed transaction yet leaves the sequence to the next round (restock.mjs).
@@ -203,5 +245,7 @@ export function createSignerHome({ name, def, signerPath, env, coins, floatId, j
     /// Takes back the rent a burn's event account holds (Solana), with the burn's `message` and `attestation`.
     reclaim: (eventAccount, message, attestation) => ask("reclaim", { eventAccount, message, attestation }),
     resume,
+    /// Ends the signer (`startSigner`), so that nothing of it holds this process once its last round is over (CA-L7).
+    close: (graceMs) => ask.close?.(graceMs) ?? Promise.resolve(null),
   });
 }

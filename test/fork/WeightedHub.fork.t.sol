@@ -631,8 +631,10 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         vm.prank(wbtc.owner());
         wbtc.pause();
 
+        // WBTC's pause reverts with no data, and the hub relays it as it is: the redeem stops on WBTC's own refusal and
+        // nothing else (XA-34, where a bare expectRevert took any revert, an unrelated one included).
         vm.prank(alice);
-        vm.expectRevert();
+        vm.expectRevert(bytes(""));
         index.redeem(1e18, alice);
         vm.prank(alice);
         index.redeemSkipping(1e18, alice, 2); // WBTC is component 1

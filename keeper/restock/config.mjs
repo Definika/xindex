@@ -20,7 +20,8 @@ const CHAIN_SETTINGS = Object.freeze({
 });
 
 /// The least gas each home chain's wallet keeps, in its gas coin's units: below it nothing is sent there. On the chains
-/// whose coin is the gas coin, twice this is never sold or bridged.
+/// whose coin is the gas coin, twice this is never sold or bridged (`plan.mjs` spendable, CA-M14), and the signer
+/// refuses a sale or a transfer of it that would leave less than this (`signer-home.mjs`).
 export const GAS_MIN = Object.freeze({
   bsc: 10n ** 16n, // 0.01 BNB
   avalanche: 10n ** 17n, // 0.1 AVAX

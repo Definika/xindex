@@ -30,7 +30,7 @@ import { createSolanaHome } from "./restock/solana.mjs";
 import { createSuiHome } from "./restock/sui.mjs";
 import { createAptosHome } from "./restock/aptos.mjs";
 import { createAlgorandHome } from "./restock/algorand.mjs";
-import { createJournal, fileStore, lockJournal, movedOn, resumeOrder } from "./restock/journal.mjs";
+import { createJournal, fileStore, lockJournal, movedOn, rentToReclaim, resumeOrder } from "./restock/journal.mjs";
 import { plan } from "./restock/plan.mjs";
 
 const ONCE = process.argv.includes("--once");
@@ -222,12 +222,12 @@ async function act(a, price) {
 }
 
 /// CCTP V2 lets a Solana burn's event account be closed for its rent five days after the burn; the journal keeps a
-/// received burn seven days, so the reclaim lands in between, with the burn's message and attestation.
+/// received burn until its rent is reclaimed (CA-R2-13), with the burn's message and attestation.
 const RECLAIM_AFTER_SECONDS = 5 * 86_400 + 600;
 
 async function reclaimRent() {
   const now = Math.floor(Date.now() / 1000);
-  const due = (m) => m.kind === "sweep" && m.stage === "received" && m.data.eventAccount && !m.data.reclaimed && now - m.at >= RECLAIM_AFTER_SECONDS;
+  const due = (m) => rentToReclaim(m) && now - m.at >= RECLAIM_AFTER_SECONDS;
   for (const m of journal.find(due)) {
     const h = homes[m.chain];
     if (!h?.reclaim) continue;
@@ -298,3 +298,7 @@ while (!stopping) {
   if (ONCE) break;
   for (let s = 0; s < cfg.intervalSeconds && !stopping; s++) await new Promise((r) => setTimeout(r, 1000));
 }
+// The signers end with the last round, a `--once` run's one or a stopped service's last: a signer's open pipes kept
+// the process alive after it, and a scheduler never had the round's outcome (CA-L7). The exit code is the round's
+// (CA-R2-20).
+await Promise.all(Object.values(homes).map((h) => h.close?.()));

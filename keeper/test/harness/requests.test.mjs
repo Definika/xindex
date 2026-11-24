@@ -10,6 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { decodeFunctionData } from "viem";
 import { ABI } from "../../bot/chain.mjs";
+import { CHAINS, MAINNET } from "../../bot/config.mjs";
 import { priceKey } from "../../bot/hermes.mjs";
 import { batchHash, createRequestFiller, requestHash } from "../../bot/requests.mjs";
 
@@ -28,7 +29,9 @@ const UNITS = [10n ** 16n, 50_000n];
 const DECIMALS = [18, 8];
 const PRICES = [2000, 60_000];
 
-function world({ shareStockUsd = 0, minProfitUsd = 5, stock = () => 0n, unrouted = [], unreadable = [], indexes = [INDEX] } = {}) {
+function world({ shareStockUsd = 0, minProfitUsd = 5, stock = () => 0n, unrouted = [], unreadable = [], indexes = [INDEX], on = { ...MAINNET, usdc: USDC } } = {}) {
+  // Dollars in the float's raw units: six decimals, or eighteen on BNB Chain, where both stablecoins have them.
+  const usd = (x) => BigInt(Math.round(x * 1e6)) * 10n ** BigInt(on.usdcDecimals - 6);
   const requests = new Map();
   const state = { shares: 0n, shareAllowance: 0n, reverting: new Set(), calls: [], now: 1_000_000n };
   const L = () => ({ number: 100n, timestamp: state.now, baseFeePerGas: 10n ** 8n, gasUsed: 15_000_000n, gasLimit: 30_000_000n });
@@ -71,6 +74,7 @@ function world({ shareStockUsd = 0, minProfitUsd = 5, stock = () => 0n, unrouted
     multicall: async (calls) => calls.map((c) => ({ status: "success", result: answer(c) })),
     call: async ({ functionName, args }) => settle(functionName, args),
     isRevert: (error) => error?.reverted === true,
+    l1Fee: async () => 0n, // Ethereum charges none
   };
   const hermes = {
     trusted: async (ids) =>
@@ -90,11 +94,12 @@ function world({ shareStockUsd = 0, minProfitUsd = 5, stock = () => 0n, unrouted
   const needs = { report: (key, source, coins) => (coins.length === 0 ? board.delete(key) : board.set(key, coins)) };
   const filler = createRequestFiller({
     chain,
-    cfg: { executor: EXECUTOR, factory: addr("fa"), chain: { usdc: USDC }, slippageBps: 30, minProfitUsd, shareStockUsd },
+    cfg: { executor: EXECUTOR, factory: addr("fa"), chain: on, slippageBps: 30, minProfitUsd, shareStockUsd },
     hermes,
     routes,
     requests: REQUESTS,
     pyth: addr("b7"),
+    stableDecimals: new Map([[on.usdc.toLowerCase(), on.usdcDecimals]]),
     staticsOf: async (index) => {
       if (unreadable.includes(index)) throw new Error("a decimals read failed");
       return { tokens: [ETH, BTC], ids: IDS, decimals: DECIMALS };
@@ -105,7 +110,7 @@ function world({ shareStockUsd = 0, minProfitUsd = 5, stock = () => 0n, unrouted
   let next = 0n;
   const open = (over) => {
     next += 1n;
-    requests.set(next, { requester: addr("c0"), deadline: state.now + 3600n, open: true, rebalanceNonce: 7, index: INDEX, stable: USDC, ...over });
+    requests.set(next, { requester: addr("c0"), deadline: state.now + 3600n, open: true, rebalanceNonce: 7, index: INDEX, stable: on.usdc, ...over });
     return next;
   };
   return {
@@ -118,6 +123,7 @@ function world({ shareStockUsd = 0, minProfitUsd = 5, stock = () => 0n, unrouted
     scan: () => filler.scan(L(), indexes),
     best: () => filler.best(L(), indexes, 2000, 10n ** 8n, 100n * 10n ** 9n),
     filler,
+    usd,
   };
 }
 
@@ -354,4 +360,22 @@ test("RZ-13: a request forgotten on its fill's receipt is read once more, and co
   assert.equal(await w.best(), null);
   await w.scan();
   assert.equal(await w.best(), null);
+});
+
+test("on BNB Chain a request in its eighteen-decimal stablecoin is valued in those decimals, with three seconds to land", async () => {
+  const bnb = CHAINS[56];
+  const w = world({ on: bnb, minProfitUsd: 1 });
+  // $60 for one share worth $50: about $10 over the limit, before gas. Read at six decimals it would be a trillion.
+  w.mint(60, 1);
+  await w.scan();
+  const pick = await w.best();
+  assert.ok(pick, w.logs.join("\n"));
+  assert.ok(pick.profit > 5 && pick.profit < 10, `profit ${pick.profit} USD`);
+  assert.equal(pick.usdcDelta, w.usd(10), "the float's change in eighteen decimals");
+  const { functionName, args } = sent(pick);
+  assert.equal(functionName, "fillMint");
+  assert.equal(args[0].deadline, w.state.now + 3n, "its deadline is BNB Chain's window, not Ethereum's next block");
+  assert.equal(pick.deadline, w.state.now + 3n);
+  // Simulated at the earliest second it can land: the same second, where the next block may already be.
+  assert.equal(w.state.calls.at(-1).f.deadline, w.state.now + 3n);
 });

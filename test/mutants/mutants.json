@@ -2628,6 +2628,118 @@
     "runner": "node"
   },
   {
+    "id": "C44",
+    "what": "the plan may sell or bridge the whole of a chain's own gas coin, its reserve included (CA-M14)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/restock/plan.mjs",
+    "test": "keeper/test/unit/restock-plan.test.mjs",
+    "edits": [
+      {
+        "old": "const atHome = spendable(c, home.coins.get(c.symbol) ?? 0n, cfg.gasMin);",
+        "new": "const atHome = home.coins.get(c.symbol) ?? 0n;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C45",
+    "what": "with no gas minimum known for its chain, all of a gas coin may be sold or bridged (CA-M14)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/restock/plan.mjs",
+    "test": "keeper/test/unit/restock-plan.test.mjs",
+    "edits": [
+      {
+        "old": "  if (!gasMin.has(c.chain)) return 0n;\n",
+        "new": "  if (!gasMin.has(c.chain)) return held;\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C46",
+    "what": "the signer home sells or bridges a gas coin whatever gas the wallet would keep (CA-M14)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/restock/signer-home.mjs",
+    "test": "keeper/test/unit/restock-signer-home.test.mjs",
+    "edits": [
+      {
+        "old": "if (least === undefined || gas < amount + least) {",
+        "new": "if (least === undefined) {"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C47",
+    "what": "the signer home holds a buy's whole to the minimum by its value in floats, which a plan-sized minimum buy misses by a millionth (CA-R2-12)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/restock/signer-home.mjs",
+    "test": "keeper/test/unit/restock-signer-home.test.mjs",
+    "edits": [
+      {
+        "old": "a > 0n && (a === amount ? whole : u >= cfg.minUsd);",
+        "new": "a > 0n && u >= cfg.minUsd;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C48",
+    "what": "the signer home tries a buy's whole however far under the minimum it is (CA-R2-12)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/restock/signer-home.mjs",
+    "test": "keeper/test/unit/restock-signer-home.test.mjs",
+    "edits": [
+      {
+        "old": "a > 0n && (a === amount ? whole : u >= cfg.minUsd);",
+        "new": "a > 0n && (a === amount || u >= cfg.minUsd);"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C49",
+    "what": "the journal prunes a received Solana burn a week on, its rent still to reclaim (CA-R2-13)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/restock/journal.mjs",
+    "test": "keeper/test/unit/restock-journal.test.mjs",
+    "edits": [
+      {
+        "old": "settled(m) && m.updatedAt < before && !rentToReclaim(m));",
+        "new": "settled(m) && m.updatedAt < before);"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C50",
+    "what": "closing a signer leaves its input open, so it never exits and holds a `--once` run alive (CA-L7)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/restock/signer-home.mjs",
+    "test": "keeper/test/unit/restock-signer-home.test.mjs",
+    "edits": [
+      {
+        "old": "      self.stdin.end();\n    });\n  };\n",
+        "new": "    });\n  };\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C51",
+    "what": "restock.mjs leaves its signers running after its loop (CA-L7)",
+    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "file": "keeper/restock.mjs",
+    "test": "keeper/test/unit/restock-signer-home.test.mjs",
+    "edits": [
+      {
+        "old": "await Promise.all(Object.values(homes).map((h) => h.close?.()));\n",
+        "new": "\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
     "id": "Z3",
     "what": "a receipt that could not be read counts as no receipt: the fill is scored as replaced (RZ-6)",
     "origin": "audit/2026-10-31-red-team-ii.md",
@@ -2649,8 +2761,8 @@
     "test": "keeper/test/unit/math.test.mjs",
     "edits": [
       {
-        "old": "profitUsd({ usdcDelta: usdcFloor({ simDelta, minProfitUsd, gasUsd, inventoryUsd, routedVolumeUsdc, slippageBps }), inventoryUsd, gasUsd });",
-        "new": "profitUsd({ usdcDelta: simDelta, inventoryUsd, gasUsd });"
+        "old": "    usdcDelta: usdcFloor({ simDelta, minProfitUsd, gasUsd, inventoryUsd, routedVolumeUsdc, slippageBps, decimals }),\n",
+        "new": "    usdcDelta: simDelta,\n"
       }
     ],
     "runner": "node"
@@ -3682,8 +3794,8 @@
     "test": "keeper/test/unit/math.test.mjs",
     "edits": [
       {
-        "old": "  (Number(used * (nextBase + tip) + value) / 1e18) * ethUsd;",
-        "new": "  (Number(used * (nextBase + tip)) / 1e18) * ethUsd;"
+        "old": "  (Number(used * (nextBase + tip) + value + l1Fee) / 1e18) * ethUsd;",
+        "new": "  (Number(used * (nextBase + tip) + l1Fee) / 1e18) * ethUsd;"
       }
     ],
     "runner": "node"
@@ -4045,8 +4157,8 @@
     "test": "keeper/test/unit/routes.test.mjs",
     "edits": [
       {
-        "old": "c.route !== null && amount <= c.amount && age < ROUTE_REQUOTE_BLOCKS",
-        "new": "c.route !== null && age < ROUTE_REQUOTE_BLOCKS"
+        "old": "c.route !== null && amount <= c.amount && age < routeRequote",
+        "new": "c.route !== null && age < routeRequote"
       }
     ],
     "runner": "node"
@@ -4092,5 +4204,130 @@
       }
     ],
     "runner": "node"
+  },
+  {
+    "id": "CH1",
+    "what": "a fill is priced at its deadline, where the bar is lowest, and lands earlier against a higher one",
+    "origin": "keeper/README.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/chains.test.mjs",
+    "edits": [
+      {
+        "old": "return { at: timestamp + step, by: timestamp + BigInt(chain.fillWindowSeconds) };",
+        "new": "return { at: timestamp + BigInt(chain.fillWindowSeconds), by: timestamp + BigInt(chain.fillWindowSeconds) };"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "CH2",
+    "what": "dollars become the float's raw units at six decimals whatever its own, a trillionth on BNB Chain",
+    "origin": "keeper/README.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/chains.test.mjs",
+    "edits": [
+      {
+        "old": "return BigInt(Math.ceil(usd * 1e6)) * 10n ** BigInt(decimals - 6);",
+        "new": "return BigInt(Math.ceil(usd * 1e6));"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "CH3",
+    "what": "a request's stablecoin is counted at six decimals, BNB Chain's eighteen-decimal escrow at a trillion dollars",
+    "origin": "keeper/README.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/chains.test.mjs",
+    "edits": [
+      {
+        "old": "const stable = (x) => Number(x) / 10 ** stableDecimals;",
+        "new": "const stable = (x) => Number(x) / 1e6;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "CH4",
+    "what": "Base's L1 data fee is left out of what a fill costs",
+    "origin": "keeper/README.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/chains.test.mjs",
+    "edits": [
+      {
+        "old": "(Number(used * (nextBase + tip) + value + l1Fee) / 1e18) * ethUsd;",
+        "new": "(Number(used * (nextBase + tip) + value) / 1e18) * ethUsd;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "CH5",
+    "what": "a strike lapses after Ethereum's count of blocks on every chain, a 27th of an hour on BNB Chain",
+    "origin": "keeper/README.md",
+    "file": "keeper/bot/backoff.mjs",
+    "test": "keeper/test/unit/chains.test.mjs",
+    "edits": [
+      {
+        "old": "    this.lapseBlocks *= k;\n",
+        "new": ""
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "CH6",
+    "what": "a chosen route serves 25 blocks on every chain, eleven seconds on BNB Chain",
+    "origin": "keeper/README.md",
+    "file": "keeper/bot/routes.mjs",
+    "test": "keeper/test/unit/chains.test.mjs",
+    "edits": [
+      {
+        "old": "const routeRequote = ROUTE_REQUOTE_BLOCKS * (market.blockScale ?? 1n);",
+        "new": "const routeRequote = ROUTE_REQUOTE_BLOCKS;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "CH7",
+    "what": "a replacement is bumped every block on every chain",
+    "origin": "keeper/README.md",
+    "file": "keeper/bot/nonce.mjs",
+    "test": "keeper/test/unit/chains.test.mjs",
+    "edits": [
+      {
+        "old": "f.targetBlock = blockNumber + this.landBlocks;",
+        "new": "f.targetBlock = blockNumber + 1;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "CH8",
+    "what": "every chain's tip defaults to Ethereum's 2 gwei",
+    "origin": "keeper/README.md",
+    "file": "keeper/bot/config.mjs",
+    "test": "keeper/test/unit/chains.test.mjs",
+    "edits": [
+      {
+        "old": "PRIORITY_FEE_GWEI: named?.priorityFeeGwei ?? \"2\" };",
+        "new": "PRIORITY_FEE_GWEI: \"2\" };"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "V25",
+    "what": "a backing is shares times units times scale in 256 bits, not mulDiv's 512, so a supply past 1.5e30 on a leg near the 96-bit ceiling overflows (RZ-33)",
+    "origin": "audit/2026-10-31-red-team-ii.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "return Math.mulDiv(shares, units * scale, SHARE_UNIT * WAD, rounding);",
+        "new": "return rounding == Math.Rounding.Ceil ? (shares * units * scale + SHARE_UNIT * WAD - 1) / (SHARE_UNIT * WAD) : shares * units * scale / (SHARE_UNIT * WAD);"
+      }
+    ]
   }
 ]

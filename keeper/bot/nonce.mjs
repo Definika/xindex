@@ -17,12 +17,16 @@ export const MAX_REPLACEMENTS = 10;
 export const MAX_STARTUP_CLEARS = 4;
 
 export class TxTracker {
-  /// `feeCap`, in wei, bounds every replacement's fees (MAX_FEE_GWEI); null leaves them unbounded.
-  constructor(io, log = () => {}, { feeCap = null, maxReplacements = MAX_REPLACEMENTS } = {}) {
+  /// `feeCap`, in wei, bounds every replacement's fees (MAX_FEE_GWEI); null leaves them unbounded. `landBlocks` is how
+  /// many blocks a transaction is given to land before it is replaced: one on Ethereum, a few seconds' worth where
+  /// blocks come every half second or faster (BNB Chain, Base), so a replacement is not bumped every block.
+  constructor(io, log = () => {}, { feeCap = null, maxReplacements = MAX_REPLACEMENTS, landBlocks = 1 } = {}) {
+    if (!Number.isInteger(landBlocks) || landBlocks < 1) throw new Error(`not a number of blocks: ${landBlocks}`);
     this.io = io;
     this.log = log;
     this.feeCap = feeCap;
     this.maxReplacements = maxReplacements;
+    this.landBlocks = landBlocks;
     this.inFlight = null;
     // Nonces below this may be cleared when the node reports them pending: those it held at startup, and one whose
     // send failed in a way that leaves its outcome unknown. Null when there are none (XS-12).
@@ -121,7 +125,7 @@ export class TxTracker {
       // The fees rise either way, so a refused replacement is retried higher at the next block.
       f.tx = cancel;
       f.cancelling = true;
-      f.targetBlock = blockNumber + 1;
+      f.targetBlock = blockNumber + this.landBlocks;
       if (hash !== null && !f.hashes.includes(hash)) f.hashes.push(hash);
       this.log(`${f.label} nonce ${f.nonce} missed its block: replacing at ${fees.maxPriorityFeePerGas} wei tip`);
     }

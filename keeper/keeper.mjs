@@ -36,7 +36,6 @@ import { createRequestFiller } from "./bot/requests.mjs";
 import { createRoutes, marketOf } from "./bot/routes.mjs";
 import * as U from "./bot/units.mjs";
 
-const START_EVERY_BLOCKS = 25n;
 const START_COOLDOWN = 86_400n; // a start of ours that nobody filled is not repeated for a day
 const NOT_ASKED = " (not asked of the restock: at its best price it cannot pay MIN_PROFIT_USD, RY-8)";
 const HERMES_MS = 5_000;
@@ -55,13 +54,24 @@ const ONCE_HEAD_WAIT_MS = 60_000; // how long --once waits for a block it can re
 
 const log = (...args) => console.log(new Date().toISOString(), ...args);
 const cfg = parseConfig(process.env);
+// Windows kept in blocks are Ethereum's: on a chain whose blocks come faster they span as many more blocks and the
+// same time (M.blockScale). Every 25 of Ethereum's blocks, five minutes, the starts and the requests are looked at.
+const SCALE = M.blockScale(cfg.chain);
+const START_EVERY_BLOCKS = 25n * SCALE;
+// How many blocks a transaction sent now may take to land, its deadline's worth: one on Ethereum (M.landing).
+const LAND_BLOCKS = M.blocksIn(cfg.chain.fillWindowSeconds, cfg.chain);
+/// The earliest second a fill sent at block L can land at, which it is priced at, and its deadline.
+const land = (L) => M.landing(L.timestamp, cfg.chain);
+/// Whether the head has moved on from L by as many blocks as a fill priced at L may take to land: then that fill would
+/// land past its deadline, and is priced again instead of sent.
+const passed = async (L) => (await chain.blockNumber()) - L.number >= LAND_BLOCKS;
 const chain = createChain(cfg);
 const hermes = createHermes({ url: cfg.hermesUrl, apiKey: cfg.pythApiKey });
 const routes = createRoutes(chain, cfg, ABI, marketOf(cfg.chain));
 const tip = M.gweiToWei(cfg.priorityFeeGwei);
 const feeCap = M.gweiToWei(cfg.maxFeeGwei);
-const tracker = new TxTracker(chain.txIo, log, { feeCap });
-const reverted = revertedFills(); // `index:proposal` -> fills that reverted on chain (XS-4)
+const tracker = new TxTracker(chain.txIo, log, { feeCap, landBlocks: Number(LAND_BLOCKS) });
+const reverted = revertedFills(SCALE); // `index:proposal` -> fills that reverted on chain (XS-4)
 // The coins fills are short of, for the restock service, written whole to a temporary file and renamed into place.
 const needs = cfg.needsFile
   ? createNeeds({
@@ -88,7 +98,7 @@ let indexes = [];
 let lastRefresh = null;
 let lastStartCheck = null;
 let lastRequestScan = null;
-let ethUsd = null;
+let ethUsd = null; // the gas coin's price: ETH's, or BNB's on BNB Chain
 let stopping = false;
 
 function say(index, reason) {
@@ -98,7 +108,10 @@ function say(index, reason) {
 }
 
 /// What never changes about `index`: its tokens, each one's decimals, read from the token, and the Pyth id the keeper
-/// values it at, null for a coin outside its catalogue, which it leaves alone.
+/// values it at, null for a coin outside its catalogue, which it leaves alone. Where the chain's catalogue is the
+/// factory's (`feedsFromFactory`, BNB Chain and Base), a token's id is its feed there, the very one its hubs check a
+/// fill against, and only a token's own price (`FeedKind.Token`) counts: a vault's or a multiplier token's feed prices
+/// a share the bot cannot turn into the token's value, so such a leg is left alone, as a share-priced one is (RX-2).
 async function staticsOf(index, blockNumber) {
   if (!statics.has(index)) {
     const tokens = await chain.read(index, ABI.hub, "componentTokens", [], blockNumber);
@@ -107,7 +120,16 @@ async function staticsOf(index, blockNumber) {
       blockNumber,
     );
     if (decimals.some((r) => r.status !== "success")) throw new Error("a decimals read failed");
-    const ids = tokens.map((t) => cfg.priceIds[t.toLowerCase()] ?? null);
+    let feeds = tokens.map(() => null);
+    if (cfg.chain.feedsFromFactory) {
+      const read = await chain.multicall(
+        tokens.map((t) => ({ address: cfg.factory, abi: ABI.factory, functionName: "priceFeedOf", args: [t] })),
+        blockNumber,
+      );
+      if (read.some((r) => r.status !== "success")) throw new Error("a price feed read failed");
+      feeds = read.map((r) => (r.result.kind === M.TOKEN_FEED ? r.result.id.toLowerCase() : null));
+    }
+    const ids = tokens.map((t, i) => cfg.priceIds[t.toLowerCase()] ?? feeds[i]);
     // On a factory with an oracle, the reader a fill's legs are valued through and Pyth's contract behind it: both
     // immutable. Zero where the factory has none, and then no fill is checked against a price.
     const reader = await chain.read(index, ABI.hub, "PRICES", [], blockNumber);
@@ -162,15 +184,15 @@ async function refresh(L) {
     );
     indexes = found.filter((r) => r.status === "success").map((r) => r.result);
   }
-  // ETH's price values every fill's gas: Pyth's, confirmed by its contract, and fresh, or none, which fills nothing
-  // until the next refresh finds one (RY-7).
+  // The gas coin's price values every fill's gas (ETH's, or BNB's on BNB Chain): Pyth's, confirmed by its contract,
+  // and fresh, or none, which fills nothing until the next refresh finds one (RY-7).
   const eth = await hermes.trusted([cfg.chain.ethPriceId], Date.now() + HERMES_MS, pythChain(L));
   const p = eth.get(priceKey(cfg.chain.ethPriceId));
   ethUsd = M.freshPrice(p, L.timestamp, FRESH_SECONDS, MAX_CONF_BPS) ? M.priceUsd(p) : null;
   lastRefresh = L.number;
 }
 
-/// Pyth's contract on Ethereum as of block L, for {hermes.verified} and {hermes.trusted}.
+/// Pyth's contract on this chain as of block L, for {hermes.verified} and {hermes.trusted}.
 const pythChain = (L) => ({ read: chain.read, call: chain.call, pyth: setup.pyth, abi: ABI.pyth, blockNumber: L.number });
 
 /// The keeper's price of each leg of `st` it may move, as Pyth's {price, expo}, and null for the rest: a kept leg, a
@@ -189,12 +211,13 @@ async function pricesOf(st, L, keepMask) {
 /// What a fill on a factory with an oracle posts to Pyth and what Pyth's check will make of its legs: bot/pyth.mjs.
 const pythFor = createPythFor({ chain, hermes, factory: cfg.factory, abi: ABI, hermesMs: HERMES_MS, revertReason });
 
-/// The fill of `index` the keeper would send for block L+1: the units it names at its own prices to clear the bar
-/// then, and the settlement the hub previews for them. `eta`, when given, is written into the hub for the call, to see
+/// The fill of `index` the keeper would send at block L: the units it names at its own prices to clear the bar at the
+/// earliest second it can land (`land(L).at`), and the settlement the hub previews for them; its deadline is
+/// `land(L).by`. `eta`, when given, is written into the hub for the call, to see
 /// an auction that is not open yet. `maxSupply` is the most shares the fill accepts: the supply now, plus the streaming
 /// fee an accrual would mint by T, which leaves the settlement unchanged, plus SUPPLY_TOLERANCE_BPS (XS-4).
 async function preview(index, st, L, keepMask, eta) {
-  const T = L.timestamp + 12n;
+  const { at: T, by: deadline } = land(L);
   const over = { block: { number: L.number + 1n, time: T } };
   // A start of the keeper's posts no quote: the simulated auction is bound to no proposal's, an earlier one's or,
   // on an index never started, the empty one zero would name.
@@ -248,7 +271,7 @@ async function preview(index, st, L, keepMask, eta) {
   const maxSupply = M.withTolerance(supply + feeShares, cfg.supplyToleranceBps);
   // What the fill posts and pays Pyth, or nothing on a factory without an oracle.
   const update = pyth?.post ? { updates: pyth.updates, fee: pyth.fee } : { updates: [], fee: 0n };
-  return { T, moving, newUnits: named.newUnits, bar, gain, priceOf: (i) => prices[i], over, out, in: need, maxSupply, update };
+  return { T, deadline, moving, newUnits: named.newUnits, bar, gain, priceOf: (i) => prices[i], over, out, in: need, maxSupply, update };
 }
 
 /// The routes, stock change and routed volume of a settlement, or `short` naming coins the executor can neither buy
@@ -306,14 +329,14 @@ async function legs(index, st, sim, maxIn, L, key) {
     if (route) routeOf[i] = route;
     // A kept coin counts at no more than its best quote (XS-5).
     const quoteUsdc = out > 0n ? routes.quoteOf({ key, token, side: "sell", amount: out }) : null;
-    inventoryUsd += M.stockChangeUsd({ out, in: need, held: h, routed: route !== null, decimals: dec, price: p, quoteUsdc });
+    inventoryUsd += M.stockChangeUsd({ out, in: need, held: h, routed: route !== null, decimals: dec, price: p, quoteUsdc, usdcDecimals: cfg.chain.usdcDecimals });
   }
-  return { routes: routeOf, inventoryUsd, routedVolumeUsdc: M.usdToUsdcCeil(routedUsd), short, stocked };
+  return { routes: routeOf, inventoryUsd, routedVolumeUsdc: M.usdToUsdcCeil(routedUsd, cfg.chain.usdcDecimals), short, stocked };
 }
 
 /// Simulates the executor's fill of `sim` and prices it: profit after gas, and the transaction that would send it.
 async function priceFill(index, sim, leg, maxIn, L) {
-  if (ethUsd === null) return { skip: "no ETH price to value gas" };
+  if (ethUsd === null) return { skip: "no price of the gas coin to value gas" };
   // The executor's fill, floored at `floor`: it posts Pyth's update first, for the fee the call carries.
   const fillOf = (floor) => [
     {
@@ -323,7 +346,7 @@ async function priceFill(index, sim, leg, maxIn, L) {
       maxAmountsIn: maxIn,
       maxSupply: sim.maxSupply,
       minUsdcDelta: floor,
-      deadline: sim.T,
+      deadline: sim.deadline,
       pythUpdate: sim.update.updates,
     },
   ];
@@ -344,9 +367,11 @@ async function priceFill(index, sim, leg, maxIn, L) {
   const gas = M.min(M.gasLimitFor(used), TX_GAS_CAP);
   const nextBase = M.nextBaseFee(L);
   if (nextBase + tip > feeCap) return { skip: `base fee ${M.weiToGwei(nextBase)} gwei above MAX_FEE_GWEI` };
-  // Pyth's fee is counted with the gas: both are ether the fill spends.
-  const gasUsd = M.fillCostUsd({ used, nextBase, tip, ethUsd, value: sim.update.fee });
-  const profit = M.profitUsd({ usdcDelta, inventoryUsd: leg.inventoryUsd, gasUsd });
+  // Pyth's fee is counted with the gas: both are the gas coin the fill spends, and so is Base's L1 data fee.
+  const l1Fee = await chain.l1Fee(encodeFunctionData({ abi: ABI.executor, functionName: "fill", args }), L.number);
+  const gasUsd = M.fillCostUsd({ used, nextBase, tip, ethUsd, value: sim.update.fee, l1Fee });
+  const decimals = cfg.chain.usdcDecimals;
+  const profit = M.profitUsd({ usdcDelta, inventoryUsd: leg.inventoryUsd, gasUsd, decimals });
   const bounds = {
     simDelta: usdcDelta,
     minProfitUsd: cfg.minProfitUsd,
@@ -354,6 +379,7 @@ async function priceFill(index, sim, leg, maxIn, L) {
     inventoryUsd: leg.inventoryUsd,
     routedVolumeUsdc: leg.routedVolumeUsdc,
     slippageBps: cfg.slippageBps,
+    decimals,
   };
   const floor = M.usdcFloor(bounds);
   const data = encodeFunctionData({ abi: ABI.executor, functionName: "fill", args: fillOf(floor) });
@@ -366,7 +392,7 @@ async function priceFill(index, sim, leg, maxIn, L) {
     maxPriorityFeePerGas: tip,
   };
   // `worst` is what the fill pays if the float ends at that floor: what a subsidy is charged at (RZ-16).
-  return { profit, worst: M.worstProfitUsd(bounds), usdcDelta, gasUsd, inventoryUsd: leg.inventoryUsd, tx, over: sim.over, deadline: sim.T };
+  return { profit, worst: M.worstProfitUsd(bounds), usdcDelta, gasUsd, inventoryUsd: leg.inventoryUsd, tx, over: sim.over, deadline: sim.deadline };
 }
 
 /// Whether `tx` runs within its own gas limit: the call again, with that limit, at L, as block L+1. A fill that fits
@@ -486,7 +512,7 @@ async function bestCase(index, key, source, L, keepMask = 0n) {
   const st = await staticsOf(index, L.number);
   let best;
   try {
-    best = await preview(index, st, L, keepMask, L.timestamp + 12n - setup.duration);
+    best = await preview(index, st, L, keepMask, land(L).at - setup.duration);
   } catch (error) {
     say(index, `${source === "start" ? "not starting" : "no restock ahead"}: ${revertReason(error)}`);
     return null;
@@ -508,7 +534,8 @@ async function evaluateStart(index, proposal, L) {
   if (priced.skip) return say(index, `not starting: ${priced.skip}`);
   // The start is this bot's own transaction: its gas, at the limit it is sent with, comes off what the fill it opens
   // would pay (RZ-14).
-  const startUsd = M.fillCostUsd({ used: M.START_GAS_LIMIT, nextBase: M.nextBaseFee(L), tip, ethUsd });
+  const startData = encodeFunctionData({ abi: ABI.hub, functionName: "startRebalance", args: [0n] });
+  const startUsd = M.fillCostUsd({ used: M.START_GAS_LIMIT, nextBase: M.nextBaseFee(L), tip, ethUsd, l1Fee: await chain.l1Fee(startData, L.number) });
   const profit = priced.profit - startUsd;
   if (profit < cfg.minProfitUsd) {
     return say(index, `not starting: best case pays ${profit.toFixed(2)} USD after the start's ${startUsd.toFixed(2)}`);
@@ -534,7 +561,7 @@ async function prestock(r, L) {
 /// should the best case not simulate. Nothing is asked when stock serves no leg.
 async function mayPay(index, st, L, keepMask, stocked, sim, best) {
   if (stocked.length === 0) return false;
-  const atBest = best ?? (await preview(index, st, L, keepMask, L.timestamp + 12n - setup.duration).catch(() => sim));
+  const atBest = best ?? (await preview(index, st, L, keepMask, land(L).at - setup.duration).catch(() => sim));
   const prices = st.ids.map((_, i) => atBest.priceOf(i));
   return M.settlementMarginUsd({ out: atBest.out, need: atBest.in, decimals: st.decimals, prices }) >= cfg.minProfitUsd;
 }
@@ -553,7 +580,7 @@ async function startChecks(L, open) {
     ]),
     L.number,
   );
-  const T = L.timestamp + 12n;
+  const T = land(L).at;
   const lead = BigInt(cfg.prestockLeadSeconds);
   const ready = [];
   const ahead = []; // auctions not open yet, whose needs go on the restock's board before they open
@@ -620,12 +647,12 @@ async function startChecks(L, open) {
   }
   // The start was priced for block L+1: once the head has moved on, the checks run again at the next block rather
   // than START_EVERY_BLOCKS later.
-  if ((await chain.blockNumber()) !== L.number) {
+  if (await passed(L)) {
     lastStartCheck = null;
     return log(go.index, "block passed before sending; next block");
   }
   log(go.index, `starting: best case pays ${go.profit.toFixed(2)} USD`);
-  await tracker.send(tx, { label: `start ${go.index}`, targetBlock: Number(L.number) + 1 });
+  await tracker.send(tx, { label: `start ${go.index}`, targetBlock: Number(L.number + LAND_BLOCKS) });
 }
 
 /// One block's work. Returns whether it looked at everything the needs board reports on: every open auction, the
@@ -685,7 +712,7 @@ async function onBlock(L) {
   if (await tracker.clearStuck(Number(L.number), nextBase, tip)) return false;
   if (lastRefresh === null || L.number - lastRefresh >= START_EVERY_BLOCKS) await refresh(L);
 
-  const T = L.timestamp + 12n;
+  const T = land(L).at;
   // With FILL_AUCTIONS off the bot neither fills nor starts an auction, so no auction is read as open.
   const pending = cfg.fillAuctions
     ? await chain.multicall(
@@ -722,12 +749,12 @@ async function onBlock(L) {
   } else if (best && !(await fitsItsGas(best.tx, L, best.over))) {
     say(best.index, `not filling: the fill does not run within its gas limit of ${best.tx.gas}`);
   } else if (best) {
-    if ((await chain.blockNumber()) !== L.number) {
+    if (await passed(L)) {
       log(best.index, "block passed before sending; next block");
       return false;
     }
-    log(best.index, `filling at a bar of ${best.bar.toFixed(6)}: profit ${best.profit.toFixed(2)} USD (float ${(Number(best.usdcDelta) / 1e6).toFixed(2)}, stock ${best.inventoryUsd.toFixed(2)}, gas ${best.gasUsd.toFixed(2)})`);
-    const sent = await tracker.send(best.tx, { label: `fill ${best.index} ${best.proposal}`, targetBlock: Number(L.number) + 1, deadline: best.deadline });
+    log(best.index, `filling at a bar of ${best.bar.toFixed(6)}: profit ${best.profit.toFixed(2)} USD (float ${M.usdcUsd(best.usdcDelta, cfg.chain.usdcDecimals).toFixed(2)}, stock ${best.inventoryUsd.toFixed(2)}, gas ${best.gasUsd.toFixed(2)})`);
+    const sent = await tracker.send(best.tx, { label: `fill ${best.index} ${best.proposal}`, targetBlock: Number(L.number + LAND_BLOCKS), deadline: best.deadline });
     // The budget is charged for a fill that went out, at what its floor lets it lose: one the node refused costs
     // nothing (RZ-9, RZ-16).
     if (sent === null) log(best.index, "not sent (the tracker's line says why); checked again at the next block");
@@ -755,9 +782,9 @@ async function requestChecks(L) {
   if (!pick) return;
   // A batch is named by its requests' ids, joined without a space: the label is read back word by word.
   const name = pick.ids ? `batch ${pick.ids.join(",")}` : `request ${pick.id}`;
-  if ((await chain.blockNumber()) !== L.number) return log(name, "block passed before sending; next block");
-  log(name, `filling: profit ${pick.profit.toFixed(2)} USD (float ${(Number(pick.usdcDelta) / 1e6).toFixed(2)}, stock ${pick.inventoryUsd.toFixed(2)}, gas ${pick.gasUsd.toFixed(2)})`);
-  await tracker.send(pick.tx, { label: name, targetBlock: Number(L.number) + 1, deadline: pick.deadline });
+  if (await passed(L)) return log(name, "block passed before sending; next block");
+  log(name, `filling: profit ${pick.profit.toFixed(2)} USD (float ${M.usdcUsd(pick.usdcDelta, cfg.chain.usdcDecimals).toFixed(2)}, stock ${pick.inventoryUsd.toFixed(2)}, gas ${pick.gasUsd.toFixed(2)})`);
+  await tracker.send(pick.tx, { label: name, targetBlock: Number(L.number + LAND_BLOCKS), deadline: pick.deadline });
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -765,7 +792,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => (stopping =
 
 setup = await chain.checkSetup();
 if (cfg.fillRequests) {
-  filler = createRequestFiller({ chain, cfg, hermes, routes, requests: setup.requests, pyth: setup.pyth, staticsOf, log, needs });
+  filler = createRequestFiller({ chain, cfg, hermes, routes, requests: setup.requests, pyth: setup.pyth, stableDecimals: setup.stableDecimals, staticsOf, log, needs });
 }
 log(`keeper ${chain.account.address} on ${cfg.chain.name}, executor ${cfg.executor}, factory ${cfg.factory}, auctions ${cfg.fillAuctions ? "on" : "off"}, requests ${cfg.fillRequests ? setup.requests : "off"}`);
 let last = -1n;

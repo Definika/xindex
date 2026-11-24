@@ -25,7 +25,7 @@ function outcomeOf(v) {
 }
 
 test("the bot's arithmetic is WeightedMath's: every settlement vector, outcome, bar and gain (the supply's the hub's)", () => {
-  assert.equal(vectors.length, 431);
+  assert.equal(vectors.length, 455); // with the 24 of RZ-33, whose products pass 2^256
   const seen = new Set();
   for (const v of vectors) {
     const got = outcomeOf(v);

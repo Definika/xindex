@@ -44,7 +44,7 @@ test("CHAIN_ID picks the chain's addresses, and the Sepolia keeper can serve req
   assert.equal(c.fillRequests, true);
   assert.equal(marketOf(c.chain).usdc, CHAINS[11155111].usdc);
   assert.deepEqual(ETHEREUM_MARKET, marketOf(MAINNET));
-  assert.throws(() => parseConfig({ ...VALID, CHAIN_ID: "56" }), /CHAIN_ID must be one of 1, 11155111/);
+  assert.throws(() => parseConfig({ ...VALID, CHAIN_ID: "10" }), /CHAIN_ID must be one of 1, 56, 8453, 11155111/);
   assert.throws(() => parseConfig({ ...VALID, FILL_AUCTIONS: "yes" }), /FILL_AUCTIONS must be 0 or 1/);
   assert.throws(
     () => parseConfig({ ...VALID, FILL_AUCTIONS: "0", FILL_REQUESTS: "0" }),

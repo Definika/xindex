@@ -19,7 +19,7 @@
 
 import { readFileSync } from "node:fs";
 import { createPublicClient, http, keccak256, numberToHex, pad, parseAbi, toHex } from "viem";
-import { mainnet, sepolia } from "viem/chains";
+import { base, bsc, mainnet, sepolia } from "viem/chains";
 import { HUB_STATE_SLOTS } from "./bot/config.mjs";
 import {
   FACTORY_NOTICES,
@@ -49,7 +49,7 @@ const ABI = {
   erc20: parseAbi(["function balanceOf(address) view returns (uint256)"]),
 };
 const client = createPublicClient({
-  chain: { 1: mainnet, 11155111: sepolia }[cfg.chain.chainId],
+  chain: { 1: mainnet, 11155111: sepolia, 56: bsc, 8453: base }[cfg.chain.chainId],
   transport: http(cfg.rpcUrl, { batch: { batchSize: 50 }, retryCount: 3 }),
 });
 

@@ -4,7 +4,7 @@ import { mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as nodeFs from "node:fs";
-import { createJournal, fileStore, movedOn, resumeOrder, subjectOf } from "../../restock/journal.mjs";
+import { createJournal, fileStore, movedOn, rentToReclaim, resumeOrder, subjectOf } from "../../restock/journal.mjs";
 
 const XRP = `0x${"c7".repeat(20)}`;
 
@@ -93,6 +93,35 @@ test("settled moves are forgotten after a week, a bridge out counts as leaving u
   s.t += 2;
   j.prune();
   assert.equal(j.get(out), undefined);
+});
+
+test("CA-R2-13: a received burn whose event account holds its rent is kept until the rent is reclaimed", () => {
+  const s = store();
+  const j = s.open();
+  const settle = (id) => ["sent", "attested", "received"].forEach((stage) => j.advance(id, stage));
+  // Solana's burn opens an event account, whose rent restock.mjs takes back five days on.
+  const solana = j.open({ kind: "sweep", chain: "solana", amount: 7n }, { eventAccount: "Ev3nt" });
+  settle(solana);
+  const sui = j.open({ kind: "sweep", chain: "sui", amount: 7n }, {});
+  settle(sui);
+  const unsent = j.open({ kind: "sweep", chain: "solana", amount: 7n }, { eventAccount: "N0ne" });
+  j.drop(unsent, "its blockhash expired");
+  assert.deepEqual(j.find(rentToReclaim).map((m) => m.id), [solana], "only the received burn has rent to take back");
+
+  s.t += 30 * 86_400; // its reclaims failed all month, or the service was down
+  j.prune();
+  assert.ok(j.get(solana), "kept, with what reclaims its rent");
+  assert.equal(j.get(sui), undefined, "a burn that left no rent goes after its week");
+  assert.equal(j.get(unsent), undefined, "a burn that never landed opened no account");
+
+  j.note(solana, { reclaimed: true });
+  assert.deepEqual(j.find(rentToReclaim), []);
+  s.t += 7 * 86_400 - 1;
+  j.prune();
+  assert.ok(j.get(solana), "reclaimed: kept for the week, as any settled move");
+  s.t += 2;
+  j.prune();
+  assert.equal(j.get(solana), undefined);
 });
 
 test("RS-13: an empty or unreadable journal stops the service, never starts it afresh", () => {

@@ -333,11 +333,11 @@ Still open:
 - **RY-3, RW-4** (informational, policy): a minter may name itself as referrer and take the referral share of the
   platform's fee. Deferred to the fee policy; a check on chain is dodged by a second wallet.
 - **Of the audit of 2026-11-21**, left as they are with their reasons in its record: CA-M11, CA-M15, CA-M19,
-  CA-R2-01, CA-R2-06, CA-R2-08; and, before the restock's non-EVM signers run, CA-M14, CA-L7, CA-R2-12 and CA-R2-13.
+  CA-R2-01, CA-R2-06, CA-R2-08. CA-M14, CA-L7, CA-R2-12 and CA-R2-13, left for the restock's non-EVM signers, are fixed since 2026-11-24.
   All are in the keeper, the restock or the scripts.
 - **RZ-8, RZ-10, RZ-11, RZ-20, RZ-21**: keeper and restock, informational (out of scope), fixed on 2026-11-23. RZ-6,
   RZ-9, RZ-13, RZ-15, RZ-16 and RZ-19 were fixed on 2026-11-21.
-- **XA-34**: one fork test keeps a bare `vm.expectRevert()`.
+- **XA-34**: one fork test kept a bare `vm.expectRevert()`; fixed on 2026-11-24.
 
 ## 10. Assurance already done
 

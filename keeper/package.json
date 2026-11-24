@@ -13,6 +13,6 @@
     "invariants": "node invariants.mjs"
   },
   "dependencies": {
-    "viem": "2.21.54"
+    "viem": "2.57.7"
   }
 }
