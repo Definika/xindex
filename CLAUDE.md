@@ -753,6 +753,32 @@ built on it and found in it.
     `npm audit` finds none now. On it the request harness passed 15 of 15 and the end-to-end test 45 of 45 again, at
     block 26,480,113.
   - Gates: the keeper's 269 unit tests; every one of the mutation gate's 323 edits applies, C44 to C51 killed.
+- **The restock buys Ondo's stocks through UniswapX** (2026-11-24, the owner's call: "კეეპერში ჩააშენე", build it into
+  the keeper, after the owner pointed out that Ondo's assets trade there; `design/2026-11-24-uniswapx-restock.md`). No
+  contract under `src/` changed, and the zap still swaps through Uniswap's router alone.
+  - Since 2026-06-30 Ondo's stocks trade on Ethereum through UniswapX: a swapper signs an order and fillers, Ondo's
+    minting desk among them, settle it through UniswapX's V2 Dutch order reactor (read on chain that day: ten AAPLon
+    and NVDAon fills in 9,000 blocks, none through the V3 reactor).
+  - The restock serves the nine Ondo stocks whose feed prices the token, the only ones the keeper values (RX-2), once
+    `UNISWAP_API_KEY` is set (`LOCAL_COINS` in `keeper/restock/coins.mjs`). For a shortfall it asks Uniswap's Trading
+    API for an order spending an exact amount of the treasury's USDC, and signs it only when every field its
+    signature commits to is what the plan allows (`keeper/restock/uniswapx.mjs` `refusal`): the reactor, the treasury
+    as swapper and sole recipient, USDC in at most the plan's amount, the coin out at no less than Pyth less
+    `ROUTE_MAX_LOSS_BPS` at any point of its decay, no validation contract, a deadline 30 s to 15 minutes away and an
+    unspent nonce. It signs typed data it builds from those fields, never the API's.
+  - An order is done once Permit2's nonce bitmap shows it spent, and dropped only 15 minutes past its deadline by the
+    chain's clock; while one is open the treasury plans nothing else. What it bought goes into the executor through
+    `KeeperExecutor.depositStock`, treasury only, credited within the restock allowance as `redeemBridged` credits
+    (RS-1, RS-6, `_creditRestock`); nothing sells a local coin or takes it out but the owner's `withdraw`.
+  - Tests: the executor's deposit cases and the restock invariant's deposits, `restock-uniswapx.test.mjs` and the
+    local cases of the plan, journal, advance, config and coin suites; HK-03's source check counts the executor's
+    second pull, also from its caller. Mutants UX1 to UX28, all killed (351 in all). The end-to-end test
+    (`keeper/test/e2e/uniswapx.mjs`) settled a signed order through the real V2 reactor on a fork near the head, the
+    API, its cosigner and its filler faked: 28 of 28, an unfilled order dropped untouched, an altered one never
+    signed.
+  - Not done: a run against Uniswap's live API, which needs a key; BNB Chain, whose UniswapX orders are V3 orders
+    through another reactor and whose restock does not run; the eligibility Ondo asks of a buyer (no US person),
+    which the operator and the treasury must meet.
 - **An independent review of the work of 2026-11-23** (a reviewer agent that had not seen the author's reasoning,
   reading only; no critical or high finding). Fixed the same day:
   - The keeper kept an index's weights from its first read, and weights can change since 2026-11-23: it would have
@@ -853,6 +879,8 @@ for c in IndexZap BasketBuilder MintRequests WeightedIndexFactory WeightedHub Py
 forge test --root keeper     # the keeper's executor, its own Foundry project; CI also runs its fmt, build and lint
 node --test keeper/test/unit/*.test.mjs  # the keeper bot's arithmetic, unit naming, settings, Hermes client and tx tracker (no dependency)
 node --test keeper/test/harness/*.test.mjs  # the request filler against a fake chain; needs `npm ci` in keeper/ and the executor's build; not in CI
+UNISWAPX_E2E_RPC_URL=https://ethereum-rpc.publicnode.com npm run e2e:uniswapx --prefix keeper  # the restock's UniswapX buys
+                             # on a fork near the head, the real reactor and a faked API; needs `npm ci` in keeper/ and both builds
 
 # mainnet fork tests (real tokens, Universal Router, V3 and V4 pools); skipped when the env var is unset.
 # A rate-limited RPC throttles five suites in parallel: add -j 1.
@@ -1937,6 +1965,12 @@ cost the owner weighs before launch.
   (`0x27292cf0016E5dF1d8b37306B2A98588aCbD6fCA`, 979 ATOM) are other bridges, which the Wormhole-only rule refuses,
   and neither has a Uniswap market (read on 2026-10-20). An index holding ATOM fills only from stock an operator adds;
   buying it on Binance, the exchange route the owner turned down on 2026-10-19, is the one automatic source left.
+
+**UniswapX in the keeper's restock, not the zap** (the owner's call of 2026-11-24, "კეეპერში ჩააშენე"). The restock
+buys the nine Ondo stocks the keeper values through UniswapX's orders on Ethereum and deposits them into the executor
+(`design/2026-11-24-uniswapx-restock.md`). Said with it: UniswapX has no pools, so the zap, which settles a basket in
+one transaction, cannot use it, and the swap venues below are unchanged; Ondo's 343 share-priced stocks gain nothing,
+since the keeper never delivers them from stock; and Ondo sells them to eligible users only.
 
 **Swap venues** (the owner's call on 2026-10-14): the zap swaps through Uniswap's Universal Router 2.0.0 alone, V3 or
 V4 per leg, chosen by the caller. PancakeSwap's v3 Universal Router, a third venue per leg since 2026-10-06 (chiefly

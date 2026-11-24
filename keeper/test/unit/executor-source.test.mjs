@@ -15,9 +15,12 @@ test("HK-03, HK-04: the executor makes no call a caller can aim and has no code 
   }
 });
 
-test("HK-03: the executor pulls a token from nobody but its caller, in one place", () => {
-  assert.equal(count("ransferFrom("), 1);
+test("HK-03: the executor pulls a token from nobody but its caller, the treasury, in two places", () => {
+  // Every pull names its caller as payer: the treasury's repayment of USDC, and since 2026-11-24 its deposit of a coin
+  // it bought (`depositStock`), each behind `_checkTreasury()`.
+  assert.equal(count("ransferFrom("), 2);
   assert.equal(count("SafeERC20.safeTransferFrom(IERC20(USDC), msg.sender, address(this), amount)"), 1);
+  assert.equal(count("SafeERC20.safeTransferFrom(IERC20(token), msg.sender, address(this), amount)"), 1);
 });
 
 test("HK-01: the callback's mark is the executor's only transient storage: set once, cleared once, read once", () => {

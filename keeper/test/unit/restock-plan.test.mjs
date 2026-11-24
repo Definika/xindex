@@ -465,3 +465,122 @@ test("RS-11: a sweep is cut to RESTOCK_MAX_TRANSFER_USD, the rest following in l
   assert.deepEqual(kinds(r), ["sweep"]);
   assert.equal(r.actions[0].amount, usdc(20_000), "not the 95,000 above the target in one transfer");
 });
+
+// ---------------------------------------------------------------------
+// Local coins: bought through UniswapX on Ethereum and deposited
+// ---------------------------------------------------------------------
+
+/// NVDAon at $180, the treasury holding 5,000 USDC and allowed 20,000 more: no stock, no needs.
+const NVDA = coinsOf(["NVDAON"])[0];
+function localRound(over = {}) {
+  return round({
+    coins: [NVDA],
+    home: { coins: new Map(), floats: new Map(), gas: new Map(), funding: new Map() },
+    treasury: { usdc: usdc(5_000), allowance: usdc(20_000) },
+    prices: new Map([["NVDAON", 180]]),
+    restockAllowance: new Map([[NVDA.copy, 10n ** 30n]]),
+    ...over,
+  });
+}
+
+test("a local coin the fills need is bought through a UniswapX order of exact USDC, bounded at Pyth less the loss bound", () => {
+  const r = plan(localRound({ needs: new Map([[NVDA.copy, 10n * E18]]) }));
+  assert.deepEqual(kinds(r), ["order"], "no draw: the treasury's 5,000 USDC covers it");
+  const [o] = r.actions;
+  assert.equal(o.coin, "NVDAON");
+  assert.equal(o.usd, 1_980, "11 NVDAon, the need and its buffer, at $180");
+  assert.equal(o.amountIn, usdc(1_980), "exactly its worth at Pyth, in USDC");
+  assert.equal(o.maxIn, o.amountIn, "an exact spend: nothing above it");
+  assert.equal(o.maxUsd, 1_980, "so the day's budget is charged its worth alone");
+  assert.equal(o.minOut, 1089n * 10n ** 16n, "10.89 NVDAon: its worth less 1%");
+  assert.equal(o.amountOut, 11n * E18);
+});
+
+test("a local coin's order draws what the treasury lacks first, and keeps the treasury from repaying", () => {
+  const r = plan(localRound({ needs: new Map([[NVDA.copy, 50n * E18]]), treasury: { usdc: usdc(1_000), allowance: usdc(20_000) } }));
+  assert.deepEqual(kinds(r), ["draw", "order"], "the draw lands before the order is signed");
+  assert.equal(r.actions[0].amount, usdc(9_900) - usdc(1_000), "55 NVDAon at $180, less what the treasury holds");
+  const rich = plan(localRound({ needs: new Map([[NVDA.copy, 10n * E18]]), treasury: { usdc: usdc(30_000), allowance: 0n } }));
+  assert.deepEqual(kinds(rich), ["order"], "no repayment of the USDC the order may take, above twice the target though it is");
+  assert.equal(
+    plan(localRound({ treasury: { usdc: usdc(30_000), allowance: 0n } })).actions.at(-1).kind,
+    "repay",
+    "with no order the surplus goes back",
+  );
+});
+
+test("a local coin's order is no larger than the treasury may spend, and fundings get only what it leaves", () => {
+  const r = plan(localRound({ needs: new Map([[NVDA.copy, 200n * E18]]), treasury: { usdc: 0n, allowance: usdc(1_000) } }));
+  assert.deepEqual(kinds(r), [], "39,600 USD of USDC is more than the 1,000 it may draw");
+  assert.match(r.notes.join("\n"), /NVDAON: the treasury's USDC and its allowance on the executor are too small for its UniswapX order/);
+
+  // An order and a funding in one round: the funding is planned from what the order leaves.
+  const both = plan(
+    localRound({
+      coins: [NVDA, XRP.symbol === "XRP" ? coinsOf(["AVAX"])[0] : XRP],
+      needs: new Map([
+        [NVDA.copy, 50n * E18],
+        [coinsOf(["AVAX"])[0].copy, 100n * E18],
+      ]),
+      home: { coins: new Map(), floats: new Map([["avalanche", 0n]]), gas: new Map([["avalanche", E18]]), funding: new Map() },
+      prices: new Map([
+        ["NVDAON", 180],
+        ["AVAX", 20],
+      ]),
+      restockAllowance: new Map([
+        [NVDA.copy, 10n ** 30n],
+        [coinsOf(["AVAX"])[0].copy, 10n ** 30n],
+      ]),
+      treasury: { usdc: 0n, allowance: usdc(10_000) },
+    }),
+  );
+  assert.deepEqual(kinds(both), ["draw", "order"], "the order's 9,900 leaves 100 USDC, too little for AVAX's funding");
+  assert.match(both.notes.join("\n"), /avalanche: the treasury's USDC and its allowance on the executor are too small/);
+});
+
+test("what the treasury holds of a local coin goes into the executor, credited within the restock allowance", () => {
+  // 4 NVDAon held of a need of 10: deposited, and the order buys only what they leave short.
+  const r = plan(localRound({ needs: new Map([[NVDA.copy, 10n * E18]]), home: { coins: new Map([["NVDAON", 4n * E18]]), floats: new Map(), gas: new Map(), funding: new Map() } }));
+  assert.deepEqual(kinds(r), ["deposit", "order"]);
+  assert.equal(r.actions[0].amount, 4n * E18, "all of it");
+  assert.equal(r.actions[1].amountOut, 7n * E18, "11 wanted, 4 coming in");
+  // Covered, with nothing needed: what it holds still goes in when worth RESTOCK_MIN_USD, and a sliver waits.
+  const spare = plan(localRound({ home: { coins: new Map([["NVDAON", E18]]), floats: new Map(), gas: new Map(), funding: new Map() } }));
+  assert.deepEqual(kinds(spare), ["deposit"], "a hot wallet is no place to keep it");
+  const sliver = plan(localRound({ home: { coins: new Map([["NVDAON", E18 / 1000n]]), floats: new Map(), gas: new Map(), funding: new Map() } }));
+  assert.deepEqual(kinds(sliver), [], "18 cents of it waits for the next need");
+});
+
+test("a local coin is never sold or sent away, whatever the executor holds beyond its need", () => {
+  const stock = new Map([[NVDA.copy, { balance: 1_000n * E18, allowance: 1_000n * E18 }]]);
+  assert.deepEqual(kinds(plan(localRound({ stock }))), [], "no bridge out, no sale: it waits in the executor");
+  assert.deepEqual(kinds(plan(localRound({ stock, needs: new Map([[NVDA.copy, 10n * E18]]) }))), []);
+});
+
+test("RS-1: a local coin is bought only within what is left of its restock allowance", () => {
+  const needs = new Map([[NVDA.copy, 10n * E18]]);
+  const none = plan(localRound({ needs, restockAllowance: new Map([[NVDA.copy, 0n]]) }));
+  assert.deepEqual(kinds(none), []);
+  assert.match(none.notes.join("\n"), new RegExp(`NVDAON: short 1980 USD, but its restock allowance on the executor has 0 USD left, below RESTOCK_MIN_USD: the owner must raise it with setRestockAllowance\\(${NVDA.copy}`));
+  const some = plan(localRound({ needs, restockAllowance: new Map([[NVDA.copy, 3n * E18]]) }));
+  assert.deepEqual(kinds(some), ["order"]);
+  assert.equal(some.actions[0].amountOut, 3n * E18, "cut to the 3 NVDAon left of it");
+  const held = plan(localRound({ needs, restockAllowance: new Map([[NVDA.copy, 25n * 10n ** 17n]]), home: { coins: new Map([["NVDAON", 2n * E18]]), floats: new Map(), gas: new Map(), funding: new Map() } }));
+  assert.deepEqual(kinds(held), ["deposit"], "the 2 held take 2 of the 2.5; the 90 USD left is below RESTOCK_MIN_USD");
+  assert.match(held.notes.join("\n"), /has 90 USD left, below RESTOCK_MIN_USD/);
+});
+
+test("a local coin's order waits while the treasury has a move to settle, an open order among them, and keeps to the day's budget", () => {
+  const needs = new Map([[NVDA.copy, 10n * E18]]);
+  const busy = plan(localRound({ needs, busy: new Set(["treasury"]) }));
+  assert.deepEqual(kinds(busy), []);
+  assert.match(busy.notes.join("\n"), /NVDAON: its UniswapX order waits for the treasury's move to settle/);
+  const held = plan(localRound({ needs, busy: new Set(["treasury"]), home: { coins: new Map([["NVDAON", 4n * E18]]), floats: new Map(), gas: new Map(), funding: new Map() } }));
+  assert.deepEqual(kinds(held), ["deposit"], "a deposit is the coin's own move, not the treasury's");
+  assert.deepEqual(kinds(plan(localRound({ needs, busy: new Set(["NVDAON"]) }))), [], "nor while the coin's own move settles");
+  const late = plan(localRound({ needs, spentUsd: 50_000 - 50 }));
+  assert.deepEqual(kinds(late), []);
+  assert.match(late.notes.join("\n"), /NVDAON: short 1980 USD, past RESTOCK_DAILY_USD for the day/);
+  const cut = plan(localRound({ needs, spentUsd: 50_000 - 900 }));
+  assert.equal(cut.actions[0].usd, 900, "cut to the 900 USD left of the budget: an exact spend costs its worth");
+});

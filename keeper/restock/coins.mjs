@@ -91,11 +91,35 @@ export const COINS = Object.freeze(
     { symbol: "SUI", name: "SUI", copy: "0x84074EA631dEc7a4edcD5303d164D5dEa4c653D6", chain: "sui", home: "0x2::sui::SUI", decimals: 9, venue: "cetus", isGas: true },
     { symbol: "APT", name: "APT", copy: "0x8CDf7AF57E4c8B930e1B23c477c22f076530585e", chain: "aptos", home: "0x1::aptos_coin::AptosCoin", decimals: 8, venue: "panora", isGas: true },
     { symbol: "ALGO", name: "ALGO", copy: "0xe31Cfcd36FeD044ae4Cf9405B577fe875762194F", chain: "algorand", home: "0", decimals: 6, venue: "tinyman", isGas: true },
-  ].map((c) => Object.freeze({ isGas: false, ...c, copy: c.copy.toLowerCase() })),
+  ].map((c) => Object.freeze({ isGas: false, local: false, ...c, copy: c.copy.toLowerCase() })),
+);
+
+/// The coins Ethereum issues itself that the service buys on Ethereum, through UniswapX, rather than bridges in: the
+/// nine Ondo stocks Pyth prices at the token's own feed, which the keeper values and so delivers from stock (the other
+/// 343 Ondo legs it never values, `bot/config.mjs` SHARE_PRICED_IDS, RX-2, so stock of them would serve no fill). Few
+/// have a Uniswap pool; UniswapX's fillers, Ondo's minting desk among them, sell them for USDC. `copy` is the token
+/// itself, as the executor holds it, and `local` marks the coin: no home chain, no bridge, no sale; the treasury buys
+/// it and deposits it into the executor (`depositStock`), credited within the owner's restock allowance (RS-1).
+/// `test/unit/restock-coins.test.mjs` pins each against script/MainnetAddresses.sol and script/PythIds.sol; symbol and
+/// decimals were read on chain on 2026-11-24.
+export const LOCAL_COINS = Object.freeze(
+  [
+    { symbol: "NVDAON", name: "NVDAON", copy: "0x2D1F7226Bd1F780AF6B9A49DCC0aE00E8Df4bDEE" },
+    { symbol: "AAPLON", name: "AAPLON", copy: "0x14c3abF95Cb9C93a8b82C1CdCB76D72Cb87b2d4c" },
+    { symbol: "GOOGLON", name: "GOOGLON", copy: "0xbA47214eDd2bb43099611b208f75E4b42FDcfEDc" },
+    { symbol: "MSFTON", name: "MSFTON", copy: "0xB812837b81a3a6b81d7CD74CfB19A7f2784555E5" },
+    { symbol: "TSLAON", name: "TSLAON", copy: "0xf6b1117ec07684D3958caD8BEb1b302bfD21103f" },
+    { symbol: "HOODON", name: "HOODON", copy: "0x998f02A9E343EF6E3E6f28700d5A20F839fD74E6" },
+    { symbol: "MSTRON", name: "MSTRON", copy: "0xCabD955322dfbf94C084929ac5E9Eca3fEB5556F" },
+    { symbol: "COINON", name: "COINON", copy: "0xF042cfa86cf1D598a75Bdb55c3507a1F39f9493b" },
+    { symbol: "CRCLON", name: "CRCLON", copy: "0x3632DEa96A953C11dac2f00b4A05a32CD1063fAE" },
+  ].map((c) =>
+    Object.freeze({ ...c, copy: c.copy.toLowerCase(), home: c.copy.toLowerCase(), chain: "ethereum", decimals: 18, venue: "uniswapx", isGas: false, local: true }),
+  ),
 );
 
 /// Each coin's Pyth feed, which the restock prices every trade against (the ids `script/PythIds.sol` lists the copies
-/// with, so a copy is priced as the coin it wraps).
+/// with, so a copy is priced as the coin it wraps, and each Ondo stock at its token's own feed).
 export const PRICE_IDS = Object.freeze({
   XRP: "0xec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8",
   ADA: "0x2a01deaec9e51a579277b34b122399984d0bbf57e2458a7e42fecd2829867a0d",
@@ -111,6 +135,15 @@ export const PRICE_IDS = Object.freeze({
   SUI: "0x23d7315113f5b1d3ba7a83604c44b94d79f4fd69af77f804fc7f920a6dc65744",
   APT: "0x03ae4db29ed4ae33d323568895aa00337e658e348b37509f5372ae51f0af00d5",
   ALGO: "0xfa17ceaf30d19ba51112fdcc750cc83454776f47fb0112e4af07f15f4bb1ebc0",
+  NVDAON: "0x207ddea2a443d30b7e13a7c88a9e3f106765deb97049afc65a18cede50fffc82",
+  AAPLON: "0xe6734de88a83d9d2fb33072adab319004700aefd069653aba30ba9e3cac056f2",
+  GOOGLON: "0xad79b3487bef87ff8f8ab31c0b779ad08d931fdfa5436f7e92a234bb82bff7e4",
+  MSFTON: "0x29b228e9fd72bbd306bcca3b10c165d8dba5d535ef8d5aab6c6e4bc18912d150",
+  TSLAON: "0xc09ef687ed07091c047da444f1499f2da52cdc1c085104643ec565a9eb1af514",
+  HOODON: "0x8d61af9bd7c39d9503d7d99b7e9e59cc7b0bd707341ecc3ed3e3eda1a411f4de",
+  MSTRON: "0x89a131faf74b5298981e3d25bbce60a25c6f452004da31ddd3c5805cdaa9b6ab",
+  COINON: "0x8c56635a4257942fabf7ce5dd861dbe91375c370e6b5feac3fb8ba7206a30e46",
+  CRCLON: "0x25edf380836977c4fea6d1e8df3567192c4e11deeeb566c8e0bd8022068860df",
 });
 
 /// The coins served when `RESTOCK_COINS` is unset: those whose chain has an adapter and whose home market can take a
@@ -126,10 +159,12 @@ export const PRICE_IDS = Object.freeze({
 /// there holding about $35,000 of USDC. It stays in the table too.
 export const DEFAULT_COINS = Object.freeze(["AVAX", "AERO"]);
 
-/// The coins of `symbols` (`DEFAULT_COINS` when null), refusing a symbol the table does not know.
-export function coinsOf(symbols) {
-  if (symbols === null) return COINS.filter((c) => DEFAULT_COINS.includes(c.symbol));
-  const unknown = symbols.filter((s) => !COINS.some((c) => c.symbol === s));
+/// The coins of `symbols`, bridged or local, refusing a symbol neither table knows. When null: `DEFAULT_COINS`, and
+/// with `uniswapx` (the service has a UniswapX API key) every local coin too, since only UniswapX buys them.
+export function coinsOf(symbols, { uniswapx = false } = {}) {
+  const all = [...COINS, ...LOCAL_COINS];
+  if (symbols === null) return all.filter((c) => DEFAULT_COINS.includes(c.symbol) || (uniswapx && c.local));
+  const unknown = symbols.filter((s) => !all.some((c) => c.symbol === s));
   if (unknown.length) throw new Error(`unknown restock coins: ${unknown.join(", ")}`);
-  return COINS.filter((c) => symbols.includes(c.symbol));
+  return all.filter((c) => symbols.includes(c.symbol));
 }

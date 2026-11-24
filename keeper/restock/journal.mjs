@@ -1,5 +1,5 @@
-// Every move the restock service makes, from the moment its transaction is signed: a trade, a bridge transfer or a
-// CCTP transfer. A move is recorded signed before it is broadcast, so a restart sends that same signed transaction
+// Every move the restock service makes, from the moment its transaction is signed: a trade, a bridge transfer, a CCTP
+// transfer, a UniswapX order or a deposit into the executor. A move is recorded signed before it is broadcast, so a restart sends that same signed transaction
 // again, which a chain counts once, rather than signing a second one. Each move then only moves forward through its
 // stages until it settles or is dropped (a signed transaction that expired unsent). The whole journal is saved after
 // every change through an injected store. No dependencies.
@@ -17,6 +17,11 @@ export const STAGES = Object.freeze({
   bridgeOut: ["signed", "sent", "attested", "redeemed"],
   fund: ["signed", "sent", "attested", "received"],
   sweep: ["signed", "sent", "attested", "received"],
+  /// A UniswapX order (`uniswapx.mjs`): signed and recorded, posted to the API's fillers, and done once Permit2 shows its
+  /// nonce spent. One that passed its deadline unfilled is dropped (`expired`).
+  order: ["signed", "sent", "done"],
+  /// The treasury's deposit of a coin it bought into the executor (`depositStock`).
+  deposit: ["signed", "sent", "done"],
 });
 
 const DAY = 86_400;
@@ -30,9 +35,12 @@ export function resumeOrder(moves) {
 
 /// `load()` returns the saved text or null; `save(text)` stores it; `now()` is the clock, in seconds.
 /// What a move is about, as the plan names what it leaves alone: the treasury for a draw or a repayment, the chain
-/// for a funding or a sweep, and the coin for a trade or a bridge transfer.
+/// for a funding or a sweep, and the coin for a trade, a bridge transfer, an order or a deposit.
 export const subjectOf = (move) =>
   move.kind === "draw" || move.kind === "repay" ? "treasury" : move.kind === "fund" || move.kind === "sweep" ? move.chain : move.coin;
+
+/// Everything a move touches: its subject, and for a UniswapX order the treasury too, whose USDC the order may take.
+const subjectsOf = (move) => (move.kind === "order" ? [move.coin, "treasury"] : [subjectOf(move)]);
 
 /// What the plan of a round leaves alone because a move of the journal moved on in that very round: the subject of
 /// each move of `before`, the moves still to settle when the round began, whose stage `stageNow(id)` no longer is
@@ -40,7 +48,7 @@ export const subjectOf = (move) =>
 /// the plan is made from is then read at a node's latest block: a node one block behind shows the coin still short,
 /// or the float still unfunded, and the plan bought or funded it a second time (RZ-19). The next round reads it
 /// settled.
-export const movedOn = (before, stageNow) => new Set(before.filter((m) => stageNow(m.id) !== m.stage).map(subjectOf));
+export const movedOn = (before, stageNow) => new Set(before.filter((m) => stageNow(m.id) !== m.stage).flatMap(subjectsOf));
 
 /// Whether `move` is a received CCTP burn whose event account still holds the rent the burn paid for it (Solana's,
 /// `eventAccount`, until `reclaimed`): restock.mjs takes it back five days after the burn, with the message and the
@@ -103,13 +111,16 @@ export function createJournal({ load, save, now = () => Math.floor(Date.now() / 
       });
     },
     /// Drops `id`, which can never complete: its signed transaction expired before any chain took it, or was mined and
-    /// reverted, so nothing it committed left the wallet.
+    /// reverted, or its order passed its deadline unfilled, so nothing it committed left the wallet.
     drop(id, reason) {
       change((s) => {
         const m = s.moves[id];
         if (settled(m)) throw new Error(`move ${id} has settled (${m.stage})`);
         const reverted = m.stage === "sent" && m.data.status === "reverted";
-        if (m.stage !== "signed" && !reverted) throw new Error(`move ${id} was sent: only an unsent or reverted move is dropped`);
+        const expired = m.kind === "order" && m.data.status === "expired";
+        if (m.stage !== "signed" && !reverted && !expired) {
+          throw new Error(`move ${id} was sent: only an unsent, reverted or expired move is dropped`);
+        }
         Object.assign(m, { stage: "dropped", data: { ...m.data, reason }, updatedAt: now() });
       });
     },
@@ -136,27 +147,30 @@ export function createJournal({ load, save, now = () => Math.floor(Date.now() / 
       }
       return total;
     },
-    /// The coins, chains and "treasury" with a move still to settle: a trade's coin, a funding's or sweep's chain, a
-    /// draw's or repayment's treasury, and a bridge transfer's coin until its transaction is out, after which the
-    /// transfer counts as in flight instead.
+    /// The coins, chains and "treasury" with a move still to settle: a trade's or a deposit's coin, an order's coin and
+    /// the treasury, whose USDC it may take until it settles, a funding's or sweep's chain, a draw's or repayment's
+    /// treasury, and a bridge transfer's coin until its transaction is out, after which the transfer counts as in
+    /// flight instead.
     busy() {
       const busy = new Set();
       for (const m of Object.values(state.moves)) {
         if (settled(m)) continue;
-        if (m.kind === "buy" || m.kind === "sell") busy.add(m.coin);
+        if (m.kind === "order") subjectsOf(m).forEach((x) => busy.add(x));
+        else if (m.kind === "buy" || m.kind === "sell" || m.kind === "deposit") busy.add(m.coin);
         else if (m.kind === "draw" || m.kind === "repay") busy.add("treasury");
         else if (m.kind === "fund" || m.kind === "sweep") busy.add(m.chain);
         else if (m.stage === "signed") busy.add(m.coin);
       }
       return busy;
     },
-    /// The most the buys of the last day may have cost, the dropped ones aside: each one's worth at Pyth and the loss
-    /// bound its swap was held to (`maxUsd`, CA-M13); a move recorded before that field counts at its worth.
+    /// The most the buys of the last day may have cost, the dropped ones aside, a UniswapX order's among them: each
+    /// one's worth at Pyth and the loss bound its swap was held to (`maxUsd`, CA-M13); a move recorded before that field
+    /// counts at its worth.
     spentUsd() {
       const since = now() - DAY;
       let usd = 0;
       for (const m of Object.values(state.moves)) {
-        if (m.kind === "buy" && m.stage !== "dropped" && m.at >= since) usd += m.maxUsd ?? m.usd;
+        if ((m.kind === "buy" || m.kind === "order") && m.stage !== "dropped" && m.at >= since) usd += m.maxUsd ?? m.usd;
       }
       return usd;
     },

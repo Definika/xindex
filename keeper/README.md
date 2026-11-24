@@ -127,9 +127,10 @@ The executor swaps through Uniswap V3 (SwapRouter02) along a route per coin, cho
 `token→USDC` and `token→WETH→USDC` pool at the leg's own size; a route losing more than `ROUTE_MAX_LOSS_BPS` against
 Pyth is not used. A coin without a usable route (Wormhole copies, Ondo stocks, Tether Gold) is served from the
 executor's **stock**: a coin the index sells is kept, and a coin it needs is delivered from stock, which the restock
-service keeps filled for the Wormhole copies it serves ([Restock](#restock)), and the operator for the rest. A coin
-leaves stock only within the **stock allowance** `OWNER` sets for it (`setStockAllowance(token, amount)`), and what the
-restock service bridges in adds to, which every delivery from stock spends; with none, nothing is served from stock.
+service keeps filled for the Wormhole copies it serves and the nine Ondo stocks the keeper values ([Restock](#restock)),
+and the operator for the rest. A coin leaves stock only within the **stock allowance** `OWNER` sets for it
+(`setStockAllowance(token, amount)`), and what the restock service bridges in or deposits adds to, which every delivery
+from stock spends; with none, nothing is served from stock.
 With `NEEDS_FILE` set, the keeper writes there every coin a fill, a start or a request delivers from stock, with the
 whole of it that fill needs, for the restock service to bring in and then keep: a coin stays on the board while its
 fill waits, covered or not, so stock that has just arrived is not sent home before the fill uses it (RZ-3). The board
@@ -235,7 +236,8 @@ routed coin too; only the rest is bought. The executor's address must be able to
 
 `restock.mjs` keeps the executor stocked with the Wormhole copies no Ethereum pool sells, without anyone stepping in:
 it buys each on its home chain, bridges it to the executor through Wormhole's Token Bridge, and brings home and sells
-what nobody needs. It is a separate process with its own key, the **treasury**, a hot key `OWNER` pins
+what nobody needs. It also keeps it stocked with the nine Ondo stocks the keeper values, which Ethereum issues and few
+pools sell: it buys them on Ethereum through UniswapX and deposits them ("Ondo stocks through UniswapX", below). It is a separate process with its own key, the **treasury**, a hot key `OWNER` pins
 (`setTreasury`), and its own loop, every `RESTOCK_INTERVAL_SECONDS`:
 
 1. Every move in its journal (`JOURNAL_FILE`) goes one step further: a transaction mined, a transfer signed by
@@ -341,14 +343,39 @@ Aptos's and Algorand's pay the wallet itself. The service prints each missing pi
 chain's gas coin, and on Solana the rent of the accounts its moves open, which a burn's event account returns five days
 on.
 
+**Ondo stocks through UniswapX** (the owner's call of 2026-11-24, `design/2026-11-24-uniswapx-restock.md`). Since
+2026-06-30 Ondo's stocks and ETFs trade on Ethereum through UniswapX: a swapper signs an order, and fillers compete to
+settle it through UniswapX's V2 Dutch order reactor, Ondo's own minting desk among them (read on 2026-11-24: ten fills
+of AAPLon and NVDAon in 9,000 blocks, the filler minting the coin it paid). The service serves the nine whose Pyth feed
+prices the token itself (NVDAon, AAPLon, GOOGLon, MSFTon, TSLAon, HOODon, MSTRon, COINon, CRCLon): the keeper values
+only those, so stock of the other 343 would serve no fill (RX-2). For a short one it asks Uniswap's Trading API for an
+order spending an exact amount of the treasury's USDC on the coin, and signs it only if every field the signature
+commits to is what the plan allows (`restock/uniswapx.mjs`): UniswapX's V2 reactor, the treasury as swapper and as the
+one output's recipient, USDC in at no more than the plan's amount, the coin out at no less than its worth at Pyth less
+`ROUTE_MAX_LOSS_BPS` at any point of the order's decay, no validation contract, a deadline 30 s to 15 minutes away and
+an unspent Permit2 nonce. It signs typed data it builds from those checked fields, never the API's, so an order the
+API changed afterwards fails its signature on chain; the order's cosigner may only improve the amounts. Permit2 may
+take exactly what the open orders may spend. The order is journalled before it is posted, posted again until the API
+takes it, done once Permit2's nonce bitmap shows it spent, which the API is not asked, and dropped only 15 minutes past
+its deadline by the chain's clock, Ethereum's finality, since a filler may hold a signature the API refused. While one
+is open the treasury plans no other order, draw, repayment or funding. What it bought goes into the executor
+(`depositStock`), credited within the owner's restock allowance as a bridged arrival is (RS-1); nothing sells it or
+takes it out but the owner's `withdraw`. A coin's feed is fresh only while Pyth publishes it, so no order is placed
+while the market's feed is quiet. Not run against Uniswap's live API: the end-to-end test (`npm run e2e:uniswapx`)
+fakes the API, its cosigner and its filler, and settles the signed order through the real reactor on a fork. Ondo's
+stocks are offered through it to eligible users only, never US persons, so the operator and the treasury must be
+eligible; and the API may route an order under about 300 USDC to the pools, a route the service does not sign.
+
 **Setup, once, by `OWNER`:** deploy the executor with Wormhole's Token Bridge; `setTreasury(<treasury address>)`;
 `setHomeRecipient(<Wormhole chain id>, <copy>, <treasury address, left-padded to 32 bytes>)` for each coin served (BNB
 Chain 4: XRP, ADA, LTC, DOT, BNB; Avalanche 6: AVAX; Optimism 24: OP; Base 30: AERO): the treasury's key is the same on
 every EVM chain, and the executor pins a recipient per coin because Solana's bridge pays a token account per mint; `setTreasuryUsdcAllowance`, the
 most USDC the treasury may hold off the float, what it holds counted; and `setRestockAllowance(<copy>, <amount>)` for
 each coin served, the restocking you allow until you next look: what arrives through the bridge earns the keeper stock
-allowance only within it (RS-1). Then send the treasury gas on each chain and Ethereum, and USDT to its
-BNB Chain wallet. The service checks every pin at startup and names the call that is missing.
+allowance only within it (RS-1), the nine Ondo stocks among them when served, whose deposits earn it the same way.
+Then send the treasury gas on each chain and Ethereum, and USDT to its BNB Chain wallet. The service checks every pin
+at startup and names the call that is missing, and, serving an Ondo stock, that the executor takes deposits and that
+UniswapX's reactor names Permit2.
 
 **What still needs a person:** gas on each chain (the service logs `gas below its minimum` and leaves that chain alone),
 the BNB Chain USDT float (`top up its USDT float by hand`), the owner's allowances, the restock allowance of each coin
@@ -356,8 +383,10 @@ among them (the service logs `restock allowance ... is spent` and names the call
 unreadable or stale`), and a transaction stuck past a fee spike for good (`still pending`: cancel it). A stolen keeper
 key alone can deliver from stock only what the owner allowed, restocked coins included (CF-1, RS-1). A stolen treasury
 key can bridge stock only to the pinned recipients, which are its own wallets, and hold no more USDC off the float than
-the owner's figure (RS-2): with the keeper's key it can lose the working capital the owner handed both, the floats on
-each chain and the stock, and nothing beyond it.
+the owner's figure (RS-2), which a UniswapX order it signs spends like any of its USDC: with the keeper's key it can
+lose the working capital the owner handed both, the floats on each chain and the stock, and nothing beyond it. A
+deposit takes nothing out: the treasury has no path that takes stock from the executor but the bridge to its pinned
+home wallets.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -368,7 +397,9 @@ each chain and the stock, and nothing beyond it.
 | `HERMES_URL` | `https://pyth.dourolabs.app/hermes` | |
 | `NEEDS_FILE` | required | The keeper's `NEEDS_FILE`, which the keeper must be set to write: missing or stale, nothing moves (RS-8). |
 | `JOURNAL_FILE` | required | Where the service keeps its moves, on the disk before each is sent. Keep it: it is what a restart resumes from, and the service refuses to start on one empty or unreadable (RS-13), or held by another running process (`<file>.lock`, CA-M12). |
-| `RESTOCK_COINS` | every coin | Comma-separated symbols to serve. |
+| `RESTOCK_COINS` | AVAX, AERO, and the nine Ondo stocks when `UNISWAP_API_KEY` is set | Comma-separated symbols to serve (an Ondo stock as `NVDAON`). |
+| `UNISWAP_API_KEY` | required for the Ondo stocks | Uniswap's Trading API key (its developer dashboard), for UniswapX's orders. |
+| `UNISWAP_API_URL` | `https://trade-api.gateway.uniswap.org/v1` | |
 | `BSC_RPC_URL`, `AVALANCHE_RPC_URL`, `OPTIMISM_RPC_URL`, `BASE_RPC_URL` | required for their coins | Each home chain's JSON-RPC. |
 | `SOLANA_RPC_URL`, `SOLANA_KEY` | required for JUP, PYTH | Solana's JSON-RPC, and the service's Solana wallet, its 64-byte secret key in base58; both go to the signer alone. The RPC must keep transaction history: a move whose blockhash expired is dropped only on the word of a node caught up to the finalized slot that keeps the slots since it was built, and stays signed, reported unknown, otherwise (PD-8). A node that caps the accounts a simulation returns, as the public one does at 3, is asked in chunks (PD-1). |
 | `JUPITER_API_KEY` | required for JUP, PYTH | Jupiter's Swap API key (its portal), which every Swap V2 call needs. |

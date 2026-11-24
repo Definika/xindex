@@ -41,7 +41,7 @@ test("a move only moves forward, never past its settlement, and only an unsent o
   const id = j.open({ kind: "buy", coin: "XRP", chain: "bsc", usd: 200, amountIn: 9n }, {});
   assert.throws(() => j.advance(id, "signed"), /cannot go from signed to signed/);
   j.advance(id, "sent");
-  assert.throws(() => j.drop(id, "expired"), /only an unsent or reverted move is dropped/);
+  assert.throws(() => j.drop(id, "expired"), /only an unsent, reverted or expired move is dropped/);
   j.advance(id, "done");
   assert.throws(() => j.advance(id, "done"), /has settled/);
   const unsent = j.open({ kind: "sell", coin: "XRP", chain: "bsc", amount: 1n }, {});
@@ -245,4 +245,35 @@ test("RZ-19: a move that moved on within a round keeps its coin, its chain or th
   assert.deepEqual([...movedOn(moves.slice(5, 6), () => undefined)], ["treasury"]);
   assert.equal(movedOn(moves, (id) => moves.find((m) => m.id === id).stage).size, 0);
   assert.equal(movedOn([], () => "sent").size, 0);
+});
+
+test("a UniswapX order holds its coin and the treasury until it settles, counts against the day's budget, and is dropped only once expired", () => {
+  const s = store();
+  const j = s.open();
+  const order = { kind: "order", coin: "NVDAON", copy: XRP, chain: "ethereum", amountIn: 1_980_000_000n, usd: 1_980, maxUsd: 1_980 };
+  const id = j.open(order, { nonce: "7", deadline: 2_000, signature: "0xsig" });
+  assert.deepEqual([...j.busy()].sort(), ["NVDAON", "treasury"], "its USDC is the treasury's until it settles");
+  assert.equal(j.spentUsd(), 1_980, "a buy for the day's budget");
+  assert.deepEqual(j.inflight(), new Map(), "nothing crosses a bridge");
+  j.advance(id, "sent", { posted: true });
+  assert.ok(j.busy().has("treasury"), "posted, it may still take the USDC");
+  assert.throws(() => j.drop(id, "expired"), /only an unsent, reverted or expired move is dropped/, "a posted order is not dropped before it expires");
+  j.note(id, { status: "expired" });
+  j.drop(id, "its order passed its deadline unfilled");
+  assert.deepEqual([...j.busy()], []);
+  assert.equal(j.spentUsd(), 0, "an order that never filled spent nothing");
+  assert.deepEqual(movedOn([{ ...j.get(id), stage: "sent" }], () => "dropped"), new Set(["NVDAON", "treasury"]), "RZ-19: a settled order keeps both out of the round");
+
+  const filled = j.open(order, { nonce: "8", deadline: 2_000 });
+  j.advance(filled, "sent");
+  j.advance(filled, "done");
+  assert.equal(j.spentUsd(), 1_980, "a filled one counts");
+
+  const deposit = j.open({ kind: "deposit", coin: "NVDAON", copy: XRP, chain: "ethereum", amount: 5n, usd: 900 }, { hash: "0xd" });
+  assert.equal(subjectOf(j.get(deposit)), "NVDAON");
+  j.advance(deposit, "sent", { status: "success" });
+  assert.deepEqual([...j.busy()], ["NVDAON"], "a deposit holds its coin until it is done, not the treasury");
+  j.advance(deposit, "done");
+  assert.deepEqual([...j.busy()], []);
+  assert.equal(j.spentUsd(), 1_980, "a deposit buys nothing");
 });

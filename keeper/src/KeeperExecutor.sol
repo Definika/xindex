@@ -29,9 +29,11 @@ import {IPyth} from "./interfaces/IPyth.sol";
 ///         bot's simulation cannot cost more than the bot accepted. A coin Ethereum has only as a Wormhole copy is
 ///         restocked through Wormhole's Token Bridge: the treasury bridges it in, what it bridges in is added to that
 ///         coin's stock allowance as far as the owner's restock allowance goes, and it bridges kept stock out to the
-///         home-chain addresses the owner pinned.
+///         home-chain addresses the owner pinned. A coin this chain issues that no pool sells, as Ondo's stocks, the
+///         treasury buys here, through UniswapX, and deposits ({depositStock}), credited the same way; no path takes
+///         it out but the owner's.
 /// @dev Three keys. The keeper, a hot key, only fills; the treasury, the restock service's hot key, only bridges stock
-///      in and out and draws or repays USDC; and the owner, a cold key, withdraws, rotates the keeper, pins the
+///      in and out, deposits stock it bought, and draws or repays USDC; and the owner, a cold key, withdraws, rotates the keeper, pins the
 ///      treasury and the home-chain recipients, and sets how much of each coin the keeper may still deliver from stock,
 ///      both directly and as restocked coins arrive. Anyone can come to hold all the shares of a factory index, so a
 ///      fill can deliver to an index the keeper itself owns (CF-1): what bounds the stock a compromised keeper key can
@@ -78,7 +80,8 @@ contract KeeperExecutor is IRebalanceExecutor {
     ///         service's wallet on most chains, and on Solana, whose bridge pays a token account, the wallet's token
     ///         account for that coin. Only the owner sets it.
     mapping(uint16 chain => mapping(address token => bytes32 recipient)) public homeRecipient;
-    /// @notice How much more of each coin arriving through the bridge may earn stock allowance: every credit spends it.
+    /// @notice How much more of each coin arriving through the bridge or deposited by the treasury may earn stock
+    ///         allowance: every credit spends it.
     ///         Only the owner sets it, so the stock a compromised keeper key can deliver stays within what the owner
     ///         allowed, restocking included (RS-1).
     mapping(address token => uint256 amount) public restockAllowance;
@@ -104,6 +107,8 @@ contract KeeperExecutor is IRebalanceExecutor {
     event BridgedIn(address indexed token, uint256 amount, uint256 credited);
     /// @notice `amount` more of `token` arriving through the bridge may now earn stock allowance.
     event RestockAllowanceSet(address indexed token, uint256 amount);
+    /// @notice The treasury deposited `amount` of `token` it bought, `credited` of it added to its stock allowance.
+    event StockDeposited(address indexed token, uint256 amount, uint256 credited);
     /// @notice `amount` of `token` left for `recipient` on Wormhole chain `chain`, as the bridge's message `sequence`.
     event BridgedOut(address indexed token, uint256 amount, uint16 indexed chain, bytes32 recipient, uint64 sequence);
     /// @notice The treasury drew `amount` of USDC from the float.
@@ -269,7 +274,8 @@ contract KeeperExecutor is IRebalanceExecutor {
     error NotTreasury(address caller);
     /// @notice The owner pinned no recipient on Wormhole chain `chain`.
     error NoHomeRecipient(uint16 chain, address token);
-    /// @notice USDC is the float, not stock: it does not cross the bridge.
+    /// @notice USDC is the float, not stock: it does not cross the bridge, and the treasury repays it rather than
+    ///         depositing it.
     error NotStock(address token);
     /// @notice The bridged transfer carried `actual`, not the `expected` token.
     error WrongToken(address expected, address actual);
@@ -372,8 +378,8 @@ contract KeeperExecutor is IRebalanceExecutor {
         emit HomeRecipientSet(chain, token, recipient);
     }
 
-    /// @notice Owner only. Lets `amount` more of `token` arriving through the bridge earn stock allowance from now on,
-    ///         replacing what was left; zero stops crediting it (RS-1).
+    /// @notice Owner only. Lets `amount` more of `token` arriving through the bridge or deposited by the treasury earn
+    ///         stock allowance from now on, replacing what was left; zero stops crediting it (RS-1).
     function setRestockAllowance(address token, uint256 amount) external onlyOwner {
         restockAllowance[token] = amount;
         emit RestockAllowanceSet(token, amount);
@@ -766,18 +772,32 @@ contract KeeperExecutor is IRebalanceExecutor {
             : TOKEN_BRIDGE.wrappedAsset(t.tokenChain, t.tokenAddress);
         if (carried != token) revert WrongToken(token, carried);
         amount = IERC20(token).balanceOf(address(this)) - before;
-        // The credit: what arrived, within what is left of the restock allowance (RS-1) and of what the stock allowance
-        // can still hold, since it has no unlimited value and an overflow would refuse the coins (RS-6).
-        uint256 room = restockAllowance[token];
-        uint256 stock = stockAllowance[token];
-        uint256 credited = amount < room ? amount : room;
-        if (credited > type(uint256).max - stock) credited = type(uint256).max - stock;
-        restockAllowance[token] = room - credited;
-        stockAllowance[token] = stock + credited;
+        uint256 credited = _creditRestock(token, amount);
         // What arrived is known only after the bridge's transfer; only the treasury calls, through the immutable
         // bridge.
         // forge-lint: disable-next-line(reentrancy-events)
         emit BridgedIn(token, amount, credited);
+    }
+
+    /// @notice Treasury only. Takes `amount` of `token`, which the treasury bought on this chain and approved, into
+    ///         stock, and adds what arrived to `token`'s stock allowance as {redeemBridged} does: as far as the owner's
+    ///         restock allowance for it goes, which the credit spends (RS-1), and as far as the stock allowance can
+    ///         still hold (RS-6). What arrives beyond it stays here as stock the keeper cannot deliver until the owner
+    ///         allows it. It is the way in for a coin no bridge carries and no pool sells, which the restock buys
+    ///         through UniswapX; nothing lets the treasury take stock back out.
+    /// @return credited What was added to the stock allowance.
+    function depositStock(address token, uint256 amount) external returns (uint256 credited) {
+        _checkTreasury();
+        if (token == USDC) revert NotStock(token);
+        uint256 before = IERC20(token).balanceOf(address(this));
+        SafeERC20.safeTransferFrom(IERC20(token), msg.sender, address(this), amount);
+        // What arrived, not what was asked: a token that charges for a transfer credits only what it delivered.
+        uint256 arrived = IERC20(token).balanceOf(address(this)) - before;
+        credited = _creditRestock(token, arrived);
+        // What arrived is known only after the transfer; only the treasury calls, and a reentrant call from the token
+        // is not the treasury's.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit StockDeposited(token, arrived, credited);
     }
 
     /// @notice Treasury only. Bridges `amount` of `token` to the owner's pinned recipient for it on Wormhole
@@ -961,5 +981,17 @@ contract KeeperExecutor is IRebalanceExecutor {
 
     function _checkTreasury() private view {
         if (msg.sender != treasury) revert NotTreasury(msg.sender);
+    }
+
+    /// @dev Adds `amount` of `token`, which arrived for stock, to its stock allowance within what is left of the owner's
+    ///      restock allowance (RS-1) and of what the stock allowance can still hold, since it has no unlimited value and
+    ///      an overflow would refuse the coins (RS-6). Returns what it added.
+    function _creditRestock(address token, uint256 amount) private returns (uint256 credited) {
+        uint256 room = restockAllowance[token];
+        uint256 stock = stockAllowance[token];
+        credited = amount < room ? amount : room;
+        if (credited > type(uint256).max - stock) credited = type(uint256).max - stock;
+        restockAllowance[token] = room - credited;
+        stockAllowance[token] = stock + credited;
     }
 }

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Xindex restock: keeps the keeper's executor stocked with the coins Ethereum has only as Wormhole copies, which no
-// Ethereum pool sells. It holds no role in the protocol; its key is the treasury's, a hot key the executor's owner
-// pins, which can only bridge stock in and out of the executor and draw or repay USDC within the owner's allowance.
+// Ethereum pool sells, and with the Ondo stocks the keeper values, which few pools sell and UniswapX's fillers do. It
+// holds no role in the protocol; its key is the treasury's, a hot key the executor's owner pins, which can only bridge
+// stock in and out of the executor, deposit stock it bought, and draw or repay USDC within the owner's allowance.
 // See README.md, "Restock".
 //
 // Every RESTOCK_INTERVAL_SECONDS:
@@ -9,7 +10,8 @@
 //      guardians or attested by Circle, then redeemed or received on the other side;
 //   2. it reads what the keeper's fills are short of (NEEDS_FILE), the executor's stock, the treasury's USDC, each home
 //      wallet's coins, float and gas, and Pyth's prices, and plans (`restock/plan.mjs`): buy a short coin on its home
-//      chain and bridge it in, sell and bring home what nobody needs, and move USDC where the buys wait for it;
+//      chain and bridge it in, or, for a coin Ethereum issues, buy it through UniswapX and deposit it
+//      (`restock/uniswapx.mjs`), sell and bring home what nobody needs, and move USDC where the buys wait for it;
 //   3. it runs the plan, each move recorded in the journal (JOURNAL_FILE) before it is broadcast.
 //
 // `node restock.mjs --attest <chain> <token>` instead attests one token on a served home chain for its Wormhole copy on
@@ -32,6 +34,8 @@ import { createAptosHome } from "./restock/aptos.mjs";
 import { createAlgorandHome } from "./restock/algorand.mjs";
 import { createJournal, fileStore, lockJournal, movedOn, rentToReclaim, resumeOrder } from "./restock/journal.mjs";
 import { plan } from "./restock/plan.mjs";
+import { PERMIT2, REACTOR, ROUTING, createUniswapXApi, inputMax, nonceSlot, nonceUsed, outputMin, permitTypedData, refusal } from "./restock/uniswapx.mjs";
+import { decodeV2Order, orderHash } from "./restock/uniswapx-chain.mjs";
 
 const ONCE = process.argv.includes("--once");
 const ATTEST = process.argv.indexOf("--attest");
@@ -46,6 +50,7 @@ const hermes = createHermes({ url: cfg.hermesUrl, apiKey: cfg.pythApiKey });
 const wormholescan = createWormholescan({ url: process.env.WORMHOLESCAN_URL });
 const iris = createIris({ url: process.env.IRIS_URL });
 const eth = createEvm({ name: "ethereum", rpcUrl: cfg.rpcUrl, key: cfg.treasuryKey, journal });
+const uniswapx = cfg.uniswapx ? createUniswapXApi(cfg.uniswapx) : null;
 
 /// Each home chain's adapter, in the same terms whatever the chain (`restock/evm.mjs` createEvmHome): `check`,
 /// `recipientFor`, `forgetRoutes`, `balance`, `buy`, `sell`, `bridgeIn`, `sequenceOfTx`, `redeem`, `transferCompleted`,
@@ -73,6 +78,17 @@ async function checkSetup() {
   if (!same(treasury, eth.address)) throw new Error(`the executor's treasury is ${treasury}, not this service's ${eth.address}`);
   if (!same(bridge, MAINNET.tokenBridge)) throw new Error(`the executor bridges through ${bridge}, not Wormhole's Token Bridge`);
   if (!same(usdc, MAINNET.usdc)) throw new Error(`the executor's float is ${usdc}, not USDC`);
+  if (cfg.coins.some((c) => c.local)) {
+    // The reactor every order is signed for, on this chain: its Permit2 is the one the orders' permits name.
+    const permit2 = await eth.read(REACTOR, ABI.reactor, "permit2");
+    if (!same(permit2, PERMIT2)) throw new Error(`UniswapX's reactor ${REACTOR} answers Permit2 ${permit2}: not the reactor the service signs for`);
+    // An executor built before depositStock refuses every deposit with no reason; this one names USDC no stock.
+    const refused = await ethCall({ to: cfg.executor, abi: ABI.executor, functionName: "depositStock", args: [MAINNET.usdc, 0n] }).then(
+      () => "",
+      (error) => revertReason(error),
+    );
+    if (!refused.includes("NotStock")) throw new Error(`the executor takes no deposit (depositStock answered "${refused}"): it predates the local coins' restock`);
+  }
   for (const [name, home] of Object.entries(homes)) {
     await home.check();
     // One recipient per coin and chain: Solana's bridge pays a token account per mint, so the executor pins each coin.
@@ -99,6 +115,17 @@ const advance = createAdvance({
   wormholescan,
   iris,
   redeemIn: (vaa, copy) => eth.complete({ to: cfg.executor, abi: ABI.executor, functionName: "redeemBridged", args: [vaa, copy] }),
+  orders: {
+    post: (move) => {
+      if (!uniswapx) return Promise.reject(new Error("UNISWAP_API_KEY is unset: the order waits for its deadline"));
+      return uniswapx.post({ signature: move.data.signature, quote: move.data.quote, routing: move.data.routing });
+    },
+    filled: async (move) => {
+      const { word, bit } = nonceSlot(BigInt(move.data.nonce));
+      return nonceUsed(await eth.read(PERMIT2, ABI.permit2, "nonceBitmap", [eth.address, word]), bit);
+    },
+    chainTime: async () => Number((await eth.client.getBlock()).timestamp),
+  },
   coinOf,
   log,
 });
@@ -167,6 +194,8 @@ async function readState() {
       log(name, `left out of this round, its balances could not be read: ${revertReason(error)}`);
     }
   }
+  // A local coin's home wallet is the treasury, on Ethereum: what it holds of the coin, bought and not yet deposited.
+  for (const c of cfg.coins.filter((x) => x.local)) home.coins.set(c.symbol, await eth.balance(c.copy));
   const coins = cfg.coins.filter((c) => !down.has(c.chain));
   return { coins, needs, stock, restockAllowance, home, treasury: { usdc: treasuryUsdc, allowance: treasuryAllowance } };
 }
@@ -210,6 +239,12 @@ async function act(a, price) {
     await h.sweep(a, eth.address, cctpMaxFee(a.amount, await iris.fees(CHAINS[a.chain].cctpDomain, 0)));
     return log(a.chain, `bringing ${Number(a.amount) / 1e6} USDC home to the treasury`);
   }
+  if (a.kind === "order") return placeOrder(a, c);
+  if (a.kind === "deposit") {
+    await eth.allow(c.copy, cfg.executor, a.amount);
+    await eth.commit(a, { to: cfg.executor, abi: ABI.executor, functionName: "depositStock", args: [c.copy, a.amount] });
+    return log(a.coin, `deposited ${a.usd.toFixed(0)} USD of it into the executor`);
+  }
   if (a.kind === "draw") {
     await eth.commit(a, { to: cfg.executor, abi: ABI.executor, functionName: "drawUsdc", args: [a.amount] });
     return log("treasury", `drew ${Number(a.amount) / 1e6} USDC from the executor`);
@@ -219,6 +254,53 @@ async function act(a, price) {
     await eth.commit(a, { to: cfg.executor, abi: ABI.executor, functionName: "repayUsdc", args: [a.amount] });
     return log("treasury", `repaid ${Number(a.amount) / 1e6} USDC to the executor`);
   }
+}
+
+/// Buys `a.amountIn` of USDC's worth of local coin `c` through UniswapX: asks the API for an order, refuses it unless
+/// every field the signature commits to is what the plan allows (`uniswapx.mjs` refusal) and its Permit2 nonce is
+/// unspent, lets Permit2 take exactly what the open orders and this one may spend (RS-12), signs typed data built from
+/// the checked fields, records the order, and posts it. Its filler pays the coin to the treasury; a later round deposits
+/// it.
+async function placeOrder(a, c) {
+  const offer = await uniswapx.quote({ tokenIn: MAINNET.usdc, tokenOut: c.copy, amount: a.amountIn, swapper: eth.address, chainId: MAINNET.chainId });
+  if (!offer) return log(a.coin, `no UniswapX order offered for ${a.usd.toFixed(0)} USD`);
+  if (offer.routing !== ROUTING) return log(a.coin, `UniswapX offered a ${offer.routing} route, not a ${ROUTING} order: nothing signed`);
+  const order = decodeV2Order(offer.quote.encodedOrder);
+  const open = journal.pending().filter((m) => m.kind === "order");
+  const now = Number((await eth.client.getBlock()).timestamp);
+  const why = refusal(order, {
+    swapper: eth.address,
+    tokenIn: MAINNET.usdc,
+    tokenOut: c.copy,
+    maxIn: a.maxIn,
+    minOut: a.minOut,
+    now,
+    openNonces: open.map((m) => BigInt(m.data.nonce)),
+  });
+  if (why) return log(a.coin, `UniswapX's order refused, nothing signed: ${why}`);
+  const { word, bit } = nonceSlot(order.info.nonce);
+  if (nonceUsed(await eth.read(PERMIT2, ABI.permit2, "nonceBitmap", [eth.address, word]), bit)) {
+    return log(a.coin, "UniswapX's order reuses a spent Permit2 nonce: nothing signed");
+  }
+  const committed = open.reduce((sum, m) => sum + BigInt(m.data.maxIn), inputMax(order));
+  if ((await eth.read(MAINNET.usdc, ABI.erc20, "allowance", [eth.address, PERMIT2])) !== committed) {
+    await eth.complete({ to: MAINNET.usdc, abi: ABI.erc20, functionName: "approve", args: [PERMIT2, committed] });
+  }
+  const signature = await eth.signTypedData(permitTypedData(order, MAINNET.chainId));
+  const id = journal.open(a, {
+    chain: "ethereum",
+    nonce: order.info.nonce.toString(),
+    deadline: Number(order.info.deadline),
+    maxIn: inputMax(order).toString(),
+    minOut: outputMin(order).toString(),
+    orderHash: orderHash(order, MAINNET.chainId),
+    signature,
+    quote: offer.quote,
+    routing: offer.routing,
+  });
+  await advance(journal.get(id));
+  const posted = journal.get(id).data.posted ? "posted" : `not yet posted (${journal.get(id).data.postError})`;
+  return log(a.coin, `UniswapX order ${id} signed and ${posted}: at most ${Number(inputMax(order)) / 1e6} USDC for at least ${(Number(outputMin(order)) / 10 ** c.decimals).toFixed(6)} of it`);
 }
 
 /// CCTP V2 lets a Solana burn's event account be closed for its rent five days after the burn; the journal keeps a

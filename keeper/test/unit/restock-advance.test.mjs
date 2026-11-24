@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createAdvance, NOT_COMPLETED, REATTEST_EVERY_SECONDS } from "../../restock/advance.mjs";
 import { createJournal } from "../../restock/journal.mjs";
+import { EXPIRY_MARGIN_SECONDS } from "../../restock/uniswapx.mjs";
 
 const hex = (n, bytes) => BigInt(n).toString(16).padStart(bytes * 2, "0");
 /// A CCTP V2 burn message with expiration block `expirationBlock`, distinguished by `tag` (its nonce).
@@ -12,7 +13,7 @@ const message = (tag, expirationBlock) => {
 
 /// The service around one move: an in-memory journal, Ethereum and a Sui home whose answers the test sets, and the two
 /// attestation services, each recording what it was asked.
-function rig({ verifiesCctp = () => true, verifiesVaa = () => true, irisAnswers = [], vaaAnswers = [], lands = () => true } = {}) {
+function rig({ verifiesCctp = () => true, verifiesVaa = () => true, irisAnswers = [], vaaAnswers = [], lands = () => true, posts = () => true, filled = () => false, chainTime = null } = {}) {
   let text = null;
   let clock = 1_000_000;
   const journal = createJournal({ load: () => text, save: (t) => (text = t), now: () => clock });
@@ -49,6 +50,14 @@ function rig({ verifiesCctp = () => true, verifiesVaa = () => true, irisAnswers 
     wormholescan,
     iris,
     redeemIn: async (v, copy) => (did.push(["redeemIn", v, copy]), complete("ethereum", v)),
+    orders: {
+      post: async (move) => {
+        did.push(["post", move.data.signature]);
+        if (!posts()) throw new Error("HTTP 503: Failed to post order");
+      },
+      filled: async () => filled(),
+      chainTime: async () => chainTime ?? clock,
+    },
     coinOf: () => ({ copy: "0xcopy" }),
     log: () => {},
     now: () => clock,
@@ -158,4 +167,74 @@ test("CA-M10: a completing transaction that was mined proves nothing: the other 
   const id = fund(cctp.journal);
   await assert.rejects(cctp.advance(cctp.journal.get(id)), new RegExp(NOT_COMPLETED));
   assert.equal(cctp.journal.get(id).stage, "attested", "the burn's USDC is still to receive");
+});
+
+/// A UniswapX order signed for a deadline 120 s away.
+function signedOrder(journal, clock) {
+  return journal.open({ kind: "order", coin: "NVDAON", copy: "0xnvda", chain: "ethereum", amountIn: 1_980_000_000n, usd: 1_980 }, { nonce: "7", deadline: clock + 120, signature: "0xsig" });
+}
+
+test("a UniswapX order is posted, then done once Permit2 shows its nonce spent", async () => {
+  let spent = false;
+  const r = rig({ filled: () => spent });
+  const id = signedOrder(r.journal, 1_000_000);
+  await r.advance(r.journal.get(id));
+  assert.deepEqual(r.did, [["post", "0xsig"]]);
+  assert.equal(r.journal.get(id).stage, "sent");
+  assert.equal(r.journal.get(id).data.posted, true);
+  await r.advance(r.journal.get(id));
+  assert.equal(r.did.length, 1, "posted once");
+  assert.equal(r.journal.get(id).stage, "sent", "waiting for a filler");
+  spent = true;
+  await r.advance(r.journal.get(id));
+  assert.equal(r.journal.get(id).stage, "done");
+});
+
+test("an order the API did not take is posted again, and is held until its deadline and finality pass, a filler may have it", async () => {
+  let up = false;
+  const r = rig({ posts: () => up });
+  const id = signedOrder(r.journal, 1_000_000);
+  await r.advance(r.journal.get(id));
+  assert.equal(r.journal.get(id).stage, "sent", "its signature left the service");
+  assert.equal(r.journal.get(id).data.posted, false);
+  assert.match(r.journal.get(id).data.postError, /HTTP 503/);
+  up = true;
+  await r.advance(r.journal.get(id));
+  assert.equal(r.journal.get(id).data.posted, true, "posted on the next round");
+  await r.advance(r.journal.get(id));
+  assert.equal(r.did.filter(([k]) => k === "post").length, 2, "and not again");
+
+  r.tick(120 + EXPIRY_MARGIN_SECONDS);
+  await r.advance(r.journal.get(id));
+  assert.equal(r.journal.get(id).stage, "sent", "at the margin's last second it may still be in a block a re-org undoes");
+  r.tick(1);
+  await r.advance(r.journal.get(id));
+  assert.equal(r.journal.get(id).stage, "dropped");
+  assert.equal(r.journal.get(id).data.status, "expired");
+});
+
+test("an order is given up by the chain's clock, not the service's, and one filled at the last moment is done, not dropped", async () => {
+  const behind = rig({ chainTime: 1_000_000 });
+  const id = signedOrder(behind.journal, 1_000_000);
+  behind.tick(10_000);
+  await behind.advance(behind.journal.get(id));
+  assert.equal(behind.journal.get(id).stage, "sent", "the chain has not passed the deadline");
+
+  const late = rig({ filled: () => true });
+  const filled = signedOrder(late.journal, 1_000_000);
+  late.tick(10_000);
+  await late.advance(late.journal.get(filled));
+  assert.equal(late.journal.get(filled).stage, "done");
+});
+
+test("a deposit into the executor settles once its transaction is mined, as a draw does", async () => {
+  const r = rig();
+  const id = r.journal.open({ kind: "deposit", coin: "NVDAON", copy: "0xnvda", chain: "ethereum", amount: 5n, usd: 900 }, { chain: "ethereum", hash: "0xd" });
+  r.journal.advance(id, "sent", { status: "success" });
+  await r.advance(r.journal.get(id));
+  assert.equal(r.journal.get(id).stage, "done");
+  const reverted = r.journal.open({ kind: "deposit", coin: "NVDAON", copy: "0xnvda", chain: "ethereum", amount: 5n, usd: 900 }, { chain: "ethereum", hash: "0xe" });
+  r.journal.advance(reverted, "sent", { status: "reverted" });
+  await r.advance(r.journal.get(reverted));
+  assert.equal(r.journal.get(reverted).stage, "dropped", "the coins never left the treasury");
 });

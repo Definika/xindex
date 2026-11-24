@@ -12,6 +12,7 @@ import {stdError} from "forge-std/StdError.sol";
 import {WeightedTest} from "xindex/test/WeightedTest.sol";
 import {MockERC20} from "xindex/test/mocks/MockERC20.sol";
 import {MockSwapRouter} from "xindex/test/mocks/MockSwapRouter.sol";
+import {MockFeeToken} from "xindex/test/mocks/MockFeeToken.sol";
 import {KeeperExecutor} from "../src/KeeperExecutor.sol";
 import {IV3SwapRouter} from "../src/interfaces/IV3SwapRouter.sol";
 import {ITokenBridge} from "../src/interfaces/ITokenBridge.sol";
@@ -1415,6 +1416,8 @@ contract KeeperExecutorTest is WeightedTest {
             executor.drawUsdc(0);
             vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NotTreasury.selector, others[i]));
             executor.repayUsdc(0);
+            vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NotTreasury.selector, others[i]));
+            executor.depositStock(address(btc), 0);
             vm.stopPrank();
         }
     }
@@ -1776,6 +1779,108 @@ contract KeeperExecutorTest is WeightedTest {
         executor.redeemBridged(more, address(btc));
         assertEq(btc.balanceOf(address(executor)), 5e8, "a full allowance takes in the next arrival too");
         assertEq(executor.restockAllowance(address(btc)), 4e8, "earning nothing from it");
+    }
+
+    // ---------------------------------------------------------------------
+    // Deposited stock
+    // ---------------------------------------------------------------------
+
+    /// @dev `amount` of `token` the treasury bought on this chain, approved to the executor and deposited.
+    function _deposit(MockERC20 token, uint256 amount) internal returns (uint256 credited) {
+        token.mint(treasury, amount);
+        vm.startPrank(treasury);
+        token.approve(address(executor), amount);
+        credited = executor.depositStock(address(token), amount);
+        vm.stopPrank();
+    }
+
+    /// @dev RS-1, for a coin the treasury buys here (through UniswapX) rather than bridges in: what it deposits earns
+    ///      stock allowance only within the owner's restock allowance, which every credit spends, and what arrives
+    ///      beyond it is kept as stock the keeper cannot deliver.
+    function test_RS1_depositedStockEarnsAllowanceOnlyWithinTheOwnersRestockAllowance() public {
+        _treasury();
+        _restock(address(btc), 3e8);
+        btc.mint(treasury, 5e8);
+        vm.startPrank(treasury);
+        btc.approve(address(executor), 5e8);
+        vm.expectEmit(address(executor));
+        emit KeeperExecutor.StockDeposited(address(btc), 5e8, 3e8);
+        assertEq(executor.depositStock(address(btc), 5e8), 3e8, "credited up to the restock allowance");
+        vm.stopPrank();
+        assertEq(btc.balanceOf(address(executor)), 5e8, "all of it is here");
+        assertEq(btc.balanceOf(treasury), 0);
+        assertEq(executor.stockAllowance(address(btc)), 3e8);
+        assertEq(executor.restockAllowance(address(btc)), 0, "which the credit spent");
+
+        assertEq(_deposit(btc, 1e8), 0, "nothing more without the owner");
+        assertEq(executor.stockAllowance(address(btc)), 3e8);
+        assertEq(btc.balanceOf(address(executor)), 6e8);
+    }
+
+    /// @dev USDC is the float: the treasury repays it, which lowers what it holds off the float (RS-2); deposited as
+    ///      stock, it would raise a stock allowance no fill spends.
+    function test_aDepositOfUsdcIsRefused() public {
+        _treasury();
+        usdc.mint(treasury, 1e6);
+        vm.startPrank(treasury);
+        usdc.approve(address(executor), 1e6);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NotStock.selector, address(usdc)));
+        executor.depositStock(address(usdc), 1e6);
+        vm.stopPrank();
+    }
+
+    /// @dev A deposit credits what arrived, not what was asked: a token that charges for a transfer earns allowance
+    ///      only for what it delivered, so the keeper is never allowed stock the executor does not hold.
+    function test_aDepositCreditsWhatArrivedNotWhatWasAsked() public {
+        _treasury();
+        MockFeeToken fee = new MockFeeToken();
+        _restock(address(fee), 1000e18);
+        fee.mint(treasury, 100e18);
+        vm.startPrank(treasury);
+        fee.approve(address(executor), 100e18);
+        vm.expectEmit(address(executor));
+        emit KeeperExecutor.StockDeposited(address(fee), 99e18, 99e18);
+        assertEq(executor.depositStock(address(fee), 100e18), 99e18);
+        vm.stopPrank();
+        assertEq(fee.balanceOf(address(executor)), 99e18);
+        assertEq(executor.stockAllowance(address(fee)), 99e18, "what arrived, a percent short of what was asked");
+        assertEq(executor.restockAllowance(address(fee)), 1000e18 - 99e18);
+    }
+
+    /// @dev RS-6, for a deposit: a stock allowance at its most takes the credit it can still hold and leaves the rest
+    ///      of the restock allowance, and the coins still arrive.
+    function test_RS6_aStockAllowanceAtItsMostDoesNotBlockADeposit() public {
+        _treasury();
+        _restock(address(btc), 5e8);
+        vm.prank(execOwner);
+        executor.setStockAllowance(address(btc), type(uint256).max - 1e8);
+        assertEq(_deposit(btc, 3e8), 1e8, "the credit the allowance can still hold");
+        assertEq(executor.stockAllowance(address(btc)), type(uint256).max);
+        assertEq(executor.restockAllowance(address(btc)), 4e8);
+        assertEq(_deposit(btc, 2e8), 0, "a full allowance still takes the coins in");
+        assertEq(btc.balanceOf(address(executor)), 5e8);
+    }
+
+    /// @dev End to end: a coin with no route is delivered from stock the treasury deposited, once credited, and the
+    ///      fill spends that credit (CF-1); before the deposit the fill finds no way to the coin.
+    function test_depositedStockServesAFillWithinItsCredit() public {
+        _treasury();
+        _open(index.AUCTION_DURATION());
+        (, uint256[] memory in_) = _preview();
+        bytes[] memory routes = _routes();
+        routes[1] = "";
+        _expectFillReverts(
+            abi.encodeWithSelector(KeeperExecutor.NoRoute.selector, address(btc)),
+            keeper,
+            address(index),
+            routes,
+            block.timestamp
+        );
+        _restock(address(btc), in_[1]);
+        assertEq(_deposit(btc, in_[1]), in_[1]);
+        _fill(executor, routes, in_, type(int256).min);
+        assertEq(btc.balanceOf(address(executor)), 0, "delivered from what was deposited");
+        assertEq(executor.stockAllowance(address(btc)), 0, "spending its credit");
     }
 
     // ---------------------------------------------------------------------

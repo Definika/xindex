@@ -118,7 +118,8 @@ only its operator's funds: a USDC float, a stock of coins without a Uniswap rout
 attacker who breaks it takes the operator's money, not holders'. Its bounds are the allowances its owner sets (stock
 per coin and per index, the float a request fill may spend, restock per coin), and the audit of 2026-11-21 found the
 one place a stated bound did not hold (`CA-H1`, fixed). It is worth a read if time allows: `fill`, `fillMint`,
-`fillRedeem`, `fillBatch` and `redeemBridged`.
+`fillRedeem`, `fillBatch`, `redeemBridged` and `depositStock` (2026-11-24: the treasury's deposit of an Ondo stock it
+bought through UniswapX, credited as a bridged arrival is, `design/2026-11-24-uniswapx-restock.md`).
 
 ### Out of scope
 

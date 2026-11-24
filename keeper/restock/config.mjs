@@ -35,6 +35,7 @@ export const GAS_MIN = Object.freeze({
 
 const DEFAULTS = {
   HERMES_URL: "https://pyth.dourolabs.app/hermes",
+  UNISWAP_API_URL: "https://trade-api.gateway.uniswap.org/v1",
   RESTOCK_BUFFER_BPS: "1000",
   RESTOCK_MIN_USD: "200",
   RESTOCK_DAILY_USD: "20000",
@@ -47,17 +48,20 @@ const DEFAULTS = {
 };
 
 /// Parses and checks `env`. Throws one Error naming every problem, so a misconfigured service never starts. Only the
-/// chains of the coins served (`RESTOCK_COINS`, every coin when unset) need their settings.
+/// chains of the coins served (`RESTOCK_COINS`, the default coins when unset) need their settings, and only the local
+/// coins, which UniswapX alone sells, Uniswap's API key (UNISWAP_API_KEY); with that key set and RESTOCK_COINS unset,
+/// every local coin is served besides the default ones.
 export function parseRestockConfig(env) {
   const { problems, get, required, number, bps } = envReader(env, DEFAULTS);
   let coins = [];
   const list = get("RESTOCK_COINS");
   try {
-    coins = coinsOf(list ? list.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean) : null);
+    coins = coinsOf(list ? list.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean) : null, { uniswapx: Boolean(get("UNISWAP_API_KEY")) });
     if (coins.length === 0) problems.push("RESTOCK_COINS is set but names no coin");
   } catch (error) {
     problems.push(error.message);
   }
+  const local = coins.filter((c) => c.local);
 
   const config = {
     rpcUrl: required("RPC_URL", URL, "an http(s) URL"),
@@ -69,6 +73,12 @@ export function parseRestockConfig(env) {
     journalFile: required("JOURNAL_FILE", /^\S+$/, "a file path"),
     coins,
     chains: {},
+    uniswapx: local.length
+      ? {
+          apiKey: required("UNISWAP_API_KEY", /^\S+$/, `Uniswap's Trading API key, for ${local.map((c) => c.symbol).join(", ")}`),
+          url: required("UNISWAP_API_URL", URL, "an http(s) URL")?.replace(/\/+$/, ""),
+        }
+      : null,
     intervalSeconds: number("RESTOCK_INTERVAL_SECONDS", { min: 10, integer: true }),
     plan: {
       bufferBps: bps("RESTOCK_BUFFER_BPS"),
@@ -83,7 +93,7 @@ export function parseRestockConfig(env) {
     },
   };
 
-  for (const chain of [...new Set(coins.map((c) => c.chain))]) {
+  for (const chain of [...new Set(coins.filter((c) => !c.local).map((c) => c.chain))]) {
     const s = CHAIN_SETTINGS[chain];
     config.chains[chain] = {
       ...CHAINS[chain],

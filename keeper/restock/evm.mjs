@@ -139,6 +139,8 @@ export const ABI = Object.freeze({
     "function receiveMessage(bytes message, bytes attestation) returns (bool)",
     "function usedNonces(bytes32 nonce) view returns (uint256)",
   ]),
+  permit2: parseAbi(["function nonceBitmap(address owner, uint256 word) view returns (uint256)"]),
+  reactor: parseAbi(["function permit2() view returns (address)"]),
 });
 
 /// A signed transfer's hash, as the Token Bridge records a completed one: the double keccak of its body, which starts
@@ -243,6 +245,8 @@ export function createEvm({ name, rpcUrl, key, journal }) {
     resume,
     complete,
     allow,
+    /// Signs EIP-712 typed data with the treasury's key: a UniswapX order's Permit2 witness (`uniswapx.mjs`).
+    signTypedData: (typed) => account.signTypedData(typed),
     sequenceOf,
     /// The sequence the Token Bridge published in mined transaction `hash`.
     sequenceOfTx: async (hash) => sequenceOf(await client.getTransactionReceipt({ hash }), def.tokenBridge),

@@ -67,3 +67,21 @@ test("RS-7: a transfer cap below the smallest trade is refused, since every buy 
   );
   assert.equal(parseRestockConfig({ ...VALID, RESTOCK_MIN_USD: "500", RESTOCK_MAX_TRANSFER_USD: "500" }).plan.maxTransferUsd, 500);
 });
+
+test("a local coin, which only UniswapX sells, needs Uniswap's API key and no home chain", () => {
+  const local = { ...VALID, RESTOCK_COINS: "NVDAON,AAPLON" };
+  assert.throws(() => parseRestockConfig(local), /UNISWAP_API_KEY is required/, "named without the key");
+  const cfg = parseRestockConfig({ ...local, UNISWAP_API_KEY: "ux-key" });
+  assert.deepEqual(cfg.coins.map((c) => c.symbol), ["NVDAON", "AAPLON"]);
+  assert.deepEqual(Object.keys(cfg.chains), [], "no home chain: Ethereum is its home");
+  assert.deepEqual(cfg.uniswapx, { apiKey: "ux-key", url: "https://trade-api.gateway.uniswap.org/v1" });
+  assert.equal(parseRestockConfig(VALID).uniswapx, null, "no local coin, no UniswapX");
+
+  // Unset RESTOCK_COINS: the default coins, and with the key every local coin besides.
+  const { RESTOCK_COINS, ...unset } = VALID;
+  const defaults = { ...unset, AVALANCHE_RPC_URL: "https://avax.example", BASE_RPC_URL: "https://base.example" };
+  assert.deepEqual(parseRestockConfig(defaults).coins.map((c) => c.symbol), ["AVAX", "AERO"]);
+  const withKey = parseRestockConfig({ ...defaults, UNISWAP_API_KEY: "ux-key", UNISWAP_API_URL: "https://ux.example/v1/" });
+  assert.equal(withKey.coins.filter((c) => c.local).length, 9);
+  assert.equal(withKey.uniswapx.url, "https://ux.example/v1", "its trailing slash dropped");
+});

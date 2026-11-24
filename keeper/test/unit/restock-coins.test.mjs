@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { CHAINS, COINS, PRICE_IDS, coinsOf } from "../../restock/coins.mjs";
+import { CHAINS, COINS, LOCAL_COINS, PRICE_IDS, coinsOf } from "../../restock/coins.mjs";
+import { SHARE_PRICED_IDS } from "../../bot/config.mjs";
 
 const read = (path) => readFileSync(new URL(`../../../${path}`, import.meta.url), "utf8");
 const addresses = read("script/MainnetAddresses.sol");
@@ -29,7 +30,26 @@ test("every coin is priced at the feed PythIds names for it", () => {
     assert.ok(id, `${c.symbol}: PythIds has no ${c.name}`);
     assert.equal(PRICE_IDS[c.symbol], id[1], `${c.symbol}'s feed`);
   }
-  assert.deepEqual(Object.keys(PRICE_IDS).sort(), COINS.map((c) => c.symbol).sort());
+  assert.deepEqual(Object.keys(PRICE_IDS).sort(), [...COINS, ...LOCAL_COINS].map((c) => c.symbol).sort());
+});
+
+test("every local coin is the Ondo token MainnetAddresses lists, priced at its token's own feed, which the keeper values", () => {
+  assert.equal(LOCAL_COINS.length, 9);
+  for (const c of LOCAL_COINS) {
+    const constant = new RegExp(`address internal constant ${c.name} = (0x[0-9a-fA-F]{40});`).exec(addresses);
+    assert.ok(constant, `${c.symbol}: MainnetAddresses has no ${c.name}`);
+    assert.equal(c.copy, constant[1].toLowerCase(), `${c.symbol}'s token`);
+    assert.equal(c.home, c.copy, "its home is the token itself");
+    assert.equal(c.chain, "ethereum");
+    assert.equal(c.local, true);
+    assert.equal(c.decimals, 18);
+    const id = new RegExp(`bytes32 internal constant ${c.name} = (0x[0-9a-f]{64});`).exec(pythIds);
+    assert.ok(id, `${c.symbol}: PythIds has no ${c.name}`);
+    assert.equal(PRICE_IDS[c.symbol], id[1], `${c.symbol}'s feed`);
+    // A share-priced leg the keeper never delivers from stock (RX-2): stock of it would serve no fill.
+    assert.ok(!SHARE_PRICED_IDS.includes(id[1]), `${c.symbol} is priced at its token's own feed`);
+  }
+  assert.ok(COINS.every((c) => !c.local), "the bridged coins are not local");
 });
 
 test("only BNB Chain and Algorand go without CCTP, and the gas coins are the three chains' own", () => {
@@ -41,6 +61,12 @@ test("only BNB Chain and Algorand go without CCTP, and the gas coins are the thr
 
 test("a subset of the coins is chosen by symbol, and an unknown symbol is refused", () => {
   assert.deepEqual(coinsOf(null).map((c) => c.symbol), ["AVAX", "AERO"], "the served coins by default");
+  assert.deepEqual(
+    coinsOf(null, { uniswapx: true }).map((c) => c.symbol),
+    ["AVAX", "AERO", ...LOCAL_COINS.map((c) => c.symbol)],
+    "and every local coin with a UniswapX key",
+  );
+  assert.deepEqual(coinsOf(["NVDAON", "AVAX"]).map((c) => c.symbol), ["AVAX", "NVDAON"], "a local coin named, with or without the key");
   assert.deepEqual(coinsOf(["OP"]).map((c) => c.symbol), ["OP"], "OP, off the list since 2026-11-21, only when named");
   assert.ok(coinsOf(null).every((c) => CHAINS[c.chain].platform === "evm"), "each with its chain's adapter built");
   assert.deepEqual(coinsOf(["XRP", "SUI"]).map((c) => c.symbol), ["XRP", "SUI"]);
