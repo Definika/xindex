@@ -129,7 +129,7 @@ CHECK=<token,...> forge script script/CheckToken.s.sol --fork-url <any evm rpc>
 `script/PriceFeeds.sol` names for it: the same run proposes both, and `execute` runs both once the 2-day delay has
 passed. A token without a feed can be listed but cannot be put in a new index or moved by a fill.
 `V5_WHITELIST=default` is the first four coins of `script/Listings.sol` (WETH, WBTC, LINK and UNI)
-and `V5_WHITELIST=wide` the rest, 414 in all; on BNB Chain `V5_WHITELIST=bnb` is that chain's 364, and on Base
+and `V5_WHITELIST=wide` the rest, 415 in all; on BNB Chain `V5_WHITELIST=bnb` is that chain's 365, and on Base
 `V5_WHITELIST=base` its thirty-two. On Base the script cannot read Coinbase's ten stock tokens under the pinned
 Foundry, which does not run Base's precompiles: it takes their decimals from `script/BaseAddresses.sol` and still
 builds their proposals, and the factory reads the real decimals when each lands. Safe mode

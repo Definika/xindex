@@ -240,14 +240,3 @@ export function nameUnits({ units, weights, keepMask = 0n, prices, bar, costBps 
   return { newUnits: best, gain: bestGain };
 }
 
-/// What `newUnits` leaves the keeper, in dollars per 1e18 shares at `prices` (dollars per raw unit): the value of the
-/// units the index gives up less the value of those it gains, before routes and gas. Legs without a price count as
-/// nothing, and the keeper never moves them.
-export function takeUsd(units, newUnits, prices) {
-  let usd = 0;
-  for (let i = 0; i < units.length; i++) {
-    if (!(prices[i] > 0)) continue;
-    usd += (Number(units[i]) - Number(newUnits[i])) * prices[i];
-  }
-  return usd;
-}

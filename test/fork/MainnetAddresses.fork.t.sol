@@ -461,6 +461,7 @@ contract MainnetAddressesForkTest is Test {
         _assertToken(M.DRAMON, "DRAMon", 18);
         _assertToken(M.SATAON, "SATAon", 18);
         _assertToken(M.STRCON, "STRCon", 18);
+        _assertToken(M.ANTON, "ANTon", 18);
         _assertToken(M.FF, "FF", 18);
         _assertToken(M.GNO, "GNO", 18);
         _assertToken(M.OHM, "OHM", 9);
@@ -489,20 +490,9 @@ contract MainnetAddressesForkTest is Test {
         _assertToken(M.GALA, "GALA", 8);
         _assertToken(M.W, "W", 18);
         _assertToken(M.RSR, "RSR", 18);
-        _assertToken(M.XRP, "XRP", 18);
-        _assertToken(M.ADA, "ADA", 18);
-        _assertToken(M.LTC, "LTC", 18);
         _assertToken(M.AVAX, "WAVAX", 18);
-        _assertToken(M.DOT, "DOT", 18);
-        _assertToken(M.JUP, "JUP", 6);
-        _assertToken(M.ALGO, "ALGO", 6);
-        _assertToken(M.ATOM, "ATOM", 18);
         _assertToken(M.AERO, "AERO", 18);
-        _assertToken(M.APT, "APT", 8);
-        _assertToken(M.PYTH_TOKEN, "PYTH", 6);
         _assertToken(M.OP, "OP", 18);
-        _assertToken(M.BNB, "WBNB", 18);
-        _assertToken(M.SUI, "SUI", 9);
     }
 
     function _assertWrapped(address token, uint16 chain, bytes32 source) internal view {
@@ -511,29 +501,15 @@ contract MainnetAddressesForkTest is Test {
         assertTrue(bridge.isWrappedAsset(token), IERC20Metadata(token).symbol());
     }
 
-    /// @dev Every Wormhole copy on the list is the one the bridge deployed for its source token, by the bridge's own
-    ///      registry, with the source written out here: a Binance-Peg BEP-20's address on BNB Chain (Wormhole chain
-    ///      4), a Solana mint (chain 1), Avalanche's WAVAX (chain 6), Algorand's ALGO (chain 8, asset 0), Aptos's APT
-    ///      (chain 22, the hash of its coin type), Base's AERO (chain 30), Optimism's OP (chain 24), BNB Chain's WBNB
-    ///      (chain 4), Sui's SUI (chain 21, its CoinMetadata object) and Sei's usei (chain 32, its keccak256 with the
-    ///      first byte set to 1).
+    /// @dev Every Wormhole copy the book holds is the one the bridge deployed for its source token, by the bridge's own
+    ///      registry, with the source written out here: a Solana mint (chain 1), Avalanche's WAVAX (chain 6), Base's
+    ///      AERO (chain 30) and Optimism's OP (chain 24).
     function testFork_theWormholeCopiesAreTheBridges() public view {
         assertEq(M.WORMHOLE_TOKEN_BRIDGE.codehash, WORMHOLE_BRIDGE_PROXY_CODEHASH);
         _assertWrapped(M.SOL, 1, 0x069b8857feab8184fb687f634618c035dac439dc1aeb3b5598a0f00000000001); // SOL from Solana
-        _assertWrapped(M.XRP, 4, 0x0000000000000000000000001d2f0da169ceb9fc7b3144628db156f3f6c60dbe); // XRP from BNB Chain
-        _assertWrapped(M.ADA, 4, 0x0000000000000000000000003ee2200efb3400fabb9aacf31297cbdd1d435d47); // ADA from BNB Chain
-        _assertWrapped(M.LTC, 4, 0x0000000000000000000000004338665cbb7b2485a8855a139b75d5e34ab0db94); // LTC from BNB Chain
         _assertWrapped(M.AVAX, 6, 0x000000000000000000000000b31f66aa3c1e785363f0875a1b74e27b85fd66c7); // AVAX from Avalanche
-        _assertWrapped(M.DOT, 4, 0x0000000000000000000000007083609fce4d1d8dc0c979aab8c869ea2c873402); // DOT from BNB Chain
-        _assertWrapped(M.JUP, 1, 0x0479d9c7cc1035de7211f99eb48c09d70b2bdf5bdf9e2e56b8a1fbb5a2ea3327); // JUP from Solana
-        _assertWrapped(M.ALGO, 8, 0x0000000000000000000000000000000000000000000000000000000000000000); // ALGO from Algorand
-        _assertWrapped(M.ATOM, 4, 0x0000000000000000000000000eb3a705fc54725037cc9e008bdede697f62f335); // ATOM from BNB Chain
         _assertWrapped(M.AERO, 30, 0x000000000000000000000000940181a94a35a4569e4529a3cdfb74e38fd98631); // AERO from Base
-        _assertWrapped(M.APT, 22, 0xa867703f5395cb2965feb7ebff5cdf39b771fc6156085da3ae4147a00be91b38); // APT from Aptos
-        _assertWrapped(M.PYTH_TOKEN, 1, 0xf5edec8471c75624ebc4079a634326d96a689e6157d79abe8f5a6f94472853bc); // PYTH from Solana
         _assertWrapped(M.OP, 24, 0x0000000000000000000000004200000000000000000000000000000000000042); // OP from Optimism
-        _assertWrapped(M.BNB, 4, 0x000000000000000000000000bb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c); // WBNB from BNB Chain
-        _assertWrapped(M.SUI, 21, 0x9258181f5ceac8dbffb7030890243caed69a9599d2886d957a9cb7656af3bdb3); // SUI from Sui
     }
 
     /// @dev Every entry, as the listing script builds it, listed on a fresh factory, which records each token's
@@ -555,7 +531,7 @@ contract MainnetAddressesForkTest is Test {
     /// @dev Every wide entry lists on a fresh factory with its token's own decimals.
     function testFork_wideWhitelistMatchesMainnet() public {
         address[] memory list = new ConfigureWeighted().wideMainnetList();
-        assertEq(list.length, 410, "the 414 listed less the default four");
+        assertEq(list.length, 411, "the 415 listed less the default four");
         _listOnAFreshFactory(list);
     }
 

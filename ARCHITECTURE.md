@@ -880,10 +880,10 @@ SOL, listed first, 12 added on 2026-10-10, and BNB and SUI, whose copies the cou
 2026-10-18; a 13th of 2026-10-10, DOGE's, left on 2026-10-14 on the owner's call, since Pyth, which then priced the
 rebalance, prices DOGE and not the copy. SAND and RLB left on 2026-10-18 after the source reading, and on 2026-10-19 BTT
 and SEI's copy, added with BNB's and SUI's, their bridges closed or closing (RX-28, RX-32), the owner's calls; ZK is
-tiered Bridged, ZKsync's bridge copy of a token issued on ZKsync Era (RX-19). Tether Gold and the 352 Ondo stocks and
-ETFs do not count toward the hundred, so 61 coins of the top 300 are listed; 26 more copies await an attestation on Wormhole's
-Portal, each of which, without an Ethereum pool or a restock that has run from its home chain, would meet the same bar
-as the five, and FIL's waits for a reading of its Binance-Peg source (`design/2026-10-10-one-index-wormhole-legs.md`, section
+tiered Bridged, ZKsync's bridge copy of a token issued on ZKsync Era (RX-19). Tether Gold and the 353 Ondo stocks and
+ETFs do not count toward the hundred, so 61 coins of the top 300 are listed; 26 more copies await an attestation through
+Wormhole's SDK, each of which, without an Ethereum pool, would meet the same bar as the five, the restock serving EVM
+home chains alone since 2026-11-25 (`audit/2026-11-25-non-evm-restock-retirement.md`), and FIL's waits for a reading of its Binance-Peg source (`design/2026-10-10-one-index-wormhole-legs.md`, section
 2a, and `design/2026-10-18-pre-mainnet-readings.md`, section 3).
 
 **Up to 200 components** (the owner's call of 2026-11-21, to hold as many as the contracts carry; 100 until then).
@@ -1101,7 +1101,7 @@ reads it.
 
 **What remains before a mainnet**, in the order of `design/2026-10-10-one-index-wormhole-legs.md`, section 5, as
 `design/2026-10-18-pre-mainnet-readings.md`, section 7, and the spec, section 9, update it: the 26 Wormhole copies still
-to attest, and FIL's source reading, each then through `CheckToken` and onto the lists, and RAY's `updateWrapped` from
+to attest, through Wormhole's SDK, each served only if an Ethereum pool trades it, and FIL's source reading, each then through `CheckToken` and onto the lists, and RAY's `updateWrapped` from
 Solana; a run of the fork suites, rewritten for the oracle-free rebalance, on an archive RPC, which the changes of
 2026-11-14 need too; a run of the Halmos harness; the platform's fee policy and
 the legal reading; the external audit, then `DeployWeighted`'s release hashes fixed at the audited commit (CF-5); the

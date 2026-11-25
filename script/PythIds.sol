@@ -801,6 +801,8 @@ library PythIds {
     /// @dev STRATEGY INC VARIABLE RATE SERIES A PERPETUAL STRETCH PREFERRED STOCK / US DOLLAR
     ///      (Equity.US.STRC/USD): US market hours only.
     bytes32 internal constant STRCON = 0x27c7bbc9755d847f7fc63620c2edcc6a91d2c0c67a28c7999907b59c505b3c17;
+    /// @dev PYTH PRICE IN USD FOR ANTHROPIC 24/7 (Equity.Index.ANT/USD): Pyth's 24/7 price for the share.
+    bytes32 internal constant ANTON = 0x5da511a7c68b17a3bc94380cab4756bc83ab87f86307af10ea58467a64b6689d;
     /// @dev FALCON FINANCE / US DOLLAR, read from Hermes on 2026-10-10.
     bytes32 internal constant FF = 0xf9597faf41a8d91fcc4dc95e9b4f408ea391cf17ec26955ae2055b6dbda5ec89;
     /// @dev GNOSIS / US DOLLAR, read from Hermes on 2026-10-10.

@@ -89,6 +89,11 @@ const WEIGHTS = [5000, 3000, 2000];
 const PRICES = [2000 / 1e18, 60_000 / 1e8, 20 / 1e6];
 const ON_WEIGHTS = [25n * 10n ** 15n, 50_000n, 1_000_000n];
 const worth = (units, prices = PRICES) => units.reduce((usd, x, i) => usd + Number(x) * prices[i], 0);
+/// What `newUnits` leaves the keeper, in dollars per 1e18 shares at `prices` (dollars per raw unit): the value of the
+/// units the index gives up less the value of those it gains, before routes and gas. Legs without a price count as
+/// nothing, and the keeper never moves them.
+const takeUsd = (units, newUnits, prices) =>
+  units.reduce((usd, x, i) => (prices[i] > 0 ? usd + (Number(x) - Number(newUnits[i])) * prices[i] : usd), 0);
 
 test("nameUnits clears the bar exactly and no further than a unit's grain", () => {
   // The first coin rose a quarter since the index was last on its weights.
@@ -112,7 +117,7 @@ test("nameUnits takes more the later it fills, and the distance from the weights
   const prices = [2500 / 1e18, PRICES[1], PRICES[2]];
   const take = (elapsed) => {
     const named = U.nameUnits({ units: ON_WEIGHTS, weights: WEIGHTS, prices, bar: U.barAt(elapsed) });
-    return U.takeUsd(ON_WEIGHTS, named.newUnits, prices) / worth(ON_WEIGHTS, prices);
+    return takeUsd(ON_WEIGHTS, named.newUnits, prices) / worth(ON_WEIGHTS, prices);
   };
   assert.ok(take(3600n) < take(7200n) && take(7200n) < take(14_400n));
   assert.ok(take(3600n) < 0, "an hour in, the bar is above the distance: clearing it is a gift");
@@ -126,7 +131,7 @@ test("nameUnits takes more the later it fills, and the distance from the weights
 test("nameUnits finds nothing to take from an index on its weights", () => {
   const named = U.nameUnits({ units: ON_WEIGHTS, weights: WEIGHTS, prices: PRICES, bar: U.barAt(14_400n) });
   assert.ok(named);
-  assert.ok(U.takeUsd(ON_WEIGHTS, named.newUnits, PRICES) < 0, "clearing any bar from the weights costs the keeper");
+  assert.ok(takeUsd(ON_WEIGHTS, named.newUnits, PRICES) < 0, "clearing any bar from the weights costs the keeper");
 });
 
 test("nameUnits leaves a kept leg and a leg without a price alone, and needs two it can move", () => {
@@ -209,8 +214,8 @@ test("under Pyth's check, nameUnits keeps what the second's tolerance allows, an
   assert.equal(U.oracleOf(ON_WEIGHTS, alone.newUnits, lone, last).holds, false, "the lone fill fails Pyth's check");
   const capped = U.nameUnits({ units: ON_WEIGHTS, weights: WEIGHTS, prices, bar: U.barAt(last), oracle: { leaving: exact, arriving: exact, elapsed: last } });
   assert.ok(U.oracleOf(ON_WEIGHTS, capped.newUnits, U.legValuesOf(ON_WEIGHTS, capped.newUnits, exact, exact), last).holds);
-  assert.ok(U.takeUsd(ON_WEIGHTS, capped.newUnits, prices) > 0, "it still pays");
-  assert.ok(U.takeUsd(ON_WEIGHTS, capped.newUnits, prices) < U.takeUsd(ON_WEIGHTS, alone.newUnits, prices), "and keeps less than the distance");
+  assert.ok(takeUsd(ON_WEIGHTS, capped.newUnits, prices) > 0, "it still pays");
+  assert.ok(takeUsd(ON_WEIGHTS, capped.newUnits, prices) < takeUsd(ON_WEIGHTS, alone.newUnits, prices), "and keeps less than the distance");
 
   // An hour in, the tolerance is half a percent, and the bar asks more than a lone fill gives: what is named holds both.
   const elapsed = 3_600n;
@@ -226,7 +231,7 @@ test("under Pyth's check, nameUnits keeps what the second's tolerance allows, an
   // holding the check costs the keeper, as holding a wrong quote does. The check can only refuse.
   const wrong = [2_500_000n, exact[1], exact[2]];
   const gift = U.nameUnits({ units: ON_WEIGHTS, weights: WEIGHTS, prices, bar: U.barAt(14_400n), oracle: { leaving: wrong, arriving: wrong, elapsed: 14_400n } });
-  assert.ok(U.takeUsd(ON_WEIGHTS, gift.newUnits, prices) < 0, "a wrong price makes the fill a gift or nothing");
+  assert.ok(takeUsd(ON_WEIGHTS, gift.newUnits, prices) < 0, "a wrong price makes the fill a gift or nothing");
 
   // No value for a leg the fill would move: nothing can be named.
   const blind = [null, exact[1], exact[2]];
@@ -248,13 +253,13 @@ test("under a quote, nameUnits gives the index what the quote asks, where alone 
   assert.ok(U.gainOf(ON_WEIGHTS, quoted.newUnits, WEIGHTS).gain >= bar);
   const kept = Number(held.valueOut - held.valueIn) / Number(held.valueOut);
   assert.ok(kept > 0.004 && kept <= 0.005, `it keeps ${kept} of what it trades: the tolerance, no more`);
-  assert.ok(U.takeUsd(ON_WEIGHTS, quoted.newUnits, prices) < U.takeUsd(ON_WEIGHTS, alone.newUnits, prices));
+  assert.ok(takeUsd(ON_WEIGHTS, quoted.newUnits, prices) < takeUsd(ON_WEIGHTS, alone.newUnits, prices));
   // A wrong quote, the first coin posted at a thousand times its price: a sale of it must be paid a thousand times
   // over, so the only units that hold it are a gift, which the keeper's simulation then refuses to send.
   const wrong = { prices: [2_500_000n, quote.prices[1], quote.prices[2]], tolerance: 0n };
   const gift = U.nameUnits({ units: ON_WEIGHTS, weights: WEIGHTS, prices, bar, quote: wrong });
   assert.ok(U.quoteOf(ON_WEIGHTS, gift.newUnits, wrong.prices, wrong.tolerance).holds);
-  assert.ok(U.takeUsd(ON_WEIGHTS, gift.newUnits, prices) < 0, "holding a wrong quote costs the keeper");
+  assert.ok(takeUsd(ON_WEIGHTS, gift.newUnits, prices) < 0, "holding a wrong quote costs the keeper");
 });
 
 test("whatever nameUnits returns is inside every cap and clears its bar", () => {
@@ -299,7 +304,7 @@ test("CA-M7: nameUnits takes what the hub's own score allows, against an exhaust
   const bar = U.barAt(2400n);
   const named = U.nameUnits({ units, weights, prices, bar });
   assert.ok(U.gainOf(units, named.newUnits, weights).gain >= bar, "what it names, the hub accepts");
-  const taken = U.takeUsd(units, named.newUnits, prices);
+  const taken = takeUsd(units, named.newUnits, prices);
 
   // The search, which knows nothing of slopes: every pair of changes of the first two legs on a fine grid, and for
   // the third the least change that still clears the bar.

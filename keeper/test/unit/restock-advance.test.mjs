@@ -20,7 +20,7 @@ function rig({ verifiesCctp = () => true, verifiesVaa = () => true, irisAnswers 
   const did = [];
   // What each side shows completed: a redeem or a receive lands there unless `lands()` says its transaction was
   // replaced on its nonce by one that did something else.
-  const completed = { ethereum: new Set(), sui: new Set() };
+  const completed = { ethereum: new Set(), avalanche: new Set() };
   const complete = (name, what) => lands() && completed[name].add(what);
   const side = (name) => ({
     def: { wormhole: name === "ethereum" ? 2 : 21 },
@@ -37,7 +37,7 @@ function rig({ verifiesCctp = () => true, verifiesVaa = () => true, irisAnswers 
     resume: async () => null,
   });
   const eth = side("ethereum");
-  const homes = { sui: side("sui") };
+  const homes = { avalanche: side("avalanche") };
   const iris = {
     message: async () => (irisAnswers.length > 1 ? irisAnswers.shift() : irisAnswers[0] ?? null),
     reattest: async (nonce) => did.push(["reattest", nonce]),
@@ -67,7 +67,7 @@ function rig({ verifiesCctp = () => true, verifiesVaa = () => true, irisAnswers 
 
 /// A fund move (Ethereum to Sui) whose burn landed.
 function fund(journal) {
-  const id = journal.open({ kind: "fund", chain: "sui", amount: 5n }, { chain: "ethereum", hash: "0xburn" });
+  const id = journal.open({ kind: "fund", chain: "avalanche", amount: 5n }, { chain: "ethereum", hash: "0xburn" });
   journal.advance(id, "sent", { status: "success" });
   return id;
 }
@@ -87,7 +87,7 @@ test("PD-10: a Circle signature past its expiry is never stored; Circle is asked
   assert.equal(r.did.length, 2, "an hour on, asked again");
   await r.advance(r.journal.get(id));
   assert.equal(r.journal.get(id).stage, "received");
-  assert.deepEqual(r.did.at(-1), ["receive", "sui", fresh.message]);
+  assert.deepEqual(r.did.at(-1), ["receive", "avalanche", fresh.message]);
 });
 
 test("PD-10: a stored signature that went stale before its receipt is replaced by the fresh one Circle signs", async () => {
@@ -102,7 +102,7 @@ test("PD-10: a stored signature that went stale before its receipt is replaced b
   await r.advance(r.journal.get(id));
   assert.equal(r.journal.get(id).stage, "received");
   assert.equal(r.journal.get(id).data.attestation, "0xnew", "the journal holds the signature that was received");
-  assert.deepEqual(r.did.at(-1), ["receive", "sui", fresh.message]);
+  assert.deepEqual(r.did.at(-1), ["receive", "avalanche", fresh.message]);
 });
 
 test("PD-10: a signature refused for another reason, with no expiry in its message, is an error, not a re-attestation", async () => {
@@ -114,7 +114,7 @@ test("PD-10: a signature refused for another reason, with no expiry in its messa
 
 test("PD-10: a VAA signed by a replaced guardian set is fetched again and the new one redeemed; with none newer, the move waits with the reason", async () => {
   const r = rig({ verifiesVaa: (v) => v === "0xnewvaa", vaaAnswers: ["0xnewvaa"] });
-  const id = r.journal.open({ kind: "bridgeIn", coin: "SUI", copy: "0xcopy", chain: "sui", amount: 10n }, { chain: "sui", hash: "d1" });
+  const id = r.journal.open({ kind: "bridgeIn", coin: "AVAX", copy: "0xcopy", chain: "avalanche", amount: 10n }, { chain: "avalanche", hash: "d1" });
   r.journal.advance(id, "sent", { status: "success", sequence: "9" });
   r.journal.advance(id, "attested", { vaa: "0xoldvaa" });
   await r.advance(r.journal.get(id));
@@ -122,7 +122,7 @@ test("PD-10: a VAA signed by a replaced guardian set is fetched again and the ne
   assert.deepEqual(r.did, [["redeemIn", "0xnewvaa", "0xcopy"]]);
 
   const stuck = rig({ verifiesVaa: () => false, vaaAnswers: ["0xoldvaa"] });
-  const id2 = stuck.journal.open({ kind: "bridgeIn", coin: "SUI", copy: "0xcopy", chain: "sui", amount: 10n }, { chain: "sui", hash: "d2" });
+  const id2 = stuck.journal.open({ kind: "bridgeIn", coin: "AVAX", copy: "0xcopy", chain: "avalanche", amount: 10n }, { chain: "avalanche", hash: "d2" });
   stuck.journal.advance(id2, "sent", { status: "success", sequence: "9" });
   stuck.journal.advance(id2, "attested", { vaa: "0xoldvaa" });
   await assert.rejects(stuck.advance(stuck.journal.get(id2)), /no longer verifies \(guardian set expired\) and Wormholescan has no newer one/);
@@ -131,7 +131,7 @@ test("PD-10: a VAA signed by a replaced guardian set is fetched again and the ne
 
 test("a bridge-in is attested, then redeemed by the executor with the copy recorded when the move opened", async () => {
   const r = rig({ vaaAnswers: ["0xvaa"] });
-  const id = r.journal.open({ kind: "bridgeIn", coin: "SUI", copy: "0xrecorded", chain: "sui", amount: 10n }, { chain: "sui", hash: "d1" });
+  const id = r.journal.open({ kind: "bridgeIn", coin: "AVAX", copy: "0xrecorded", chain: "avalanche", amount: 10n }, { chain: "avalanche", hash: "d1" });
   r.journal.advance(id, "sent", { status: "success" });
   await r.advance(r.journal.get(id));
   assert.equal(r.journal.get(id).data.sequence, "9");
@@ -144,7 +144,7 @@ test("CA-M10: a completing transaction that was mined proves nothing: the other 
   // its receipt: the transfer is not completed, and the move must not settle on it.
   let replaced = true;
   const r = rig({ vaaAnswers: ["0xvaa"], lands: () => !replaced });
-  const out = r.journal.open({ kind: "bridgeOut", coin: "SUI", copy: "0xcopy", chain: "sui", amount: 5n }, { chain: "ethereum", hash: "0xout", sequence: "9" });
+  const out = r.journal.open({ kind: "bridgeOut", coin: "AVAX", copy: "0xcopy", chain: "avalanche", amount: 5n }, { chain: "ethereum", hash: "0xout", sequence: "9" });
   r.journal.advance(out, "sent", { status: "success" });
   await assert.rejects(r.advance(r.journal.get(out)), new RegExp(NOT_COMPLETED));
   assert.equal(r.journal.get(out).stage, "attested", "the transfer is still to redeem");
@@ -158,7 +158,7 @@ test("CA-M10: a completing transaction that was mined proves nothing: the other 
 
   // Into the executor, and a CCTP receive, the same way.
   replaced = true;
-  const into = r.journal.open({ kind: "bridgeIn", coin: "SUI", copy: "0xcopy", chain: "sui", amount: 5n }, { chain: "sui", hash: "0xin", sequence: "9" });
+  const into = r.journal.open({ kind: "bridgeIn", coin: "AVAX", copy: "0xcopy", chain: "avalanche", amount: 5n }, { chain: "avalanche", hash: "0xin", sequence: "9" });
   r.journal.advance(into, "sent", { status: "success" });
   await assert.rejects(r.advance(r.journal.get(into)), new RegExp(NOT_COMPLETED));
   assert.equal(r.journal.get(into).stage, "attested");

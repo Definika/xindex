@@ -9,13 +9,13 @@ test("the keeper's price ids are the list's coins, each at its address and PythI
   const listed = [...read("Listings.sol").matchAll(/tokens\[\d+\] = M\.(\w+);/g)].map((m) => m[1]);
   const addressOf = new Map([...read("MainnetAddresses.sol").matchAll(/address internal constant (\w+) = (0x[0-9a-fA-F]{40});/g)].map((m) => [m[1], m[2]]));
   const idOf = new Map([...read("PythIds.sol").matchAll(/bytes32 internal constant (\w+) = (0x[0-9a-f]{64});/g)].map((m) => [m[1], m[2]]));
-  assert.equal(listed.length, 414);
-  assert.equal(Object.keys(MAINNET_PRICE_IDS).length, 414);
+  assert.equal(listed.length, 415);
+  assert.equal(Object.keys(MAINNET_PRICE_IDS).length, 415);
   for (const name of listed) {
     assert.ok(addressOf.has(name) && idOf.has(name), `${name} has an address and an id`);
     assert.equal(MAINNET_PRICE_IDS[addressOf.get(name).toLowerCase()], idOf.get(name), name);
   }
-  assert.equal(new Set(Object.values(MAINNET_PRICE_IDS)).size, 414, "no two coins share a feed");
+  assert.equal(new Set(Object.values(MAINNET_PRICE_IDS)).size, 415, "no two coins share a feed");
 });
 
 test("the factory's Ethereum feeds are the keeper's catalogue: each listed coin at its id, as a token's price", () => {
@@ -25,8 +25,8 @@ test("the factory's Ethereum feeds are the keeper's catalogue: each listed coin 
   const kindsList = table.slice(table.indexOf("kinds = ["), table.indexOf("];", table.indexOf("kinds = [")));
   const kinds = [...kindsList.matchAll(/\b(?:uint8\()?([123])\)?(?=[,\s]|$)/g)].map((m) => Number(m[1]));
   const catalogue = Object.entries(MAINNET_PRICE_IDS);
-  assert.equal(ids.length, 414);
-  assert.equal(kinds.length, 414);
+  assert.equal(ids.length, 415);
+  assert.equal(kinds.length, 415);
   for (let i = 0; i < catalogue.length; ++i) {
     const [token, id] = catalogue[i];
     assert.equal(ids[i], id, `entry ${i}, ${token}, takes the catalogue's id`);

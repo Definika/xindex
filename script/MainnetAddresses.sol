@@ -455,6 +455,10 @@ library MainnetAddresses {
     address internal constant DRAMON = 0xdB5a8f5B4C17f2Ee2e7192A150687E48eB3C415d;
     address internal constant SATAON = 0x141196732cE4BB20010E4149704C0F278d5d3CEA;
     address internal constant STRCON = 0xECABE1Ff8a9e1dC55899cf58dac8497ecE5Ae84c;
+    /// @dev Anthropic's Ondo token, listed on 2026-11-25 (the owner's call: "both to eth and bnb"): the same `GMToken`
+    ///      behind the same beacon, created at block 26,407,686 for Anthropic's IPO; read from Ondo's app and on chain
+    ///      that day by symbol, name and decimals.
+    address internal constant ANTON = 0x43a0943893474F246aA58e9921d975aD60Adee59;
 
     // ---------------------------------------------------------------------
     // The hundred-coin list, Ethereum-issued: CoinGecko's top 300 on 2026-10-10, less stablecoins, gold, stocks,
@@ -549,45 +553,20 @@ library MainnetAddresses {
     // a broken peg or bridge leaves the copy priced as DOGE, and the source is a proxy whose admin, one externally
     // owned key, can replace its code (read on BNB Chain that day).
     //
-    // The six copies wrapped from BNB Chain (XRP, ADA, LTC, DOT, ATOM and BNB, Wormhole chain 4) were taken off the
-    // list on 2026-11-13, the owner's call: BNB Chain's deployment holds those coins in kind (`BnbChainAddresses`),
-    // with no bridge under them. Their addresses stay recorded here for a relisting, and
-    // `test/fork/MainnetAddresses.fork.t.sol` still checks each against its source.
-    //
-    // JUP, PYTH, SUI, APT and ALGO were taken off the list on 2026-11-18, the owner's call: with no Ethereum pool, a
-    // rebalance can buy them only from stock bridged in from Solana, Sui, Aptos or Algorand, whose restock has never
-    // run (design/2026-11-18-bridged-coins-in-a-rebalance.md). Their addresses stay here too, for a relisting.
+    // The six copies wrapped from BNB Chain (XRP, ADA, LTC, DOT, ATOM and BNB) left the list on 2026-11-13, the owner's
+    // call: BNB Chain's deployment holds those coins in kind (`BnbChainAddresses`). JUP, PYTH, SUI, APT and ALGO left it
+    // on 2026-11-18, the owner's call: no Ethereum pool trades them (design/2026-11-18-bridged-coins-in-a-rebalance.md).
+    // Their addresses went from this book on 2026-11-25 with the restock that served them; the retirement record
+    // keeps them (audit/2026-11-25-non-evm-restock-retirement.md).
     // ---------------------------------------------------------------------
-    /// @dev XRP as the bridge wraps Binance-Peg XRP (0x1d2f0da169ceb9fc7b3144628db156f3f6c60dbe on BNB Chain, Wormhole chain 4): symbol XRP, 18 decimals.
-    address internal constant XRP = 0xc730d8256B8A1030eEA67f1Bc7ebed3898f7A535;
-    /// @dev ADA as the bridge wraps Binance-Peg ADA (0x3ee2200efb3400fabb9aacf31297cbdd1d435d47 on BNB Chain, Wormhole chain 4): symbol ADA, 18 decimals.
-    address internal constant ADA = 0x8EfFbF747d4A60Bc6b68D9A1bE4c4188bA8A3a0b;
-    /// @dev LTC as the bridge wraps Binance-Peg LTC (0x4338665cbb7b2485a8855a139b75d5e34ab0db94 on BNB Chain, Wormhole chain 4): symbol LTC, 18 decimals.
-    address internal constant LTC = 0x1cA1Ef3fB8Ff4a480C0ae7eea5f91A24a5BB3344;
     /// @dev AVAX as the bridge wraps Avalanche's WAVAX (0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7, Wormhole chain 6): symbol WAVAX, 18 decimals.
     address internal constant AVAX = 0x85f138bfEE4ef8e540890CFb48F620571d67Eda3;
-    /// @dev DOT as the bridge wraps Binance-Peg DOT (0x7083609fce4d1d8dc0c979aab8c869ea2c873402 on BNB Chain, Wormhole chain 4): symbol DOT, 18 decimals.
-    address internal constant DOT = 0x1839a38E59536D88C25e8E6e0D0f59e05b143ab2;
-    /// @dev JUP as the bridge wraps Solana's mint JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN (Wormhole chain 1): symbol JUP, 6 decimals.
-    address internal constant JUP = 0x8687a10BCa6F139B25eb31020FCABB5782214764;
-    /// @dev ALGO as the bridge wraps Algorand's ALGO itself (asset 0, Wormhole chain 8): symbol ALGO, 6 decimals.
-    address internal constant ALGO = 0xe31Cfcd36FeD044ae4Cf9405B577fe875762194F;
-    /// @dev ATOM as the bridge wraps Binance-Peg ATOM (0x0eb3a705fc54725037cc9e008bdede697f62f335 on BNB Chain, Wormhole chain 4): symbol ATOM, 18 decimals.
-    address internal constant ATOM = 0x7845167B54253269624dBA0cA5Fee87933107b34;
     /// @dev AERO as the bridge wraps Base's 0x940181a94a35a4569e4529a3cdfb74e38fd98631 (Wormhole chain 30): symbol AERO, 18 decimals.
     address internal constant AERO = 0x750525C1877E30304F1E22b1b49b4C9DdE674ddF;
-    /// @dev APT as the bridge wraps Aptos's APT itself (0x1::aptos_coin::AptosCoin, Wormhole chain 22): symbol APT, 8 decimals.
-    address internal constant APT = 0x8CDf7AF57E4c8B930e1B23c477c22f076530585e;
-    /// @dev Pyth Network's PYTH (`PYTH_TOKEN`, since `PYTH` is Pyth's price contract below) as the bridge wraps Solana's mint HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3 (Wormhole chain 1): symbol PYTH, 6 decimals.
-    address internal constant PYTH_TOKEN = 0xeFc0CED4B3D536103e76a1c4c74F0385C8F4Bdd3;
     // OP's copy is off the list since 2026-11-21 (the owner's call), and kept here for a relisting: OP's pools on
     // Optimism were too thin that day for the restock to buy it.
     /// @dev OP as the bridge wraps Optimism's 0x4200000000000000000000000000000000000042 (Wormhole chain 24): symbol OP, 18 decimals.
     address internal constant OP = 0x1df721D242E0783F8fCab4A9FfE4F35bdf329909;
-    /// @dev BNB as the bridge wraps BNB Chain's WBNB (0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c, Wormhole chain 4), the wrapper of BNB itself rather than a Binance-Peg token: symbol WBNB, 18 decimals.
-    address internal constant BNB = 0x418D75f65a02b3D53B2418FB8E1fe493759c7605;
-    /// @dev SUI as the bridge wraps Sui's SUI itself (0x2::sui::SUI, its CoinMetadata object 0x9258181f5ceac8dbffb7030890243caed69a9599d2886d957a9cb7656af3bdb3, Wormhole chain 21): symbol SUI, 9 decimals.
-    address internal constant SUI = 0x84074EA631dEc7a4edcD5303d164D5dEa4c653D6;
     // SEI's copy (0xf91e605af079384cc7077B3914A4a36019a89EE8, Sei's usei from Wormhole chain 32) left on 2026-10-19, the
     // owner's call: it redeems only through Sei's CosmWasm side, which Sei is shutting down (RX-32).
 

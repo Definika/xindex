@@ -94,24 +94,6 @@ export function cctpMaxFee(amount, fees) {
   return (amount * scaled + 99_999_999n) / 100_000_000n;
 }
 
-/// A token attestation's metadata, from a VAA (0x-hex): the token's chain and address (a word), its decimals, and its
-/// symbol and name as the attestation carries them (32 bytes each, zero-padded); null when the VAA does not carry an
-/// attestation (payload 2).
-export function attestMetaOf(vaa) {
-  const bytes = Buffer.from(hex(vaa), "hex");
-  if (bytes.length < 6) return null;
-  const at = 6 + 66 * bytes[5] + 51;
-  if (bytes.length < at + 100 || bytes[at] !== 2) return null;
-  const text = (b) => b.toString("utf8").replace(/\0+$/, "");
-  return {
-    tokenAddress: `0x${bytes.subarray(at + 1, at + 33).toString("hex")}`,
-    tokenChain: bytes.readUInt16BE(at + 33),
-    decimals: bytes[at + 35],
-    symbol: text(bytes.subarray(at + 36, at + 68)),
-    name: text(bytes.subarray(at + 68, at + 100)),
-  };
-}
-
 /// Circle's Iris API, CCTP V2 (https://iris-api.circle.com). `fetchImpl` is injectable for tests.
 export function createIris({ url = "https://iris-api.circle.com", fetchImpl = fetch, timeoutMs = 10_000 } = {}) {
   const base = url.replace(/\/+$/, "");

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { attestMetaOf, cctpFields, cctpMaxFee, createIris, createWormholescan, MAX_CCTP_FEE_BPS, sequenceIn } from "../../restock/attestations.mjs";
+import { cctpFields, cctpMaxFee, createIris, createWormholescan, MAX_CCTP_FEE_BPS, sequenceIn } from "../../restock/attestations.mjs";
 
 /// A fetch that answers each URL from `routes` (status and body) and records what was asked.
 function fakeFetch(routes) {
@@ -163,14 +163,4 @@ test("PD-10: a CCTP message's nonce and expiry are read from it, and Circle is a
   assert.deepEqual(asked, [["POST", "https://iris-api.circle.com/v2/reattest/0xabc"]]);
   const refused = createIris({ fetchImpl: async () => ({ status: 400, ok: false, text: async () => "not eligible" }) });
   await assert.rejects(refused.reattest("0xabc"), /Iris 400 on \/v2\/reattest\/0xabc: not eligible/);
-});
-
-test("PD-7: a token attestation's chain, address, decimals, symbol and name are read from its VAA; anything else is none", () => {
-  const text32 = (s) => Buffer.from(s.padEnd(32, "\0")).toString("hex");
-  const payload = `02${word("0x" + "5a".repeat(32))}${hex(1, 2)}${hex(6, 1)}${text32("JTO")}${text32("Jito")}`;
-  const body = `${hex(1_700_000_000, 4)}${hex(0, 4)}${hex(1, 2)}${"ec".repeat(32)}${hex(9, 8)}${hex(32, 1)}${payload}`;
-  const attestation = `0x01${hex(4, 4)}${hex(1, 1)}${"ab".repeat(66)}${body}`;
-  assert.deepEqual(attestMetaOf(attestation), { tokenAddress: `0x${"5a".repeat(32)}`, tokenChain: 1, decimals: 6, symbol: "JTO", name: "Jito" });
-  assert.equal(attestMetaOf(vaa()), null, "a transfer is not an attestation");
-  assert.equal(attestMetaOf("0x01"), null);
 });

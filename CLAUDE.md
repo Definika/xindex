@@ -25,7 +25,7 @@ factory or whatever is neccesery so on both sides we will have in kind tokens",
 `design/2026-11-13-bnb-chain-deployment.md`). They share nothing: the same contracts, each under its own owner Safe
 and guardian's Safe, each holding its own chain's tokens in kind. An index lives on one chain, and none spans both. The
 BNB Chain side is built as scripts and tests, with no contract changed: `script/BnbChainAddresses.sol` (twelve coins,
-nine of them Binance-Peg, labelled Custodial, and Ondo's 352 stocks and ETFs since 2026-11-22), `V5_WHITELIST=bnb`, `CHECK=bnb` and
+nine of them Binance-Peg, labelled Custodial, and Ondo's 353 stocks and ETFs since 2026-11-25), `V5_WHITELIST=bnb`, `CHECK=bnb` and
 `test/fork/BnbChainAddresses.fork.t.sol`. The call reverses the owner's refusal of 2026-11-10 ("I want to stay on
 Ethereum") and, in part, the one-index decision below, which still describes the Ethereum deployment as it stands. On
 the same day the owner named which Wormhole copies leave Ethereum's list: the six wrapped from BNB Chain (XRP, ADA,
@@ -46,8 +46,9 @@ of 2026-10-10, `design/2026-10-10-one-index-wormhole-legs.md`). `WeightedIndexFa
 `MintRequests` hold Ethereum ERC-20s in kind: the issuer's own contract where Ethereum has one (71 candidates of the
 top 300 today), and otherwise a copy wrapped by Wormhole's token bridge from the chain that has it (17 from BNB Chain,
 nine of them Binance-Peg; 31 from Solana, Sui, Aptos, Base and the other chains Wormhole serves), labelled Bridged,
-Custodial as well when the source is Binance-Peg. The list stands at 414
-(`script/Listings.sol`): 352 of them Ondo's tokenized US stocks and ETFs, every one Pyth has a feed for, since 2026-11-22
+Custodial as well when the source is Binance-Peg. The list stands at 415
+(`script/Listings.sol`): 353 of them Ondo's tokenized US stocks and ETFs, every one Pyth has a feed for, since 2026-11-22
+(Anthropic's ANTon the 353rd, on 2026-11-25)
 (the owner's call: "delete everything releated to xtokcs and leave only ondo", which removed the 109 wrapped xStocks
 listed on 2026-11-21, `design/2026-11-22-ondo-stocks-and-etfs.md`), and of the 62 coins three Wormhole copies
 (SOL, AVAX and AERO) since OP's copy left on 2026-11-21 (the owner's call, "remove op for now": the restock found no
@@ -370,7 +371,7 @@ built on it and found in it.
     has grown since, so that stock still serves it.
   - The stock's price is the operator's, accepted at launch sizes with no hedge (the owner's call).
   - The copies of JUP, PYTH, SUI, APT and ALGO left Ethereum's list (the owner's call, below): 80 coins. Their
-    restock signers stay, unrun.
+    restock signers stayed, unrun, until 2026-11-25, when they were deleted (the owner's call, below).
 - **The audit of 2026-11-21** (`audit/2026-11-21-consolidated-audit.md`, ids `CA-H1`, `CA-H2`, `CA-M1`..`CA-M19`,
   `CA-L1`..`CA-L12`, `CA-R2-01`..`CA-R2-20` and `CA-S01`..`CA-S08`: the reports' own ids under a prefix, since v1
   already holds `M01`, `L06` and their neighbours). An agent's audit of `main` at `5b7635f`, in three passes and a
@@ -414,7 +415,8 @@ built on it and found in it.
   - Not done: the keeper's end-to-end tests on this change; a new Sepolia deployment, the
     executor included; the app and the backend (the bound request calls, `cancelRebalance(proposalId)` in the Safe
     batches, `Underbacked` as a state to show); and before the non-EVM signers run, CA-M14, CA-L7, CA-R2-12 and
-    CA-R2-13 (fixed on 2026-11-24, the bullet "The last open findings and the keeper's dependency").
+    CA-R2-13 (fixed on 2026-11-24, the bullet "The last open findings and the keeper's dependency", and retired with
+    the signers on 2026-11-25).
 - **Backed's wrapped xStocks, listed 2026-11-21 and removed 2026-11-22.** On 2026-11-21 the owner replaced the 17
   Ondo stocks with 109 of Backed's wrapped xStocks on Ethereum and 104 on BNB Chain, and the keeper learned to value a
   wrapper at its feed times its `convertToAssets`. On 2026-11-22, shown that Ondo covers about three times as much
@@ -546,7 +548,7 @@ built on it and found in it.
   - `src/PythPrices.sol` values a fill's moving legs at Pyth's prices (feed kinds Token, Vault, Multiplier; a minute's
     freshness; confidence against the executor), and `WeightedMath.oracleCheck` requires what a fill brings in to cover
     what it takes less a tolerance rising to 2% over the auction. Feeds are the owner's per token, behind
-    `LISTING_DELAY`; `script/PriceFeeds.sol` names all 414 of Ethereum's, 364 of BNB Chain's and 32 of Base's, built
+    `LISTING_DELAY`; `script/PriceFeeds.sol` names all 415 of Ethereum's, 365 of BNB Chain's and 32 of Base's, built
     once per call (`table`, `find`), since 414 lookups that each built the table ran out of memory.
   - `createIndex` refuses a leg more than 5% off its weight at Pyth's prices (`MAX_WEIGHT_DEVIATION`, `OffWeights`),
     asking the reader once for every leg (`valuesWith`); its duplicate check is one pass over transient storage, the
@@ -743,8 +745,8 @@ built on it and found in it.
     a received Solana burn stays in the journal until its event account's rent is reclaimed (CA-R2-13,
     `rentToReclaim`); and the signers end with the run, so `--once` exits (CA-L7, `ask.close`). Tests named
     `CA-M14: ...`, `CA-R2-12: ...`, `CA-R2-13: ...` and `CA-L7: ...` in `keeper/test/unit/`, mutants C44 to C51.
-    The signers themselves have still never sent a transaction: their coins left the list on 2026-11-18, and a live
-    run needs funded wallets on each home chain.
+    The signers themselves never sent a transaction: their coins left the list on 2026-11-18, and the signers, with
+    these four fixes, went on 2026-11-25 (`audit/2026-11-25-non-evm-restock-retirement.md`).
   - RZ-17 and RZ-27, which the red team's record still showed open, were retired with Pyth on 2026-11-10
     (`audit/2026-11-10-oracle-retirement.md` says so); their rows say so now. The price reader of 2026-11-22 reads no
     moving average, and a start carries no update.
@@ -826,6 +828,21 @@ built on it and found in it.
     index holding other indexes, gasless signed orders, and, the same way, a request limit that improves over time
     (a change to a contract that holds escrows, which the keeper, the app and every decoder would have to follow,
     for a better price and no safer one).
+- **Anthropic's ANTon, and Ondo's sValue in the keeper** (2026-11-25, the owner's calls: "both to eth and bnb", then
+  "Yes, keeper first"; `design/2026-11-22-ondo-stocks-and-etfs.md`, its last two sections). No contract under `src/`
+  changed.
+  - ANTon is listed on both chains (415 on Ethereum, 365 on BNB Chain), at Pyth's 24/7 share feed. BNB Chain's fork
+    pin moved to 135,655,351, past ANTon's first block there; the suite passed there 18 of 18, and Ethereum's
+    `MainnetAddresses.fork` 9 of 9, `Security.fork` 11 of 11 and the token check's last hundred at block 26,492,263.
+  - The keeper values a share-priced Ondo leg at its share's price times the sValue Ondo's `SyntheticSharesOracle`
+    on its chain holds for it, once settled: held, no corporate action scheduled or under way, unchanged for twenty
+    minutes (`keeper/bot/svalues.mjs`, `M.sValueUsable`, `SVALUE_SETTLE_SECONDS`, mutants OS1 to OS8). BNB Chain's
+    oracle holds 349 of the 353 Ondo tokens and Ethereum's 10, so 336 of Ethereum's legs are still left alone, until
+    the owner picks a source for them (Ondo's API or BNB Chain's oracle by ticker).
+  - Found with it, open: Pyth's check prices an Ondo leg at its share's feed without the multiplier, and a split's
+    multiplier stays after the action, so fifteen of Ethereum's listed Ondo legs are valued off by a factor of 2 to
+    10 (NFLXon at a tenth) and more by a dividend's few percent. Creation's 5% check refuses such a leg on its true
+    weight; no exit reads a price. The fix is the owner's to choose.
 - Before any mainnet: a Hermes plan, which every fill under Pyth's check now needs, and every creation; a run of the
   fork suites; an external audit (the red team of the oracle-free mechanism ran on 2026-11-14; Pyth's check has had
   none), then `DeployWeighted`'s release hashes fixed at the audited commit (CF-5); the 26 attestations and RAY's
@@ -904,8 +921,8 @@ Deployment, once on each chain, Ethereum, BNB Chain and Base: `script/DeployWeig
 to that chain's guardian's Safe,
 then `script/ConfigureWeighted.s.sol`, which lists each coin of `script/Listings.sol`; the owner then approves the
 wallets that create indexes (`setApprovedCreator`), and nobody can create one before. `script/CheckToken.s.sol` reports on every token before its first
-listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` the rest, 414 in all, on Ethereum;
-`V5_WHITELIST=bnb` is BNB Chain's 364 and `V5_WHITELIST=base` Base's thirty-two. On chains 1, 56 and 8453 the deploy script resolves the router and the
+listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` the rest, 415 in all, on Ethereum;
+`V5_WHITELIST=bnb` is BNB Chain's 365 and `V5_WHITELIST=base` Base's thirty-two. On chains 1, 56 and 8453 the deploy script resolves the router and the
 stablecoins from that chain's address book and refuses any other address
 (`DeployChecks.isPinnedChain`). Sepolia first needs its test market from
 `script/testnet/SetupTestMarket.s.sol`.
@@ -1006,11 +1023,11 @@ stablecoins from that chain's address book and refuses any other address
      and those fixed on 2026-11-23 with Z7 to Z13. Each record's
      "Status of the fixes" names every test; the ids fixed by documentation, the open ones and the keeper's wiring
      without a unit harness have none.
-   - The protocol documentation review of 2026-11-01: `PD-1`..`PD-14` (`audit/2026-11-01-protocol-docs-review.md`),
-     node tests named `PD-1: ...` in `keeper/test/unit/` (the restock's Solana, Sui, Aptos, in-flight, journal,
-     attestation, advance, attest and signer-home suites), each with its mutants P1 to P24 in
-     `test/mutants/mutants.json`. The record's "Status of the fixes" names every test; PD-14, a dashboard setting, is
-     fixed by documentation alone.
+   - The protocol documentation review of 2026-11-01: `PD-1`..`PD-14` (`audit/2026-11-01-protocol-docs-review.md`).
+     PD-9, PD-10 and PD-12 keep node tests named `PD-10: ...` in `keeper/test/unit/` (the restock's journal,
+     attestation and advance suites), with their mutants among P15 to P20; PD-14, a dashboard setting, is fixed by
+     documentation alone. The other ten went with the non-EVM signers on 2026-11-25
+     (`audit/2026-11-25-non-evm-restock-retirement.md`).
    - The red team of 2026-11-14: `RW-1`..`RW-10` (`audit/2026-11-14-red-team.md`), a test named `test_RW1_...`:
      RW-1's and RW-8's in `test/WeightedHub.rebalance.t.sol`, RW-6's in `test/WeightedHub.fees.t.sol`, RW-2's and
      RW-7's in `test/MintRequests.t.sol`, RW-9's in `test/IndexZap.t.sol` and, for the builder's half, in
@@ -1027,7 +1044,8 @@ stablecoins from that chain's address book and refuses any other address
      `test/WeightedHub.rebalance.t.sol` and `test/WeightedHub.states.t.sol`; CA-H2's and CA-M1's on mainnet
      Tether in `test/fork/Security.fork.t.sol` (`test_CAH2_CAM1_...`, `test_CAH2_...`); CA-M4's in `test/Scripts.t.sol`;
      CA-R2-17's and CA-R2-18's in `test/CheckToken.t.sol`; the bot's, the restock's and the checker's in
-     `keeper/test/unit/`, with their mutants C1 to C51. The record's "Status of the fixes" names every test, the
+     `keeper/test/unit/`, with their mutants C1 to C42 (C43 to C51 went with the non-EVM signers on 2026-11-25,
+     and CA-M14, CA-R2-12, CA-R2-13, CA-L7 and CA-L8 with them). The record's "Status of the fixes" names every test, the
      ids fixed by documentation alone, the ones left as they are, and the wiring fixes that have no unit suite
      (CA-M8, CA-R2-04, CA-R2-11, CA-R2-20, CA-L12).
    - The attack replay of 2026-11-23: `HK-1`..`HK-20` (`audit/2026-11-23-attack-replay.md`), a test named
@@ -1067,7 +1085,7 @@ stablecoins from that chain's address book and refuses any other address
    - Findings fixed by documentation alone have none, among them VR-05, RT-02, RT-07, RT-08, RT-09, RT-11 and RT-18.
      RT-20 was already a known limitation.
 
-   Seven records list the ids whose mechanism is gone, with the test that went and the property, if any, that survives:
+   Ten records list the ids whose mechanism is gone, with the test that went and the property, if any, that survives:
    - `audit/2026-09-22-v3-retirement.md`: the move from Uniswap V3 prices to Chainlink.
    - `audit/2026-09-30-v4-stage-a-retirement.md`: Stage A's removal of every price. It retires 31 tested ids in full,
      retires CR-I36, CR-L08 and VR-06 in part, and names the test of every re-targeted id.
@@ -1083,6 +1101,12 @@ stablecoins from that chain's address book and refuses any other address
    - `audit/2026-11-10-oracle-retirement.md`: the removal of Pyth for the oracle-free rebalance. It retires V5-L1,
      V5-M1, V5R-1, DA-01, RB-3, RX-3, RX-18, RX-27, AU-2 and RZ-26 in full, and names the test of every re-targeted id
      (V5-I4, V5-M2, V5-L2, RX-15, R04, R14, R08 and their neighbours).
+   - `audit/2026-11-18-zap-ether-retirement.md`: the withdrawal of the zap's ether entry points. It retires none in
+     full, and RY-1 in part.
+   - `audit/2026-11-22-pyth-check-retirement.md`: Pyth's check on a fill. It retires V5-I4, which forbade naming Pyth.
+   - `audit/2026-11-25-non-evm-restock-retirement.md`: the deletion of the restock's Solana, Sui, Aptos and Algorand
+     signers and of the Wormhole copies off the list. It retires PD-1 to PD-8, PD-11, PD-13, CA-M14, CA-R2-12,
+     CA-R2-13, CA-L7 and CA-L8.
 
    The ids tested at `v3.0.0`, less those tested at Stage A, are exactly the ids the Stage A record retires in full;
    the ids tested at `8e6148b`, less those tested at `4f40b67`, the v4 record's first section; those at `22d532a`,
@@ -1817,6 +1841,26 @@ entry point takes ether. It reverses the ether entry of 2026-10-29, and narrows 
 the caller named. `MintRequests` already took the two alone. The app's ether paths follow when it moves to this build
 (asked the same day, the owner kept this change to the contracts for now).
 
+**The leftovers deleted** (the owner's call of 2026-11-25: asked to find and delete the repository's leftovers, then,
+told that what was left over was kept by earlier calls for a relisting and asked whether it is needed, "კი, წაშალე",
+yes, delete). The restock's Solana, Sui, Aptos and Algorand signers (about 13,000 lines, never run), the owner's
+attestation tool that ran on them, the Wormhole copies of XRP, ADA, LTC, DOT, ATOM, BNB, JUP, PYTH, SUI, APT and ALGO
+in `MainnetAddresses` and the restock's table, and the restock's BNB Chain home went
+(`audit/2026-11-25-non-evm-restock-retirement.md`, which keeps their addresses). The restock's home chains are
+Avalanche, Optimism and Base. OP's copy stays, the call of 2026-11-21 having taken it off "for now". A Wormhole copy
+still to attest is attested through Wormhole's own SDK; one with no Ethereum pool has no restock to serve it. The
+local worktrees of the xStocks and Ondo branches went too; the branches stay.
+
+**Anthropic's Ondo token on both chains** (the owner's call of 2026-11-25: "both to eth and bnb", after asking "do we
+support anthropics stock? it is added in ondo stocks"). ANTon, Ondo's token of Anthropic PBC, which Ondo issued for
+Anthropic's IPO after the list of 2026-11-19 was read, is listed on Ethereum (`0x43a0943893474F246aA58e9921d975aD60Adee59`)
+and on BNB Chain (`0x343ccbc9f8409f862008b7abebFFf20ECf935C75`), Custodial, each read from Ondo's app and on chain
+behind its chain's Ondo beacon with NVDAon's proxy code. Pyth has no feed for the token, so it is priced at Pyth's 24/7
+price for the share (`Equity.Index.ANT/USD`), by the list's rule, and is one of the share-priced legs the keeper leaves
+alone. Said to the owner with it: Pyth's catalogue gives that feed the regular-hours schedule, so a creation or a fill
+that needs its price may wait for the US session, while no exit reads a price; and the BNB Chain suite's pin moved
+past ANTon's first block there.
+
 **Ondo's stocks and ETFs, and no xStocks** (the owner's call of 2026-11-22: "delete everything releated to xtokcs and
 leave only ondo", after asking "which has more coverage ondo or xstocks"). Every Ondo stock and ETF with a Pyth feed is
 listed on Ethereum and on BNB Chain, 352 on each (USDY and OUSG, cash tokens, are not; the 127 without a feed join as
@@ -1843,8 +1887,8 @@ no Ethereum pool trades their copies, so a rebalance buys them only from stock b
 Algorand, and that restock has never sent a transaction; the local chains cannot run their venues, so proving it
 would take a live run with funded wallets. SOL's copy stays, which a Uniswap V3 pool against WETH trades at the
 market (read that day: $74.63 a coin against OKX's $74.76, a $22k sale 0.5% worse than one coin), and so do AVAX,
-OP and AERO, which the EVM restock serves. The addresses stay in `MainnetAddresses` and the signers in
-`keeper/restock/`, for a relisting once a live run has proven them. Asked before it, the owner weighed a token that
+OP and AERO, which the EVM restock serves. The addresses stayed in `MainnetAddresses` and the signers in
+`keeper/restock/`, for a relisting once a live run had proven them, until 2026-11-25 (below). Asked before it, the owner weighed a token that
 tracks prices without holding the coins; it was not taken, since it needs a price feed and a counterparty to every
 gain, the opposite of "No oracle" below.
 

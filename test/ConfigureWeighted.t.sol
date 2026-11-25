@@ -65,8 +65,8 @@ contract ConfigureWeightedTest is Test {
         assertEq(first.length + wide.length, tokens.length);
         assertEq(
             tokens.length,
-            414,
-            "the list of 2026-10-06 and 2026-10-10's additions, less DOGE, SAND, RLB, BTT, SEI, BNB Chain's six, the five no restock has served and OP, and the 335 Ondo stocks and ETFs of 2026-11-19"
+            415,
+            "the list of 2026-10-06 and 2026-10-10's additions, less DOGE, SAND, RLB, BTT, SEI, BNB Chain's six, the five no restock has served and OP, the 335 Ondo stocks and ETFs of 2026-11-19 and ANTon"
         );
         for (uint256 i = 0; i < tokens.length; ++i) {
             assertEq(i < 4 ? first[i] : wide[i - 4], tokens[i]);
@@ -107,7 +107,7 @@ contract ConfigureWeightedTest is Test {
         }
         assertEq(count[uint256(Listings.Tier.Native)], 48, "22 of the wide list and 26 of the hundred-coin list");
         assertEq(count[uint256(Listings.Tier.Bridged)], 12, "8, ZK and W, and 2 Wormhole copies");
-        assertEq(count[uint256(Listings.Tier.Custodial)], 354, "WBTC, Tether Gold and the 352 Ondo stocks and ETFs");
+        assertEq(count[uint256(Listings.Tier.Custodial)], 355, "WBTC, Tether Gold and the 353 Ondo stocks and ETFs");
         assertEq(uint8(Listings.tierOf(MainnetAddresses.WBTC)), uint8(Listings.Tier.Custodial));
         assertEq(uint8(Listings.tierOf(MainnetAddresses.ARB)), uint8(Listings.Tier.Bridged));
         assertEq(uint8(Listings.tierOf(MainnetAddresses.INJ)), uint8(Listings.Tier.Bridged));
@@ -130,11 +130,11 @@ contract ConfigureWeightedTest is Test {
         }
         // Wormhole's copies of the five coins with no Ethereum pool and no restock that has run, off since 2026-11-18
         address[5] memory unserved = [
-            MainnetAddresses.JUP,
-            MainnetAddresses.PYTH_TOKEN,
-            MainnetAddresses.SUI,
-            MainnetAddresses.APT,
-            MainnetAddresses.ALGO
+            0x8687a10BCa6F139B25eb31020FCABB5782214764, // JUP
+            0xeFc0CED4B3D536103e76a1c4c74F0385C8F4Bdd3, // PYTH
+            0x84074EA631dEc7a4edcD5303d164D5dEa4c653D6, // SUI
+            0x8CDf7AF57E4c8B930e1B23c477c22f076530585e, // APT
+            0xe31Cfcd36FeD044ae4Cf9405B577fe875762194F // ALGO
         ];
         for (uint256 i = 0; i < unserved.length; ++i) {
             assertEq(uint8(Listings.tierOf(unserved[i])), uint8(Listings.Tier.Unrecorded), "no restock serves it");
@@ -144,12 +144,12 @@ contract ConfigureWeightedTest is Test {
         }
         // Wormhole's copies of the six coins BNB Chain's deployment holds in kind, off the list since 2026-11-13
         address[6] memory onBnbChain = [
-            MainnetAddresses.XRP,
-            MainnetAddresses.ADA,
-            MainnetAddresses.LTC,
-            MainnetAddresses.DOT,
-            MainnetAddresses.ATOM,
-            MainnetAddresses.BNB
+            0xc730d8256B8A1030eEA67f1Bc7ebed3898f7A535, // XRP
+            0x8EfFbF747d4A60Bc6b68D9A1bE4c4188bA8A3a0b, // ADA
+            0x1cA1Ef3fB8Ff4a480C0ae7eea5f91A24a5BB3344, // LTC
+            0x1839a38E59536D88C25e8E6e0D0f59e05b143ab2, // DOT
+            0x7845167B54253269624dBA0cA5Fee87933107b34, // ATOM
+            0x418D75f65a02b3D53B2418FB8E1fe493759c7605 // BNB
         ];
         for (uint256 i = 0; i < onBnbChain.length; ++i) {
             assertEq(uint8(Listings.tierOf(onBnbChain[i])), uint8(Listings.Tier.Unrecorded), "held on BNB Chain");
@@ -197,7 +197,7 @@ contract ConfigureWeightedTest is Test {
     function test_CRL08_theListsAreTheReleaseRecord() public view {
         address[] memory first = configure.defaultMainnetList();
         address[] memory wide = configure.wideMainnetList();
-        address[414] memory tokens = [
+        address[415] memory tokens = [
             0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2, // WETH
             0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599, // WBTC
             0x514910771AF9Ca656af840dff83E8264EcF986CA, // LINK
@@ -611,10 +611,11 @@ contract ConfigureWeightedTest is Test {
             0x9463b0EE32c1b40B7fdA6459e815F0790159bC3A, // BAIon
             0xdB5a8f5B4C17f2Ee2e7192A150687E48eB3C415d, // DRAMon
             0x141196732cE4BB20010E4149704C0F278d5d3CEA, // SATAon
-            0xECABE1Ff8a9e1dC55899cf58dac8497ecE5Ae84c // STRCon
+            0xECABE1Ff8a9e1dC55899cf58dac8497ecE5Ae84c, // STRCon
+            0x43a0943893474F246aA58e9921d975aD60Adee59 // ANTon
         ];
         assertEq(first.length, 4);
-        assertEq(wide.length, 410);
+        assertEq(wide.length, 411);
         for (uint256 i = 0; i < tokens.length; ++i) {
             assertEq(i < 4 ? first[i] : wide[i - 4], tokens[i]);
         }
@@ -646,8 +647,8 @@ contract ConfigureWeightedTest is Test {
         address[] memory tokens = BnbChainAddresses.all();
         assertEq(
             list.length,
-            364,
-            "the BNB Chain list of 2026-10-07, less SOL, DOGE, AVAX, FIL and TRX, and the 352 Ondo stocks and ETFs of 2026-11-19"
+            365,
+            "the BNB Chain list of 2026-10-07, less SOL, DOGE, AVAX, FIL and TRX, the 352 Ondo stocks and ETFs of 2026-11-19 and ANTon"
         );
         assertEq(list, tokens);
         uint256[4] memory count;
@@ -665,8 +666,8 @@ contract ConfigureWeightedTest is Test {
         assertEq(count[uint256(Listings.Tier.Bridged)], 1, "STABLE");
         assertEq(
             count[uint256(Listings.Tier.Custodial)],
-            361,
-            "BTCB, ETH, the seven Binance-Peg coins and the 352 Ondo assets"
+            362,
+            "BTCB, ETH, the seven Binance-Peg coins and the 353 Ondo assets"
         );
         assertEq(configure.tierLabel(BnbChainAddresses.BTCB), " (Custodial)");
         assertEq(configure.tierLabel(BnbChainAddresses.WBNB), " (Native)");
@@ -688,7 +689,7 @@ contract ConfigureWeightedTest is Test {
     /// @dev CR-L08 for BNB Chain: the list is the release record, pinned against this table, written out by hand.
     function test_CRL08_theBnbListIsTheReleaseRecord() public view {
         address[] memory list = configure.bnbList();
-        address[364] memory tokens = [
+        address[365] memory tokens = [
             0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c, // WBNB
             0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c, // BTCB
             0x2170Ed0880ac9A755fd29B2688956BD959F933F8, // ETH
@@ -1052,7 +1053,8 @@ contract ConfigureWeightedTest is Test {
             0x2659Dd96deF34ceD3679901E5500779BE297fE5a, // BAIon
             0x087b5761b161429013d41eA54cd2fb6022A21564, // DRAMon
             0x732823512Ba98D1BCDE471ca023ee2A0C9f117b7, // SATAon
-            0x71E9dc9DEbc18650BD2342B93623B88C2aD00c89 // STRCon
+            0x71E9dc9DEbc18650BD2342B93623B88C2aD00c89, // STRCon
+            0x343ccbc9f8409f862008b7abebFFf20ECf935C75 // ANTon
         ];
         assertEq(list.length, tokens.length);
         for (uint256 i = 0; i < tokens.length; ++i) {

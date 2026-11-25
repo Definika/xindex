@@ -1,5 +1,4 @@
-// End-to-end test of the restock service on anvil forks of Ethereum and each EVM home chain (BNB Chain, Base,
-// Optimism, Avalanche): the real Wormhole Token Bridge and core on every chain, Circle's real CCTP V2 contracts, the
+// End-to-end test of the restock service on anvil forks of Ethereum and each home chain (Base, Optimism, Avalanche): the real Wormhole Token Bridge and core on every chain, Circle's real CCTP V2 contracts, the
 // home chains' real DEX pools and tokens, the Wormhole copies on Ethereum, and the protocol's KeeperExecutor, with
 // restock.mjs running as its own process, one round at a time.
 //
@@ -9,16 +8,16 @@
 // would (it fills the nonce, the finality and fee executed, and the expiry, as Iris does, read on 2026-10-19 against a
 // real Base message). Hermes is faked too, at each coin's own pool price.
 //
-// Opt-in: needs an Ethereum archive RPC; the home chains are forked near their heads (BSC_RPC_URL, BASE_RPC_URL,
-// OPTIMISM_RPC_URL, AVALANCHE_RPC_URL, with archive-serving public defaults).
+// Opt-in: needs an Ethereum archive RPC; the home chains are forked near their heads (BASE_RPC_URL, OPTIMISM_RPC_URL,
+// AVALANCHE_RPC_URL, with archive-serving public defaults).
 //   forge build && forge build --root keeper        # at the repo root
-//   MAINNET_RPC_URL=https://... npm run e2e:restock  # in keeper/; RESTOCK_E2E_CHAINS=bsc,base to run fewer
+//   MAINNET_RPC_URL=https://... npm run e2e:restock  # in keeper/; RESTOCK_E2E_CHAINS=base,avalanche to run fewer
 //
 // For each chain, the keeper reports a need for about $1,300 of its coin. The service buys it on the home chain,
 // bridges it in and redeems it into the executor, whose allowance rises by what arrived; then the need goes away and
-// it bridges the spare stock back out and sells it there. On the three chains CCTP serves, the home wallet starts with
-// no float: the treasury draws USDC from the executor and funds the chain by CCTP before the buy, and after the sale
-// sweeps the idle float back and repays the executor. BNB Chain's float is dealt, as an operator tops it up by hand.
+// it bridges the spare stock back out and sells it there. The home wallet starts with no float: the treasury draws
+// USDC from the executor and funds the chain by CCTP before the buy, and after the sale sweeps the idle float back and
+// repays the executor.
 // Last, a move signed but never broadcast is resumed by the next round, and one whose nonce went elsewhere is dropped.
 
 import { execFile, execFileSync, spawn } from "node:child_process";
@@ -42,7 +41,7 @@ import {
   toHex,
 } from "viem";
 import { privateKeyToAccount, sign } from "viem/accounts";
-import { avalanche, base, bsc, mainnet, optimism } from "viem/chains";
+import { avalanche, base, mainnet, optimism } from "viem/chains";
 import { createNeeds } from "../../bot/needs.mjs";
 import { EVM_CHAINS } from "../../restock/evm.mjs";
 import { ORPHAN_SECONDS } from "../../restock/sending.mjs";
@@ -69,23 +68,6 @@ const ETH_BRIDGE = "0x3ee18B2214AFF97000D974cf647E7C347E8fa585";
 /// symbol), its float, its Uniswap V3 fork's quoter, fee tiers and wrapped gas coin, its Wormhole chain and bridge, its
 /// CCTP domain.
 const HOMES = {
-  bsc: {
-    viem: bsc,
-    upstream: process.env.BSC_RPC_URL ?? "https://bsc-mainnet.public.blastapi.io",
-    symbol: "XRP",
-    home: "0x1d2f0da169ceb9fc7b3144628db156f3f6c60dbe",
-    copy: "0xc730d8256B8A1030eEA67f1Bc7ebed3898f7A535",
-    id: "ec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8",
-    float: "0x55d398326f99059fF775485246999027B3197955",
-    floatDecimals: 18,
-    quoter: "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997",
-    fees: [100, 500, 2500, 10000],
-    wnative: "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",
-    wnativeFee: 100,
-    wormhole: 4,
-    bridge: "0xB6F6D86a8f9879A9c87f643768d9efc38c1Da6E7",
-    cctp: null,
-  },
   base: {
     viem: base,
     upstream: process.env.BASE_RPC_URL ?? "https://base.gateway.tenderly.co",
@@ -138,7 +120,7 @@ const HOMES = {
     cctp: 1,
   },
 };
-const CHAINS_RUN = (process.env.RESTOCK_E2E_CHAINS ?? "bsc,base,optimism,avalanche").split(",").map((s) => s.trim());
+const CHAINS_RUN = (process.env.RESTOCK_E2E_CHAINS ?? "base,optimism,avalanche").split(",").map((s) => s.trim());
 
 const erc20 = parseAbi([
   "function balanceOf(address) view returns (uint256)",
@@ -235,25 +217,23 @@ async function deploy(f, from, artifact, args) {
 const guardian = key("guardian");
 const attester = key("attester");
 /// One test key as the fork's Wormhole core's whole current guardian set (its `guardianSets` mapping sits at slot 2),
-/// and one test attester, with a threshold of one, on its CCTP message transmitter when it has one.
-async function installSigners(f, coreAddress, cctp) {
+/// and one test attester, with a threshold of one, on its CCTP message transmitter.
+async function installSigners(f, coreAddress) {
   const index = await read(f, coreAddress, core, "getCurrentGuardianSetIndex");
   const set = keccak256(concat([u(index, 32), u(2, 32)]));
   await f.test.setStorageAt({ address: coreAddress, index: set, value: u(1, 32) });
   await f.test.setStorageAt({ address: coreAddress, index: keccak256(set), value: pad(privateKeyToAccount(guardian).address, { size: 32 }) });
   f.core = coreAddress;
   f.guardianIndex = index;
-  if (cctp) {
-    const manager = await read(f, MT, transmitter, "attesterManager");
-    await f.test.setBalance({ address: manager, value: E18 });
-    await send(f, manager, MT, transmitter, "enableAttester", [privateKeyToAccount(attester).address]);
-    await send(f, manager, MT, transmitter, "setSignatureThreshold", [1n]);
-  }
+  const manager = await read(f, MT, transmitter, "attesterManager");
+  await f.test.setBalance({ address: manager, value: E18 });
+  await send(f, manager, MT, transmitter, "enableAttester", [privateKeyToAccount(attester).address]);
+  await send(f, manager, MT, transmitter, "setSignatureThreshold", [1n]);
 }
 
 step("Ethereum fork and executor");
 const eth = await fork(UPSTREAM, mainnet);
-await installSigners(eth, await read(eth, ETH_BRIDGE, bridgeAbi, "wormhole"), true);
+await installSigners(eth, await read(eth, ETH_BRIDGE, bridgeAbi, "wormhole"));
 // Pyth's receiver verifies the fake Hermes's updates against the test's own five keys (pnau.mjs), since the restock
 // values nothing Pyth's contract has not confirmed (RY-6).
 for (const [slot, value] of guardianSlots()) await eth.test.setStorageAt({ address: RECEIVER, index: slot, value });
@@ -437,12 +417,9 @@ for (const name of CHAINS_RUN) {
   step(`${name}: ${h.symbol}`);
   const f = await fork(h.upstream, h.viem);
   forks[h.wormhole] = f;
-  if (h.cctp !== null) byDomain[h.cctp] = f;
-  await installSigners(f, await read(f, h.bridge, bridgeAbi, "wormhole"), h.cctp !== null);
+  byDomain[h.cctp] = f;
+  await installSigners(f, await read(f, h.bridge, bridgeAbi, "wormhole"));
   await f.test.setBalance({ address: treasury.address, value: 10n ** 20n });
-  if (h.cctp === null) {
-    await f.test.request({ method: "anvil_dealERC20", params: [treasury.address, h.float, numberToHex(10_000n * 10n ** BigInt(h.floatDecimals))] });
-  }
   const usd = units(await bestQuote(h, f, "quoteExactInput", E18), h.floatDecimals);
   prices.set(h.id, usd);
   const need = BigInt(Math.floor((1_300 / usd) * 1e18));
@@ -455,7 +432,7 @@ for (const name of CHAINS_RUN) {
   env = {
     ...process.env,
     RPC_URL: eth.rpc,
-    [`${name === "bsc" ? "BSC" : name.toUpperCase()}_RPC_URL`]: f.rpc,
+    [`${name.toUpperCase()}_RPC_URL`]: f.rpc,
     EXECUTOR: executor,
     TREASURY_KEY: key("treasury"),
     PYTH_API_KEY: "e2e",
@@ -478,16 +455,12 @@ for (const name of CHAINS_RUN) {
 
   needs.report(`${name}:1`, "fill", [{ token: h.copy, amount: need }]);
   needs.flush();
-  if (h.cctp !== null) {
-    ok((await homeFloat()) === 0n, `the ${name} wallet starts with no float`);
-    const funded = await until(`${name} fund`, /bought \d+ USD/);
-    ok(/drew [\d.]+ USDC from the executor/.test(funded), "the treasury draws USDC from the executor");
-    ok(/funding its float with [\d.]+ USDC/.test(funded), `and funds ${name} by CCTP`);
-    ok(/fund of [\d.]+ USDC landed on/.test(funded), `the CCTP message is received on ${name}`);
-    ok(/bought \d+ USD on/.test(funded), "and the buy follows");
-  } else {
-    ok(/bought \d+ USD on/.test(await round(`${name} buy`)), `the service buys ${h.symbol} on ${name}`);
-  }
+  ok((await homeFloat()) === 0n, `the ${name} wallet starts with no float`);
+  const funded = await until(`${name} fund`, /bought \d+ USD/);
+  ok(/drew [\d.]+ USDC from the executor/.test(funded), "the treasury draws USDC from the executor");
+  ok(/funding its float with [\d.]+ USDC/.test(funded), `and funds ${name} by CCTP`);
+  ok(/fund of [\d.]+ USDC landed on/.test(funded), `the CCTP message is received on ${name}`);
+  ok(/bought \d+ USD on/.test(funded), "and the buy follows");
   const bought = await coin();
   ok(bought >= (need * 11n) / 10n, `the home wallet holds ${units(bought, 18).toFixed(2)} ${h.symbol}: the need and its 10% buffer`);
   const landed = await until(`${name} in`, /bridgeIn of \w+ landed/, 3);
@@ -509,17 +482,15 @@ for (const name of CHAINS_RUN) {
   ok(/sold \d+ USD on/.test(out), "and the coins that came home are sold");
   ok((await coin()) < 10n ** 15n, "none left in the home wallet");
 
-  if (h.cctp !== null) {
-    const back = await until(`${name} sweep`, /repaid [\d.]+ USDC/);
-    ok(/bringing [\d.]+ USDC home to the treasury/.test(back), `the idle float on ${name} goes back by CCTP`);
-    ok(/sweep of [\d.]+ USDC landed on ethereum/.test(back), "and is received on Ethereum");
-    ok(/repaid [\d.]+ USDC to the executor/.test(back), "and the treasury repays the executor beyond its target");
-    ok((await treasuryUsdc()) <= 1_000n * 10n ** 6n, "keeping no more than twice its target");
-    ok(
-      (await read(eth, executor, executorAbi, "treasuryUsdcAllowance")) <= 100_000n * 10n ** 6n,
-      "and repaying raised nothing above the owner's cap (RS-2)",
-    );
-  }
+  const back = await until(`${name} sweep`, /repaid [\d.]+ USDC/);
+  ok(/bringing [\d.]+ USDC home to the treasury/.test(back), `the idle float on ${name} goes back by CCTP`);
+  ok(/sweep of [\d.]+ USDC landed on ethereum/.test(back), "and is received on Ethereum");
+  ok(/repaid [\d.]+ USDC to the executor/.test(back), "and the treasury repays the executor beyond its target");
+  ok((await treasuryUsdc()) <= 1_000n * 10n ** 6n, "keeping no more than twice its target");
+  ok(
+    (await read(eth, executor, executorAbi, "treasuryUsdcAllowance")) <= 100_000n * 10n ** 6n,
+    "and repaying raised nothing above the owner's cap (RS-2)",
+  );
 
   // Every approval was for what its call took (RS-12): none stands beyond what a buy left of its bound.
   const allowed = (fork, token, spender) => read(fork, token, erc20, "allowance", [treasury.address, spender]);
@@ -527,10 +498,8 @@ for (const name of CHAINS_RUN) {
   ok((await allowed(f, h.home, venue.router)) === 0n && (await allowed(f, h.home, venue.tokenBridge)) === 0n,
     `no ${h.symbol} allowance left to the router or the bridge (RS-12)`);
   ok((await allowed(f, h.float, venue.router)) < 2_000n * 10n ** BigInt(h.floatDecimals), "and the float's to the router within a buy's slack");
-  if (h.cctp !== null) {
-    const cctpLeft = (await allowed(f, h.float, MESSENGER)) + (await allowed(eth, ETH_USDC, MESSENGER));
-    ok(cctpLeft === 0n && (await allowed(eth, ETH_USDC, executor)) === 0n, "no USDC allowance left to CCTP or the executor");
-  }
+  const cctpLeft = (await allowed(f, h.float, MESSENGER)) + (await allowed(eth, ETH_USDC, MESSENGER));
+  ok(cctpLeft === 0n && (await allowed(eth, ETH_USDC, executor)) === 0n, "no USDC allowance left to CCTP or the executor");
 }
 
 // ---------------------------------------------------------------------

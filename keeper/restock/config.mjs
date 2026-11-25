@@ -6,31 +6,18 @@ import { CHAINS, coinsOf } from "./coins.mjs";
 
 const URL = /^https?:\/\/\S+$/;
 
-/// Each home chain's RPC setting and, off EVM, its key's setting and form. The EVM home chains sign with the treasury's
-/// key, as Ethereum does.
+/// Each home chain's RPC setting. The home chains sign with the treasury's key, as Ethereum does.
 const CHAIN_SETTINGS = Object.freeze({
-  bsc: { rpc: "BSC_RPC_URL" },
   avalanche: { rpc: "AVALANCHE_RPC_URL" },
   optimism: { rpc: "OPTIMISM_RPC_URL" },
   base: { rpc: "BASE_RPC_URL" },
-  solana: { rpc: "SOLANA_RPC_URL", key: "SOLANA_KEY", pattern: /^[1-9A-HJ-NP-Za-km-z]{86,90}$/, what: "a base58 64-byte secret key" },
-  sui: { rpc: "SUI_RPC_URL", key: "SUI_KEY", pattern: /^suiprivkey1[02-9ac-hj-np-z]{50,70}$/, what: "a suiprivkey1… key" },
-  aptos: { rpc: "APTOS_RPC_URL", key: "APTOS_KEY", pattern: KEY, what: "a 32-byte hex Ed25519 key" },
-  algorand: { rpc: "ALGORAND_ALGOD_URL", key: "ALGORAND_MNEMONIC", pattern: /^([a-z]+ ){24}[a-z]+$/, what: "a 25-word mnemonic" },
 });
 
-/// The least gas each home chain's wallet keeps, in its gas coin's units: below it nothing is sent there. On the chains
-/// whose coin is the gas coin, twice this is never sold or bridged (`plan.mjs` spendable, CA-M14), and the signer
-/// refuses a sale or a transfer of it that would leave less than this (`signer-home.mjs`).
+/// The least gas each home chain's wallet keeps, in its gas coin's units: below it nothing is sent there.
 export const GAS_MIN = Object.freeze({
-  bsc: 10n ** 16n, // 0.01 BNB
   avalanche: 10n ** 17n, // 0.1 AVAX
   optimism: 2n * 10n ** 15n, // 0.002 ETH
   base: 2n * 10n ** 15n, // 0.002 ETH
-  solana: 5n * 10n ** 7n, // 0.05 SOL
-  sui: 10n ** 9n, // 1 SUI
-  aptos: 5n * 10n ** 7n, // 0.5 APT
-  algorand: 2n * 10n ** 6n, // 2 ALGO: Algorand's minimum balance for the wallet's assets and opt-ins, and fees
 });
 
 const DEFAULTS = {
@@ -98,31 +85,8 @@ export function parseRestockConfig(env) {
     config.chains[chain] = {
       ...CHAINS[chain],
       rpcUrl: required(s.rpc, URL, "an http(s) URL"),
-      key: s.key ? required(s.key, s.pattern, s.what) : config.treasuryKey,
+      key: config.treasuryKey,
     };
-    if (chain === "solana") {
-      // The Solana signer's own settings (solana/signer.mjs): Jupiter's key, which Swap V2 requires, and its options.
-      Object.assign(config.chains.solana, {
-        jupiterApiKey: required("JUPITER_API_KEY", /^\S+$/, "Jupiter's Swap API key"),
-        jupiterUrl: get("JUPITER_URL") ? required("JUPITER_URL", URL, "an http(s) URL") : null,
-        jupiterPrograms: get("JUPITER_PROGRAMS") || null,
-        maxUnitPrice: get("SOLANA_MAX_UNIT_PRICE") ? String(number("SOLANA_MAX_UNIT_PRICE", { min: 1, integer: true })) : null,
-      });
-      if (get("JUPITER_PROGRAMS") && !/^[1-9A-HJ-NP-Za-km-z]{32,44}(,[1-9A-HJ-NP-Za-km-z]{32,44})*$/.test(get("JUPITER_PROGRAMS"))) {
-        problems.push("JUPITER_PROGRAMS must be base58 program ids, comma-separated");
-      }
-    }
-    if (chain === "aptos") {
-      // The Aptos signer's swaps go through Panora's API, which wants a key (its docs publish a public one).
-      Object.assign(config.chains.aptos, {
-        panoraApiKey: required("PANORA_API_KEY", /^\S+$/, "Panora's API key"),
-        panoraUrl: get("PANORA_URL") ? required("PANORA_URL", URL, "an http(s) URL") : null,
-      });
-    }
-    if (chain === "algorand") {
-      // The indexer that confirms what algod no longer remembers (it keeps 1000 rounds).
-      config.chains.algorand.indexerUrl = get("ALGORAND_INDEXER_URL") ? required("ALGORAND_INDEXER_URL", URL, "an http(s) URL") : null;
-    }
     config.plan.gasMin.set(chain, GAS_MIN[chain]);
   }
 

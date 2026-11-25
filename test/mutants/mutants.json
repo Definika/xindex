@@ -690,202 +690,6 @@
     "root": "keeper"
   },
   {
-    "id": "P1",
-    "what": "Jupiter's answer may call its program more than once (PD-1)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/solana/checks.mjs",
-    "test": "keeper/test/unit/restock-solana.test.mjs",
-    "edits": [
-      {
-        "old": "if (calls.length !== 1) throw new Error(",
-        "new": "if (calls.length === 0) throw new Error("
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P2",
-    "what": "the wallet's other token accounts are left out of the simulation's bounds (PD-1)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/solana/checks.mjs",
-    "test": "keeper/test/unit/restock-solana.test.mjs",
-    "edits": [
-      {
-        "old": "const all = [...bounds, ...owned.filter((a) => !named.has(a)).map((address) => ({ address, min: 0n, max: 0n, held: true }))];",
-        "new": "const all = [...bounds];"
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P3",
-    "what": "an instruction with bytes after its arguments is read, a decoy among them (PD-2)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/solana/idl-decode.mjs",
-    "test": "keeper/test/unit/restock-solana.test.mjs",
-    "edits": [
-      {
-        "old": "  if (r.offset !== bytes.length - 8) throw new Error(`${ix.name} carries ${bytes.length - 8 - r.offset} bytes after its arguments`);\n",
-        "new": ""
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P4",
-    "what": "Jupiter's on-chain minimum is not held to the floor (PD-2)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/solana/checks.mjs",
-    "test": "keeper/test/unit/restock-solana.test.mjs",
-    "edits": [
-      {
-        "old": "if (onChainMin < minOut) throw new Error(",
-        "new": "if (onChainMin < 0n) throw new Error("
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P5",
-    "what": "a Cetus route may name any aggregator package (PD-3)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/sui/checks.mjs",
-    "test": "keeper/test/unit/restock-sui.test.mjs",
-    "edits": [
-      {
-        "old": "if (theirs !== ours) throw new Error(",
-        "new": "if (theirs === undefined) throw new Error("
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P6",
-    "what": "the swap's output goes to the wallet with no floor split off it (PD-3)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/sui/checks.mjs",
-    "test": "keeper/test/unit/restock-sui.test.mjs",
-    "edits": [
-      {
-        "old": "  const [floor] = tx.splitCoins(output, [tx.pure.u64(share)]);\n  tx.transferObjects([floor, output], address);",
-        "new": "  tx.transferObjects([output], address);"
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P7",
-    "what": "a hash lookup on a node behind the account read counts a move expired (PD-4)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/aptos/checks.mjs",
-    "test": "keeper/test/unit/restock-aptos.test.mjs",
-    "edits": [
-      {
-        "old": "    if (BigInt(byHash.ledgerVersion) < BigInt(account.ledgerVersion)) return { state: \"pending\" };\n",
-        "new": ""
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P8",
-    "what": "any error reading a gas coin counts it gone (PD-5)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/sui/checks.mjs",
-    "test": "keeper/test/unit/restock-sui.test.mjs",
-    "edits": [
-      {
-        "old": "export const missingObject = (error) => error?.code === \"notExists\" || error?.reason === \"notFound\";",
-        "new": "export const missingObject = (error) => error !== undefined;"
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P9",
-    "what": "a 4xx refusal is taken for a transport failure, and a refused step stays in flight (PD-6)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/inflight.mjs",
-    "test": "keeper/test/unit/restock-inflight.test.mjs",
-    "edits": [
-      {
-        "old": "  return status >= 400 && status < 500 && ![404, 408, 409, 425, 429].includes(status);",
-        "new": "  return false;"
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P10",
-    "what": "a move goes to the signer without its digest and expiry, so it is not held in flight when sent (PD-6)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/signer-home.mjs",
-    "test": "keeper/test/unit/restock-signer-home.test.mjs",
-    "edits": [
-      {
-        "old": "const sendRequest = (data) => ({ raw: data.raw, signature: data.hash, expiry: data.expiry });",
-        "new": "const sendRequest = (data) => ({ raw: data.raw });"
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P11",
-    "what": "an attestation always creates a copy, even one that exists (PD-7)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/attest.mjs",
-    "test": "keeper/test/unit/restock-attest.test.mjs",
-    "edits": [
-      {
-        "old": "await submit(created ? \"createWrapped\" : \"updateWrapped\", vaa);",
-        "new": "await submit(\"createWrapped\", vaa);"
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P12",
-    "what": "a null status from a node behind the finalized slot drops a move (PD-8)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/solana-sending.mjs",
-    "test": "keeper/test/unit/restock-solana.test.mjs",
-    "edits": [
-      {
-        "old": "if (statusSlot === null || finalizedSlot === null || BigInt(statusSlot) < BigInt(finalizedSlot)) {",
-        "new": "if (false) {"
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P13",
-    "what": "a null status from a node without the history drops a move (PD-8)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/solana-sending.mjs",
-    "test": "keeper/test/unit/restock-solana.test.mjs",
-    "edits": [
-      {
-        "old": "if (sentSlot === null || firstAvailableSlot === null || BigInt(firstAvailableSlot) > BigInt(sentSlot)) {",
-        "new": "if (false) {"
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P14",
-    "what": "a move whose fate is unknown is sent again silently (PD-8)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/signer-home.mjs",
-    "test": "keeper/test/unit/restock-signer-home.test.mjs",
-    "edits": [
-      {
-        "old": "    if (s.state === \"unknown\") throw new Error(`whether it landed is unknown: ${s.reason}`);\n",
-        "new": ""
-      }
-    ],
-    "runner": "node"
-  },
-  {
     "id": "P15",
     "what": "a round takes moves oldest first, a completing step before a signed move (PD-9)",
     "origin": "audit/2026-11-01-protocol-docs-review.md",
@@ -942,20 +746,6 @@
     "runner": "node"
   },
   {
-    "id": "P19",
-    "what": "a signer's input closing under a write is left unheard (PD-11)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/signer-home.mjs",
-    "test": "keeper/test/unit/restock-signer-home.test.mjs",
-    "edits": [
-      {
-        "old": "    self.stdin.on(\"error\", fail);\n",
-        "new": ""
-      }
-    ],
-    "runner": "node"
-  },
-  {
     "id": "P20",
     "what": "a burn allows no fee whatever the route's standard rate (PD-12)",
     "origin": "audit/2026-11-01-protocol-docs-review.md",
@@ -965,62 +755,6 @@
       {
         "old": "  return (amount * scaled + 99_999_999n) / 100_000_000n;",
         "new": "  return 0n;"
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P21",
-    "what": "Panora's splits need not add up to the amount (PD-13)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/aptos/checks.mjs",
-    "test": "keeper/test/unit/restock-aptos.test.mjs",
-    "edits": [
-      {
-        "old": "if (total !== amountIn) throw new Error(",
-        "new": "if (total < 0n) throw new Error("
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P22",
-    "what": "Panora's swap may pay an integrator fee (PD-13)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/aptos/checks.mjs",
-    "test": "keeper/test/unit/restock-aptos.test.mjs",
-    "edits": [
-      {
-        "old": "if (String(args[18]) !== PANORA_NO_FEE.amount || normAddress(args[19]) !== PANORA_NO_FEE.recipient) {",
-        "new": "if (false) {"
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P23",
-    "what": "a node's cap on simulated accounts fails the move instead of chunking it (PD-1)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/solana/checks.mjs",
-    "test": "keeper/test/unit/restock-solana.test.mjs",
-    "edits": [
-      {
-        "old": "    if (!(max > 0)) throw error;\n",
-        "new": "    throw error;\n"
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P24",
-    "what": "a transaction may change who controls a token account the move does not name (PD-1)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/solana/checks.mjs",
-    "test": "keeper/test/unit/restock-solana.test.mjs",
-    "edits": [
-      {
-        "old": "if (controlOf(is) !== controlOf(was)) throw new Error(",
-        "new": "if (false) throw new Error("
       }
     ],
     "runner": "node"
@@ -2016,20 +1750,6 @@
     "runner": "node"
   },
   {
-    "id": "T3",
-    "what": "a home-chain signer inherits the restock's whole environment, its keys included; the test looked for a key the test process never has",
-    "origin": "the test review of 2026-11-18",
-    "file": "keeper/restock/signer-home.mjs",
-    "test": "keeper/test/unit/restock-solana.test.mjs",
-    "edits": [
-      {
-        "old": "spawn(process.execPath, [path], { env, stdio",
-        "new": "spawn(process.execPath, [path], { env: { ...process.env, ...env }, stdio"
-      }
-    ],
-    "runner": "node"
-  },
-  {
     "id": "T4",
     "what": "the Hermes client ignores Retry-After and waits its one-second floor; the test's header asked for that floor",
     "origin": "the test review of 2026-11-18",
@@ -2609,132 +2329,6 @@
       {
         "old": "      if (Number.isInteger(holder) && holder > 0 && holder !== pid && alive(holder)) {\n",
         "new": "      if (Number.isInteger(holder) && holder > 0 && holder === 0) {\n"
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "C43",
-    "what": "a signer is launched by its URL's pathname, which names no file under a folder with a space (CA-L8)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
-    "file": "keeper/restock/solana.mjs",
-    "test": "keeper/test/unit/restock-signer-home.test.mjs",
-    "edits": [
-      {
-        "old": "const SIGNER = fileURLToPath(new URL(\"./solana/signer.mjs\", import.meta.url));",
-        "new": "const SIGNER = new URL(\"./solana/signer.mjs\", import.meta.url).pathname;"
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "C44",
-    "what": "the plan may sell or bridge the whole of a chain's own gas coin, its reserve included (CA-M14)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
-    "file": "keeper/restock/plan.mjs",
-    "test": "keeper/test/unit/restock-plan.test.mjs",
-    "edits": [
-      {
-        "old": "const atHome = spendable(c, home.coins.get(c.symbol) ?? 0n, cfg.gasMin);",
-        "new": "const atHome = home.coins.get(c.symbol) ?? 0n;"
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "C45",
-    "what": "with no gas minimum known for its chain, all of a gas coin may be sold or bridged (CA-M14)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
-    "file": "keeper/restock/plan.mjs",
-    "test": "keeper/test/unit/restock-plan.test.mjs",
-    "edits": [
-      {
-        "old": "  if (!gasMin.has(c.chain)) return 0n;\n",
-        "new": "  if (!gasMin.has(c.chain)) return held;\n"
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "C46",
-    "what": "the signer home sells or bridges a gas coin whatever gas the wallet would keep (CA-M14)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
-    "file": "keeper/restock/signer-home.mjs",
-    "test": "keeper/test/unit/restock-signer-home.test.mjs",
-    "edits": [
-      {
-        "old": "if (least === undefined || gas < amount + least) {",
-        "new": "if (least === undefined) {"
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "C47",
-    "what": "the signer home holds a buy's whole to the minimum by its value in floats, which a plan-sized minimum buy misses by a millionth (CA-R2-12)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
-    "file": "keeper/restock/signer-home.mjs",
-    "test": "keeper/test/unit/restock-signer-home.test.mjs",
-    "edits": [
-      {
-        "old": "a > 0n && (a === amount ? whole : u >= cfg.minUsd);",
-        "new": "a > 0n && u >= cfg.minUsd;"
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "C48",
-    "what": "the signer home tries a buy's whole however far under the minimum it is (CA-R2-12)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
-    "file": "keeper/restock/signer-home.mjs",
-    "test": "keeper/test/unit/restock-signer-home.test.mjs",
-    "edits": [
-      {
-        "old": "a > 0n && (a === amount ? whole : u >= cfg.minUsd);",
-        "new": "a > 0n && (a === amount || u >= cfg.minUsd);"
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "C49",
-    "what": "the journal prunes a received Solana burn a week on, its rent still to reclaim (CA-R2-13)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
-    "file": "keeper/restock/journal.mjs",
-    "test": "keeper/test/unit/restock-journal.test.mjs",
-    "edits": [
-      {
-        "old": "settled(m) && m.updatedAt < before && !rentToReclaim(m));",
-        "new": "settled(m) && m.updatedAt < before);"
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "C50",
-    "what": "closing a signer leaves its input open, so it never exits and holds a `--once` run alive (CA-L7)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
-    "file": "keeper/restock/signer-home.mjs",
-    "test": "keeper/test/unit/restock-signer-home.test.mjs",
-    "edits": [
-      {
-        "old": "      self.stdin.end();\n    });\n  };\n",
-        "new": "    });\n  };\n"
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "C51",
-    "what": "restock.mjs leaves its signers running after its loop (CA-L7)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
-    "file": "keeper/restock.mjs",
-    "test": "keeper/test/unit/restock-signer-home.test.mjs",
-    "edits": [
-      {
-        "old": "await Promise.all(Object.values(homes).map((h) => h.close?.()));\n",
-        "new": "\n"
       }
     ],
     "runner": "node"
@@ -4719,6 +4313,118 @@
       {
         "old": "    if (await orders.filled(move)) {\n      journal.advance(move.id, \"done\");",
         "new": "    if (false) {\n      journal.advance(move.id, \"done\");"
+      }
+    ]
+  },
+  {
+    "id": "OS1",
+    "what": "an sValue under a scheduled or active corporate action is used",
+    "origin": "design/2026-11-22-ondo-stocks-and-etfs.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/svalues.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "sValue > 0n && pauseStartTime === 0n && lastUpdate",
+        "new": "sValue > 0n && lastUpdate"
+      }
+    ]
+  },
+  {
+    "id": "OS2",
+    "what": "an sValue is used the moment Ondo changes it",
+    "origin": "design/2026-11-22-ondo-stocks-and-etfs.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/svalues.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "lastUpdate + BigInt(settleSeconds) <= now",
+        "new": "lastUpdate <= now"
+      }
+    ]
+  },
+  {
+    "id": "OS3",
+    "what": "an sValue settled exactly the settle time ago is refused",
+    "origin": "design/2026-11-22-ondo-stocks-and-etfs.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/svalues.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "lastUpdate + BigInt(settleSeconds) <= now",
+        "new": "lastUpdate + BigInt(settleSeconds) < now"
+      }
+    ]
+  },
+  {
+    "id": "OS4",
+    "what": "an sValue of zero is used",
+    "origin": "design/2026-11-22-ondo-stocks-and-etfs.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/svalues.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "sValue > 0n && pauseStartTime === 0n",
+        "new": "pauseStartTime === 0n"
+      }
+    ]
+  },
+  {
+    "id": "OS5",
+    "what": "a share-priced leg's confidence at a rate rounds down",
+    "origin": "design/2026-11-22-ondo-stocks-and-etfs.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/svalues.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "conf: ceilDiv(BigInt(p.conf) * rate, WAD)",
+        "new": "conf: (BigInt(p.conf) * rate) / WAD"
+      }
+    ]
+  },
+  {
+    "id": "OS6",
+    "what": "a share-priced leg without a settled sValue stops being share-priced",
+    "origin": "design/2026-11-22-ondo-stocks-and-etfs.md",
+    "file": "keeper/bot/svalues.mjs",
+    "test": "keeper/test/unit/svalues.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "if (sv[i] === null) return { price: p ?? null, shared: true };",
+        "new": "if (sv[i] === null) return { price: p ?? null, shared: false };"
+      }
+    ]
+  },
+  {
+    "id": "OS7",
+    "what": "a share-priced leg with an sValue keeps its share's price",
+    "origin": "design/2026-11-22-ondo-stocks-and-etfs.md",
+    "file": "keeper/bot/svalues.mjs",
+    "test": "keeper/test/unit/svalues.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "return { price: M.atRate(p, sv[i]), shared: false };",
+        "new": "return { price: p, shared: false };"
+      }
+    ]
+  },
+  {
+    "id": "OS8",
+    "what": "an sValue read at one block is kept for the next",
+    "origin": "design/2026-11-22-ondo-stocks-and-etfs.md",
+    "file": "keeper/bot/svalues.mjs",
+    "test": "keeper/test/unit/svalues.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "if (block !== L.number) {",
+        "new": "if (block === null) {"
       }
     ]
   }

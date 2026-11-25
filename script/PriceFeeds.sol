@@ -13,7 +13,7 @@ import {BaseAddresses} from "./BaseAddresses.sol";
 ///         keeper's catalogue.
 /// @dev Where each id comes from:
 ///      - Ethereum: `PythIds`, as the keeper's catalogue (`keeper/bot/price-ids.mjs`) holds it: every coin at its own
-///        feed, and each of Ondo's 352 stocks and ETFs at its token's own feed where Pyth has one (9) and otherwise at
+///        feed, and each of Ondo's 353 stocks and ETFs at its token's own feed where Pyth has one (9) and otherwise at
 ///        its share's. A share's feed leaves out the token's multiplier (`sValue`, the reinvested dividends, about 1%
 ///        on SPYon on 2026-11-23), which the check therefore misses, and a split moves that multiplier tenfold: the
 ///        guardian keeps such a leg out of a rebalance around a corporate action, as Ondo announces each at least 24
@@ -31,13 +31,13 @@ import {BaseAddresses} from "./BaseAddresses.sol";
 ///      refuses to propose it: a first update of each, by anyone, comes before the proposals (`docs/deployment.md`).
 library PriceFeeds {
     /// @notice How many entries each table holds: its chain's list's `COUNT`, which a test pins.
-    uint256 internal constant ETHEREUM_COUNT = 414;
-    uint256 internal constant BNB_COUNT = 364;
+    uint256 internal constant ETHEREUM_COUNT = 415;
+    uint256 internal constant BNB_COUNT = 365;
     uint256 internal constant BASE_COUNT = 32;
 
     /// @notice `token`'s feed on chain `chainId`, or kind `None` for a token off that chain's list. Each call builds
     ///         the chain's whole table, and memory is never freed within a call: a loop over a list looks its tokens up
-    ///         in one {table} with {find} instead, since 414 calls of this one run out of memory.
+    ///         in one {table} with {find} instead, since 415 calls of this one run out of memory.
     function feedOf(uint256 chainId, address token) internal pure returns (IPythPrices.PriceFeed memory feed) {
         (address[] memory tokens, IPythPrices.PriceFeed[] memory feeds) = table(chainId);
         return find(token, tokens, feeds);
@@ -511,10 +511,12 @@ library PriceFeeds {
             bytes32(0xd0805a15ab9b061a858417e37281424fade678dd7a68d9d36ea18a55889652d7),
             bytes32(0x71a19a2d91626d9d184ba85c4a9d21289640013a7dacc113d007847ea1a09ec8),
             bytes32(0xb89885277fd07887353cb63d641afe432a5231256f844b3b993f8fe1764fdfca),
-            bytes32(0x27c7bbc9755d847f7fc63620c2edcc6a91d2c0c67a28c7999907b59c505b3c17)
+            bytes32(0x27c7bbc9755d847f7fc63620c2edcc6a91d2c0c67a28c7999907b59c505b3c17),
+            bytes32(0x5da511a7c68b17a3bc94380cab4756bc83ab87f86307af10ea58467a64b6689d)
         ];
         kinds = [
             uint8(1),
+            1,
             1,
             1,
             1,
@@ -1299,10 +1301,12 @@ library PriceFeeds {
             bytes32(0xd0805a15ab9b061a858417e37281424fade678dd7a68d9d36ea18a55889652d7),
             bytes32(0x71a19a2d91626d9d184ba85c4a9d21289640013a7dacc113d007847ea1a09ec8),
             bytes32(0xb89885277fd07887353cb63d641afe432a5231256f844b3b993f8fe1764fdfca),
-            bytes32(0x27c7bbc9755d847f7fc63620c2edcc6a91d2c0c67a28c7999907b59c505b3c17)
+            bytes32(0x27c7bbc9755d847f7fc63620c2edcc6a91d2c0c67a28c7999907b59c505b3c17),
+            bytes32(0x5da511a7c68b17a3bc94380cab4756bc83ab87f86307af10ea58467a64b6689d)
         ];
         kinds = [
             uint8(1),
+            1,
             1,
             1,
             1,

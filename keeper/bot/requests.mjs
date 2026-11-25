@@ -17,9 +17,10 @@
 import { encodeAbiParameters, encodeFunctionData, keccak256 } from "viem";
 import { failedRequests, revertedRequestFills, shortRequests, skippedRequests } from "./backoff.mjs";
 import { ABI, revertReason } from "./chain.mjs";
-import { FRESH_SECONDS, MAX_CONF_BPS, SHARE_PRICED_IDS, TX_GAS_CAP } from "./config.mjs";
+import { FRESH_SECONDS, MAX_CONF_BPS, TX_GAS_CAP } from "./config.mjs";
 import { priceKey } from "./hermes.mjs";
 import * as M from "./math.mjs";
+import { createSValues } from "./svalues.mjs";
 
 const INT256_MIN = -(2n ** 255n);
 const HERMES_MS = 5_000;
@@ -37,9 +38,12 @@ export const requestHash = (request) => keccak256(encodeAbiParameters(REQUEST_TY
 export const batchHash = (requests) =>
   requests.reduce((running, r) => keccak256(encodeAbiParameters(PAIR_OF_HASHES, [running, requestHash(r)])), NO_REQUESTS);
 const same = (a, b) => a.toLowerCase() === b.toLowerCase();
-const sharePriced = (id) => SHARE_PRICED_IDS.includes(id.toLowerCase());
 
-export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth, stableDecimals = null, staticsOf, log, needs }) {
+export function createRequestFiller({ chain, cfg, hermes, routes, svalues = createSValues({ chain, oracle: null }), requests, pyth, stableDecimals = null, staticsOf, log, needs }) {
+  /// Each leg of `st` as the filler prices it at block L, from the trusted prices `latest`: `{price, shared}`, a
+  /// share-priced Ondo leg at its share's price times Ondo's settled sValue, or else at its share's price and still
+  /// share-priced (bot/svalues.mjs). Without an oracle every share-priced leg stays one, as before 2026-11-25.
+  const legsOf = (st, latest, L) => svalues.legs(st, st.ids.map((id) => (id ? latest.get(priceKey(id)) : undefined)), L);
   // Windows kept in Ethereum's blocks span the same time on a faster chain (M.blockScale).
   const scale = M.blockScale(cfg.chain);
   /// The earliest second a fill sent at block L can land at, which it is simulated at, and its deadline (M.landing).
@@ -154,7 +158,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
     info.clear();
     for (const r of live) {
       const st = statics.get(r.index);
-      const prices = st ? st.ids.map((id) => (id ? latest.get(priceKey(id)) : undefined)) : [];
+      const prices = st ? (await legsOf(st, latest, L)).map((leg) => leg.price) : [];
       const priced = st !== undefined && r.units !== null && prices.every(Boolean);
       const shareUsd = priced ? M.tvlUsd({ supply: 10n ** 18n, units: r.units, decimals: st.decimals, prices }) : null;
       info.set(r.index.toLowerCase(), { shareUsd, mintAllowed: r.mintAllowed, nonce: r.nonce });
@@ -180,6 +184,7 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
     // A stock read that failed is not an empty stock: valued as one, the fill would deliver stock it never counted
     // and overstate its profit by that stock's value. The check is made again next block (RY-9).
     if ([...held, ...allowed].some((r) => r.status !== "success")) throw new Error("a stock read failed");
+    const legs = await legsOf(st, latest, L);
     const routeOf = st.tokens.map(() => "0x");
     const legLimits = st.tokens.map(() => 0n);
     const short = [];
@@ -190,10 +195,10 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
       const token = st.tokens[i];
       const amount = amounts[i];
       if (amount === 0n || same(token, cfg.chain.usdc)) continue; // a USDC leg is the float itself
-      const p = st.ids[i] ? latest.get(priceKey(st.ids[i])) : undefined;
+      const p = legs[i].price;
       if (!p) return { skip: `no fresh, verified price for ${token}` };
       const dec = st.decimals[i];
-      const shared = sharePriced(st.ids[i]);
+      const shared = legs[i].shared;
       const h = M.min(held[i].result, allowed[i].result);
       let route = null;
       if (isMint) {
@@ -391,9 +396,10 @@ export function createRequestFiller({ chain, cfg, hermes, routes, requests, pyth
 
     // One share's worth each way, at Pyth: what issuing it costs and what redeeming it brings, the index's fee in both.
     const latest = await trustedLatest(st.ids.filter(Boolean), L);
-    const prices = st.ids.map((id) => (id ? latest.get(priceKey(id)) : undefined));
+    const legs = await legsOf(st, latest, L);
+    const prices = legs.map((leg) => leg.price);
     const worth = (amounts) => amounts.reduce((sum, a, i) => sum + M.amountUsd(a, st.decimals[i], prices[i]), 0);
-    const stockable = cfg.shareStockUsd > 0 && prices.every(Boolean) && !st.ids.some((id) => id && sharePriced(id));
+    const stockable = cfg.shareStockUsd > 0 && prices.every(Boolean) && !legs.some((leg) => leg.shared);
     const shareWorth = stockable ? { buyUsd: worth(oneIssued), sellUsd: worth(oneRedeemed) } : null;
     const plan = M.planBatch({
       mints,

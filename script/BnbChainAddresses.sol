@@ -23,12 +23,13 @@ import {Listings} from "./Listings.sol";
 ///        (the owner's call of 2026-10-10).
 ///      - NIGHT (0xFe930c2d63AeD9b82fC4DBC801920dD2c1a3224F) is refused (the owner's call of 2026-10-06).
 ///      On 2026-11-19 every Ondo stock and ETF Pyth has a feed for joined, 352 in all, each `Custodial`
-///      (the owner's call, design/2026-11-22-ondo-stocks-and-etfs.md).
+///      (the owner's call, design/2026-11-22-ondo-stocks-and-etfs.md), and on 2026-11-25 Anthropic's, ANTon (the
+///      owner's call), 353 in all.
 library BnbChainAddresses {
     /// @notice BNB Chain's chain id.
     uint256 internal constant CHAIN_ID = 56;
     /// @notice How many coins the list names.
-    uint256 internal constant COUNT = 364;
+    uint256 internal constant COUNT = 365;
 
     // ---------------------------------------------------------------------
     // BNB Chain's own coin, wrapped as WETH wraps ether, and the two majors as Binance holds them: BTCB and "ETH" are
@@ -418,6 +419,9 @@ library BnbChainAddresses {
     address internal constant DRAMON = 0x087b5761b161429013d41eA54cd2fb6022A21564;
     address internal constant SATAON = 0x732823512Ba98D1BCDE471ca023ee2A0C9f117b7;
     address internal constant STRCON = 0x71E9dc9DEbc18650BD2342B93623B88C2aD00c89;
+    /// @dev Anthropic's Ondo token, listed on 2026-11-25 (the owner's call: "both to eth and bnb"): the same `GMToken`
+    ///      behind the same beacon, first active at block 135,500,512; read from Ondo's app and on chain that day.
+    address internal constant ANTON = 0x343ccbc9f8409f862008b7abebFFf20ECf935C75;
 
     // ---------------------------------------------------------------------
     // Mint and burn currencies, 18 decimals each on BNB Chain ("Tether USD" and "USD Coin", Binance-Peg). Never
@@ -820,6 +824,7 @@ library BnbChainAddresses {
         tokens[361] = DRAMON;
         tokens[362] = SATAON;
         tokens[363] = STRCON;
+        tokens[364] = ANTON;
     }
 
     /// @notice The tier of a token in the list, as `Listings.tierOf` gives Ethereum's: `Custodial` for every
@@ -903,7 +908,7 @@ library BnbChainAddresses {
                 || token == BNOON || token == PSQON || token == CPERON || token == FCELON || token == FLNCON
                 || token == NNEON || token == BOTON || token == PALLON || token == BTGOON || token == LPTHON
                 || token == EXODON || token == BWETON || token == BAION || token == DRAMON || token == SATAON
-                || token == STRCON
+                || token == STRCON || token == ANTON
         ) return Listings.Tier.Custodial;
         return Listings.Tier.Unrecorded;
     }

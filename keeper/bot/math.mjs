@@ -83,6 +83,27 @@ export const inventoryDelta = ({ out, in: need, held, routed }) => (routed ? 0n 
 export const keptUsd = (pythUsd, quoteUsdc, decimals = 6) =>
   quoteUsdc === null || quoteUsdc === undefined ? pythUsd : Math.min(pythUsd, usdcUsd(quoteUsdc, decimals));
 
+const WAD = 10n ** 18n;
+
+/// Whether an Ondo token's sValue, as Ondo's SyntheticSharesOracle holds it (`assetData`) at a block of timestamp
+/// `now`, is one to value the token at: held (above zero), with no corporate action scheduled or under way
+/// (`pauseStartTime` zero: Ondo schedules a split or another large change as a pause, which an operator of theirs lifts
+/// by hand once the price has stabilised), and last changed at least `settleSeconds` before `now`. Ondo's small updates
+/// rise by at most the asset's allowed drift a day; a corporate action's new sValue lands when the pause is lifted, at
+/// a moment the share's feed need not share, so for `settleSeconds` after any change the leg values nothing: time
+/// for both to agree and for an operator to look, not a judgment that the new sValue is right.
+export const sValueUsable = ({ sValue, lastUpdate, pauseStartTime }, now, settleSeconds) =>
+  sValue > 0n && pauseStartTime === 0n && lastUpdate + BigInt(settleSeconds) <= now;
+
+/// Pyth price `p` of a share as the price of a token worth `rate` (1e18 = one) of those shares: the price rounded
+/// down and the confidence up, or null when there is no price or none is left.
+export function atRate(p, rate) {
+  if (!p) return null;
+  const price = (BigInt(p.price) * rate) / WAD;
+  if (price <= 0n) return null;
+  return { price, conf: ceilDiv(BigInt(p.conf) * rate, WAD), expo: p.expo, publishTime: p.publishTime };
+}
+
 /// The dollar change one leg makes to the executor's stock: a coin the index sends out and no route sells is kept, at
 /// {keptUsd}, and a coin the index needs comes out of stock first, at Pyth price `price`. `quoteUsdc` is the best
 /// quote for selling `out`, or null. A share-priced Ondo leg kept counts as nothing: its feed prices a share, not the

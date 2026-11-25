@@ -14,8 +14,8 @@
 //      (`restock/uniswapx.mjs`), sell and bring home what nobody needs, and move USDC where the buys wait for it;
 //   3. it runs the plan, each move recorded in the journal (JOURNAL_FILE) before it is broadcast.
 //
-// `node restock.mjs --attest <chain> <token>` instead attests one token on a served home chain for its Wormhole copy on
-// Ethereum, the owner's step before a copy can be listed (restock/attest.mjs, PD-7), and exits.
+// Its home chains are EVM chains: the signers of Solana, Sui, Aptos and Algorand went on 2026-11-25 with the coins they
+// served, which had left Ethereum's list (audit/2026-11-25-non-evm-restock-retirement.md).
 
 import { decodeFunctionResult, encodeFunctionData } from "viem";
 import { MAINNET } from "./bot/config.mjs";
@@ -23,22 +23,16 @@ import { revertReason } from "./bot/chain.mjs";
 import { createHermes, priceKey } from "./bot/hermes.mjs";
 import { readNeeds } from "./bot/needs.mjs";
 import { createAdvance } from "./restock/advance.mjs";
-import { attestToken } from "./restock/attest.mjs";
 import { cctpMaxFee, createIris, createWormholescan } from "./restock/attestations.mjs";
 import { CHAINS, PRICE_IDS } from "./restock/coins.mjs";
 import { parseRestockConfig } from "./restock/config.mjs";
 import { ABI, createEvm, createEvmHome, word } from "./restock/evm.mjs";
-import { createSolanaHome } from "./restock/solana.mjs";
-import { createSuiHome } from "./restock/sui.mjs";
-import { createAptosHome } from "./restock/aptos.mjs";
-import { createAlgorandHome } from "./restock/algorand.mjs";
-import { createJournal, fileStore, lockJournal, movedOn, rentToReclaim, resumeOrder } from "./restock/journal.mjs";
+import { createJournal, fileStore, lockJournal, movedOn, resumeOrder } from "./restock/journal.mjs";
 import { plan } from "./restock/plan.mjs";
 import { PERMIT2, REACTOR, ROUTING, createUniswapXApi, inputMax, nonceSlot, nonceUsed, outputMin, permitTypedData, refusal } from "./restock/uniswapx.mjs";
 import { decodeV2Order, orderHash } from "./restock/uniswapx-chain.mjs";
 
 const ONCE = process.argv.includes("--once");
-const ATTEST = process.argv.indexOf("--attest");
 const FRESH_SECONDS = 120;
 const log = (...args) => console.log(new Date().toISOString(), ...args);
 const cfg = parseRestockConfig(process.env);
@@ -60,10 +54,6 @@ const homes = {};
 for (const [name, chain] of Object.entries(cfg.chains)) {
   const coins = cfg.coins.filter((c) => c.chain === name);
   if (chain.platform === "evm") homes[name] = createEvmHome({ name, rpcUrl: chain.rpcUrl, key: chain.key, journal, cfg: cfg.plan });
-  else if (chain.platform === "solana") homes[name] = createSolanaHome({ settings: chain, coins, journal, cfg: cfg.plan, verifyVaa: eth.verifyVaa });
-  else if (chain.platform === "sui") homes[name] = createSuiHome({ settings: chain, coins, journal, cfg: cfg.plan, verifyVaa: eth.verifyVaa });
-  else if (chain.platform === "aptos") homes[name] = createAptosHome({ settings: chain, coins, journal, cfg: cfg.plan, verifyVaa: eth.verifyVaa });
-  else if (chain.platform === "algorand") homes[name] = createAlgorandHome({ settings: chain, coins, journal, cfg: cfg.plan, verifyVaa: eth.verifyVaa });
   else throw new Error(`${name}'s coins (${coins.map((c) => c.symbol).join(", ")}) need their ${chain.platform} adapter; leave them out of RESTOCK_COINS`);
 }
 const coinOf = (symbol) => cfg.coins.find((c) => c.symbol === symbol);
@@ -91,7 +81,7 @@ async function checkSetup() {
   }
   for (const [name, home] of Object.entries(homes)) {
     await home.check();
-    // One recipient per coin and chain: Solana's bridge pays a token account per mint, so the executor pins each coin.
+    // One recipient per coin and chain, as the executor pins it.
     for (const c of cfg.coins.filter((x) => x.chain === name)) {
       const pinned = await ex("homeRecipient", [CHAINS[name].wormhole, c.copy]);
       const wanted = await home.recipientFor(c);
@@ -303,23 +293,6 @@ async function placeOrder(a, c) {
   return log(a.coin, `UniswapX order ${id} signed and ${posted}: at most ${Number(inputMax(order)) / 1e6} USDC for at least ${(Number(outputMin(order)) / 10 ** c.decimals).toFixed(6)} of it`);
 }
 
-/// CCTP V2 lets a Solana burn's event account be closed for its rent five days after the burn; the journal keeps a
-/// received burn until its rent is reclaimed (CA-R2-13), with the burn's message and attestation.
-const RECLAIM_AFTER_SECONDS = 5 * 86_400 + 600;
-
-async function reclaimRent() {
-  const now = Math.floor(Date.now() / 1000);
-  const due = (m) => rentToReclaim(m) && now - m.at >= RECLAIM_AFTER_SECONDS;
-  for (const m of journal.find(due)) {
-    const h = homes[m.chain];
-    if (!h?.reclaim) continue;
-    await h
-      .reclaim(m.data.eventAccount, m.data.message, m.data.attestation)
-      .then(() => journal.note(m.id, { reclaimed: true }))
-      .catch((error) => log(`move ${m.id}`, `rent not reclaimed: ${revertReason(error)}`));
-  }
-}
-
 async function round() {
   for (const h of Object.values(homes)) h.forgetRoutes(); // each round searches its routes afresh
   const pending = resumeOrder(journal.pending());
@@ -329,7 +302,6 @@ async function round() {
   // What moved on just now is left out of this round's plan: the state below may be read from a node a block
   // behind the one that mined it (RZ-19).
   const moved = movedOn(pending, (id) => journal.get(id)?.stage);
-  await reclaimRent();
   const p = await prices();
   const state = await readState();
   const { actions, notes } = plan({
@@ -347,25 +319,6 @@ async function round() {
   journal.prune();
 }
 
-if (ATTEST >= 0) {
-  const [chain, token] = process.argv.slice(ATTEST + 1);
-  const home = homes[chain];
-  if (!home?.attest) throw new Error(`--attest needs a served chain whose signer attests (${Object.keys(homes).filter((n) => homes[n].attest).join(", ") || "none served"}), then a token`);
-  if (!token) throw new Error("--attest needs the token to attest after the chain");
-  await home.check();
-  await attestToken({
-    home,
-    wormholeChain: CHAINS[chain].wormhole,
-    token,
-    wormholescan,
-    verifyVaa: eth.verifyVaa,
-    wrappedAsset: (tokenChain, tokenAddress) => eth.read(MAINNET.tokenBridge, ABI.tokenBridge, "wrappedAsset", [tokenChain, tokenAddress]),
-    submit: (functionName, vaa) => eth.complete({ to: MAINNET.tokenBridge, abi: ABI.tokenBridge, functionName, args: [vaa] }),
-    log,
-  });
-  process.exit(0);
-}
-
 let stopping = false;
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => (stopping = true));
 await checkSetup();
@@ -380,7 +333,3 @@ while (!stopping) {
   if (ONCE) break;
   for (let s = 0; s < cfg.intervalSeconds && !stopping; s++) await new Promise((r) => setTimeout(r, 1000));
 }
-// The signers end with the last round, a `--once` run's one or a stopped service's last: a signer's open pipes kept
-// the process alive after it, and a scheduler never had the round's outcome (CA-L7). The exit code is the round's
-// (CA-R2-20).
-await Promise.all(Object.values(homes).map((h) => h.close?.()));

@@ -49,12 +49,12 @@ interface ITokenBridgeViews {
 
 /// @dev The executor's restock against Wormhole's real Token Bridge on a mainnet fork. No guardian signs for a test, so
 ///      the fork's current guardian set is replaced by one test key, which the core then accepts as a quorum of one;
-///      the bridge, its registered BNB Chain emitter, the wrapped XRP and the core's checks are all the real ones.
+///      the bridge, its registered Avalanche emitter, the wrapped AVAX and the core's checks are all the real ones.
 contract KeeperExecutorForkTest is Test {
-    /// @dev Wormhole's chain id for BNB Chain, XRP's copy's home.
-    uint16 constant BNB = 4;
-    /// @dev Binance-Peg XRP on BNB Chain, the source the bridge wraps as `A.XRP`.
-    bytes32 constant XRP_SOURCE = bytes32(uint256(uint160(0x1D2F0da169ceB9fC7B3144628dB156f3F6c60dBE)));
+    /// @dev Wormhole's chain id for Avalanche, AVAX's copy's home.
+    uint16 constant AVALANCHE = 6;
+    /// @dev WAVAX on Avalanche, the source the bridge wraps as `A.AVAX`.
+    bytes32 constant AVAX_SOURCE = bytes32(uint256(uint160(0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7)));
     /// @dev The core's storage slot of its guardian sets mapping (Wormhole's `State`: provider takes slots 0 and 1).
     uint256 constant GUARDIAN_SETS_SLOT = 2;
     bytes32 constant HOME_WALLET = bytes32(uint256(0xbee));
@@ -102,8 +102,8 @@ contract KeeperExecutorForkTest is Test {
         );
         vm.startPrank(execOwner);
         executor.setTreasury(treasury);
-        executor.setHomeRecipient(BNB, A.XRP, HOME_WALLET);
-        executor.setRestockAllowance(A.XRP, 100e18); // RS-1: the restocking the owner allows
+        executor.setHomeRecipient(AVALANCHE, A.AVAX, HOME_WALLET);
+        executor.setRestockAllowance(A.AVAX, 100e18); // RS-1: the restocking the owner allows
         vm.stopPrank();
     }
 
@@ -117,7 +117,7 @@ contract KeeperExecutorForkTest is Test {
         assertEq(core.getGuardianSet(index).keys[0], key);
     }
 
-    /// @dev A transfer of `normalized` XRP, in the bridge's eight decimals, from BNB Chain's registered bridge to `to`,
+    /// @dev A transfer of `normalized` AVAX, in the bridge's eight decimals, from Avalanche's registered bridge to `to`,
     ///      with a payload, signed by the test guardian.
     function _signedTransfer(uint256 normalized, address to) internal returns (bytes memory) {
         bytes memory payload = ITokenBridgeViews(address(bridge))
@@ -125,8 +125,8 @@ contract KeeperExecutorForkTest is Test {
                 ITokenBridge.TransferWithPayload({
                     payloadID: 3,
                     amount: normalized,
-                    tokenAddress: XRP_SOURCE,
-                    tokenChain: BNB,
+                    tokenAddress: AVAX_SOURCE,
+                    tokenChain: AVALANCHE,
                     to: bytes32(uint256(uint160(to))),
                     toChain: 2,
                     fromAddress: bytes32(uint256(0xf00)),
@@ -136,8 +136,8 @@ contract KeeperExecutorForkTest is Test {
         bytes memory body = abi.encodePacked(
             uint32(block.timestamp),
             uint32(0),
-            BNB,
-            ITokenBridgeViews(address(bridge)).bridgeContracts(BNB),
+            AVALANCHE,
+            ITokenBridgeViews(address(bridge)).bridgeContracts(AVALANCHE),
             sequence++,
             uint8(15),
             payload
@@ -147,7 +147,7 @@ contract KeeperExecutorForkTest is Test {
     }
 
     function testFork_aBridgedTransferArrivesAndIsCredited() public {
-        assertEq(bridge.wrappedAsset(BNB, XRP_SOURCE), A.XRP, "the bridge's XRP is the listed copy");
+        assertEq(bridge.wrappedAsset(AVALANCHE, AVAX_SOURCE), A.AVAX, "the bridge's AVAX is the listed copy");
         bytes memory signed = _signedTransfer(100e8, address(executor));
 
         vm.expectRevert(bytes("invalid sender")); // only the recipient completes a payload transfer
@@ -155,39 +155,39 @@ contract KeeperExecutorForkTest is Test {
         ITokenBridge(address(bridge)).completeTransferWithPayload(signed);
 
         vm.prank(treasury);
-        uint256 amount = executor.redeemBridged(signed, A.XRP);
-        assertEq(amount, 100e18, "100 XRP, from eight decimals to the copy's 18");
-        assertEq(IERC20(A.XRP).balanceOf(address(executor)), 100e18);
-        assertEq(executor.stockAllowance(A.XRP), 100e18);
-        assertEq(executor.restockAllowance(A.XRP), 0, "the credit spent the owner's restock allowance");
+        uint256 amount = executor.redeemBridged(signed, A.AVAX);
+        assertEq(amount, 100e18, "100 AVAX, from eight decimals to the copy's 18");
+        assertEq(IERC20(A.AVAX).balanceOf(address(executor)), 100e18);
+        assertEq(executor.stockAllowance(A.AVAX), 100e18);
+        assertEq(executor.restockAllowance(A.AVAX), 0, "the credit spent the owner's restock allowance");
 
         vm.expectRevert(bytes("transfer already completed"));
         vm.prank(treasury);
-        executor.redeemBridged(signed, A.XRP);
+        executor.redeemBridged(signed, A.AVAX);
     }
 
     function testFork_aTransferOfAnotherTokenIsRefused() public {
         bytes memory signed = _signedTransfer(1e8, address(executor));
-        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.WrongToken.selector, A.ADA, A.XRP));
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.WrongToken.selector, A.AERO, A.AVAX));
         vm.prank(treasury);
-        executor.redeemBridged(signed, A.ADA);
+        executor.redeemBridged(signed, A.AERO);
     }
 
-    /// @dev Bridging out burns the copy and publishes a plain transfer to the owner's recipient on BNB Chain.
+    /// @dev Bridging out burns the copy and publishes a plain transfer to the owner's recipient on Avalanche.
     function testFork_bridgeOutPublishesATransferToThePinnedRecipient() public {
         bytes memory signed = _signedTransfer(100e8, address(executor));
         vm.prank(treasury);
-        executor.redeemBridged(signed, A.XRP);
-        uint256 supply = IERC20(A.XRP).totalSupply();
+        executor.redeemBridged(signed, A.AVAX);
+        uint256 supply = IERC20(A.AVAX).totalSupply();
         uint256 fee = core.messageFee();
         vm.deal(treasury, fee);
 
         vm.recordLogs();
         vm.prank(treasury);
-        executor.bridgeOut{value: fee}(A.XRP, 40e18, BNB);
-        assertEq(IERC20(A.XRP).balanceOf(address(executor)), 60e18);
-        assertEq(IERC20(A.XRP).totalSupply(), supply - 40e18, "the copy is burned");
-        assertEq(executor.stockAllowance(A.XRP), 60e18, "capped at what is left");
+        executor.bridgeOut{value: fee}(A.AVAX, 40e18, AVALANCHE);
+        assertEq(IERC20(A.AVAX).balanceOf(address(executor)), 60e18);
+        assertEq(IERC20(A.AVAX).totalSupply(), supply - 40e18, "the copy is burned");
+        assertEq(executor.stockAllowance(A.AVAX), 60e18, "capped at what is left");
 
         Vm.Log[] memory logs = vm.getRecordedLogs();
         bytes32 published = keccak256("LogMessagePublished(address,uint64,uint32,bytes,uint8)");
@@ -198,10 +198,10 @@ contract KeeperExecutorForkTest is Test {
             ITokenBridgeViews.Transfer memory t = ITokenBridgeViews(address(bridge)).parseTransfer(payload);
             assertEq(t.payloadID, 1);
             assertEq(t.amount, 40e8);
-            assertEq(t.tokenAddress, XRP_SOURCE);
-            assertEq(t.tokenChain, BNB);
+            assertEq(t.tokenAddress, AVAX_SOURCE);
+            assertEq(t.tokenChain, AVALANCHE);
             assertEq(t.to, HOME_WALLET, "to the owner's recipient");
-            assertEq(t.toChain, BNB);
+            assertEq(t.toChain, AVALANCHE);
             assertEq(t.fee, 0);
             found = true;
         }

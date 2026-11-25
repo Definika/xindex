@@ -60,9 +60,9 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
     /// @dev Ethereum's router, by its runtime code: `MainnetAddresses.fork.t.sol` pins the same hash on Ethereum.
     bytes32 constant ETHEREUM_ROUTER_CODEHASH = 0x6a5f46971b50c6e1b7eef97902311444e479d734e4f80ad88367783cf373fe7f;
     /// @dev Block the fork pins to; BNB_FORK_BLOCK overrides it for a non-archive RPC that only serves recent state.
-    ///      2026-11-21's, after every Ondo token the list names had been deployed; 133,361,996 of 2026-11-13 came
-    ///      before some of them.
-    uint256 constant FORK_BLOCK = 134_768_771;
+    ///      2026-11-25's, after every Ondo token the list names had been deployed, ANTon the last (first active at
+    ///      block 135,500,512); 134,768,771 of 2026-11-21 came before it, and 133,361,996 of 2026-11-13 before others.
+    uint256 constant FORK_BLOCK = 135_655_351;
 
     uint24 constant F500 = 500;
 
@@ -466,6 +466,7 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
         _assertToken(B.DRAMON, "DRAMon", 18);
         _assertToken(B.SATAON, "SATAon", 18);
         _assertToken(B.STRCON, "STRCon", 18);
+        _assertToken(B.ANTON, "ANTon", 18);
         _assertToken(B.USDT, "USDT", 18);
         _assertToken(B.USDC, "USDC", 18);
     }
@@ -670,7 +671,7 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
     function _checkOndo(uint256 from, uint256 to) internal {
         CheckToken checker = new CheckToken();
         address[] memory list = new ConfigureWeighted().bnbList();
-        assertEq(list.length, 12 + 352);
+        assertEq(list.length, 12 + 353);
         if (to > list.length) to = list.length;
         for (uint256 i = from; i < to; ++i) {
             CheckToken.Report memory r = checker.check(list[i], address(0), checker.markets());

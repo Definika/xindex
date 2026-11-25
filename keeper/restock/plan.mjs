@@ -17,22 +17,6 @@ const usdOf = (units, decimals, price) => (Number(units) / 10 ** decimals) * pri
 export const unitsOf = (usd, decimals, price) => BigInt(Math.floor((usd / price) * 10 ** decimals));
 const withBps = (x, bps) => x + (x * BigInt(bps)) / 10_000n;
 
-/// How many times its chain's gas minimum (`config.mjs` GAS_MIN) the home wallet keeps of a coin that is that chain's
-/// own gas coin.
-export const GAS_RESERVE_TIMES = 2n;
-
-/// What the plan may sell or bridge of coin `c`, of which the home wallet holds `held`: all of it, but for a coin
-/// that is its chain's own gas coin (SUI, APT, ALGO: `isGas`), whose balance is also the wallet's gas. Of such a coin
-/// GAS_RESERVE_TIMES the chain's minimum in `gasMin` stays, and all of it when the chain has no minimum there, so the
-/// wallet can still pay for the moves that follow: the redeem of a transfer bridged home, the sale, the next buy.
-/// Read whole, a balance the plan sold or bridged down to nothing left the wallet no gas for any of them (CA-M14).
-export function spendable(c, held, gasMin) {
-  if (!c.isGas) return held;
-  if (!gasMin.has(c.chain)) return 0n;
-  const reserve = GAS_RESERVE_TIMES * gasMin.get(c.chain);
-  return held > reserve ? held - reserve : 0n;
-}
-
 /// The round's actions, in the order to run them, and a note for every coin or chain left alone and why.
 ///
 /// - `coins`: the coins served (`coins.mjs`).
@@ -40,8 +24,8 @@ export function spendable(c, held, gasMin) {
 ///   the keeper's board is missing, unreadable or stale: then no coin is bought, sold or bridged (RS-8).
 /// - `stock`: Map of copy address to `{balance, allowance}` in the executor.
 /// - `inflight`: Map of copy address to `{in, out}`, amounts crossing the bridge now (the journal's).
-/// - `home`: `{coins: Map symbol -> balance in the home wallet, a gas coin's whole (the plan keeps its reserve back,
-///   `spendable`), and for a local coin (`coins.mjs` LOCAL_COINS) the treasury's own balance of it on Ethereum;
+/// - `home`: `{coins: Map symbol -> balance in the home wallet, and for a local coin (`coins.mjs` LOCAL_COINS) the
+///   treasury's own balance of it on Ethereum;
 ///   floats: Map chain -> the float's balance; gas: Map chain -> the gas coin's balance; funding: Map chain -> float on
 ///   its way there}`.
 /// - `treasury`: `{usdc, allowance}`: the treasury's USDC on Ethereum and what it may still draw from the executor.
@@ -98,7 +82,7 @@ export function plan({ coins, needs, stock, inflight, home, treasury, prices, sp
     const room = restockAllowance.get(c.copy) ?? 0n;
     const credited = coming < room ? coming : room;
     const open = room - credited;
-    const atHome = spendable(c, home.coins.get(c.symbol) ?? 0n, cfg.gasMin);
+    const atHome = home.coins.get(c.symbol) ?? 0n;
     const want = need === 0n ? 0n : withBps(need, cfg.bufferBps);
     const blocked = noGas.has(c.chain);
 
@@ -286,9 +270,7 @@ export function plan({ coins, needs, stock, inflight, home, treasury, prices, sp
     const wanted = fundWanted.get(chain) ?? 0n;
     const onItsWay = home.funding?.get(chain) ?? 0n;
     if (wanted > 0n) {
-      if (ch.cctpDomain === null) {
-        notes.push(`${chain}: top up its ${ch.float.symbol} float by hand (no CCTP)`);
-      } else if (busy.has("treasury")) {
+      if (busy.has("treasury")) {
         notes.push(`${chain}: funding waits for the treasury's move to settle`);
       } else if (noGas.has(chain)) {
         notes.push(`${chain}: no float sent while it has no gas to receive it`);

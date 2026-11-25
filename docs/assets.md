@@ -38,8 +38,8 @@ description, as the keeper's own catalogue.
 
 ## The list
 
-`script/Listings.sol` lists 414 assets with their tiers: `default` is the first four (WETH, WBTC, LINK, UNI) and `wide`
-the other 410.
+`script/Listings.sol` lists 415 assets with their tiers: `default` is the first four (WETH, WBTC, LINK, UNI) and `wide`
+the other 411.
 
 - 61 coins of the top 300, held as the issuer's own Ethereum contract where one exists, and otherwise as the copy
   Wormhole's token bridge wraps from the coin's home chain (3 copies: SOL, AVAX and AERO). OP's copy left the list on
@@ -52,12 +52,13 @@ the other 410.
   ([`design/2026-11-18-bridged-coins-in-a-rebalance.md`](../design/2026-11-18-bridged-coins-in-a-rebalance.md)).
   SOL's copy trades on Uniswap, and the restock serves AVAX's and AERO's from their EVM home chains.
 - Tether Gold.
-- 352 tokenized US stocks and ETFs issued by Ondo, every one Pyth has a feed for (since 2026-11-22, the owner's call;
+- 353 tokenized US stocks and ETFs issued by Ondo, every one Pyth has a feed for (since 2026-11-22, the owner's call;
   [`design/2026-11-22-ondo-stocks-and-etfs.md`](../design/2026-11-22-ondo-stocks-and-etfs.md)), among them funds of
-  oil, gold, silver, platinum and copper.
+  oil, gold, silver, platinum and copper, and Anthropic's ANTon since 2026-11-25, on BNB Chain too.
 
-26 more Wormhole copies wait for an attestation (`node keeper/restock.mjs --attest <chain> <token>`, since legacy
-Portal closed on 2026-06-30) before they can be checked and listed
+26 more Wormhole copies wait for an attestation, through Wormhole's own SDK on each token's home chain since legacy
+Portal closed on 2026-06-30, before they can be checked and listed; each needs an Ethereum pool to be rebalanced, the
+restock serving EVM home chains alone since 2026-11-25
 ([`design/2026-10-10-one-index-wormhole-legs.md`](../design/2026-10-10-one-index-wormhole-legs.md), section 2a), and
 FIL's waits for a reading of its Binance-Peg source. Every
 listed token passed `CheckToken` on a mainnet fork, and one fork test issues, rebalances and redeems an index holding

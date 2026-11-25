@@ -110,7 +110,7 @@ test("RX-2: the share-priced ids are PythIds.sol's", async () => {
   const { readFileSync } = await import("node:fs");
   const source = readFileSync(new URL("../../../script/PythIds.sol", import.meta.url), "utf8");
   const share = [...source.matchAll(/\((Equity\.(?:US|Index)\.)[^)]*\)[^\n]*\n\s*bytes32 internal constant \w+ = (0x[0-9a-f]{64})/g)].map((m) => m[2]);
-  assert.equal(share.length, 343);
+  assert.equal(share.length, 344);
   assert.deepEqual([...SHARE_PRICED_IDS].sort(), share.sort());
 });
 
@@ -131,12 +131,12 @@ test("the keeper values a chain's own coins, and PRICE_IDS adds to them or chang
   const token = `0x${"Cd".repeat(20)}`;
   const id = `0x${"ab".repeat(32)}`;
   const weth = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2";
-  assert.equal(Object.keys(parseConfig(VALID).priceIds).length, 414);
+  assert.equal(Object.keys(parseConfig(VALID).priceIds).length, 415);
   assert.equal(parseConfig(VALID).priceIds[weth], "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace");
   const c = parseConfig({ ...VALID, PRICE_IDS: `${token}=${id}, ${weth}=${id}` });
   assert.equal(c.priceIds[token.toLowerCase()], id);
   assert.equal(c.priceIds[weth], id, "an entry replaces the catalogue's");
-  assert.equal(Object.keys(c.priceIds).length, 415);
+  assert.equal(Object.keys(c.priceIds).length, 416);
   assert.equal(Object.keys(parseConfig({ ...VALID, CHAIN_ID: "11155111" }).priceIds).length, 4, "Sepolia's test tokens");
   for (const bad of ["junk", `${token}`, `${token}=0x12`, `${token}=${id}=${id}`, `0x12=${id}`]) {
     assert.throws(() => parseConfig({ ...VALID, PRICE_IDS: bad }), /PRICE_IDS has an entry that is not token=id/, bad);

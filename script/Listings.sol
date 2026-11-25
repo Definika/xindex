@@ -35,9 +35,11 @@ import {MainnetAddresses as M} from "./MainnetAddresses.sol";
 ///         - 2026-11-21: the Ondo stocks left for 109 of Backed's wrapped xStocks, and on 2026-11-22 the owner
 ///           reversed it ("delete everything releated to xtokcs and leave only ondo"): no xStock is listed, and every
 ///           Ondo stock and ETF above is, as of 2026-11-19.
+///         - 2026-11-25: Ondo's ANTon, Anthropic's token, joined (the owner's call: "both to eth and bnb"), at Pyth's
+///           24/7 price for the share, Pyth having no feed for the token; on BNB Chain too.
 library Listings {
     /// @notice How many coins the list names.
-    uint256 internal constant COUNT = 414;
+    uint256 internal constant COUNT = 415;
 
     /// @notice A token's trust tier (design/2026-10-05-wide-asset-support.md, section 1), shown by the app beside every
     ///         index that holds it and by `ConfigureWeighted`'s safe mode beside every listing.
@@ -127,6 +129,7 @@ library Listings {
                 || token == M.PSQON || token == M.CPERON || token == M.FCELON || token == M.FLNCON || token == M.NNEON
                 || token == M.BOTON || token == M.PALLON || token == M.BTGOON || token == M.LPTHON || token == M.EXODON
                 || token == M.BWETON || token == M.BAION || token == M.DRAMON || token == M.SATAON || token == M.STRCON
+                || token == M.ANTON
         ) return Tier.Custodial;
         if (
             token == M.CRO || token == M.ICP || token == M.ARB || token == M.RENDER || token == M.CAKE || token == M.ZRO
@@ -577,5 +580,6 @@ library Listings {
         tokens[411] = M.DRAMON;
         tokens[412] = M.SATAON;
         tokens[413] = M.STRCON;
+        tokens[414] = M.ANTON;
     }
 }

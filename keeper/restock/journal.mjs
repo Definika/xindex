@@ -50,12 +50,6 @@ const subjectsOf = (move) => (move.kind === "order" ? [move.coin, "treasury"] : 
 /// settled.
 export const movedOn = (before, stageNow) => new Set(before.filter((m) => stageNow(m.id) !== m.stage).flatMap(subjectsOf));
 
-/// Whether `move` is a received CCTP burn whose event account still holds the rent the burn paid for it (Solana's,
-/// `eventAccount`, until `reclaimed`): restock.mjs takes it back five days after the burn, with the message and the
-/// attestation the move keeps. A burn that never landed opened no account. Pruned a week after its receipt, a move
-/// whose reclaim had failed until then took with it all that could reclaim the rent (CA-R2-13).
-export const rentToReclaim = (move) => move.kind === "sweep" && move.stage === "received" && Boolean(move.data?.eventAccount) && !move.data.reclaimed;
-
 export function createJournal({ load, save, now = () => Math.floor(Date.now() / 1000) }) {
   let state = parse(load());
   const settled = (m) => m.stage === "dropped" || m.stage === STAGES[m.kind].at(-1);
@@ -174,15 +168,10 @@ export function createJournal({ load, save, now = () => Math.floor(Date.now() / 
       }
       return usd;
     },
-    /// Every move, settled or not, for which `predicate(move)` holds: read only.
-    find(predicate) {
-      return Object.values(state.moves).filter(predicate);
-    },
-    /// Forgets moves that settled more than `days` ago; a day's buys stay, for the budget, and a received burn stays
-    /// until the rent its event account holds is reclaimed (`rentToReclaim`, CA-R2-13).
+    /// Forgets moves that settled more than `days` ago; a day's buys stay, for the budget.
     prune(days = 7) {
       const before = now() - Math.max(days, 1) * DAY;
-      const old = Object.values(state.moves).filter((m) => settled(m) && m.updatedAt < before && !rentToReclaim(m));
+      const old = Object.values(state.moves).filter((m) => settled(m) && m.updatedAt < before);
       if (old.length) change((s) => old.forEach((m) => delete s.moves[m.id]));
     },
   };

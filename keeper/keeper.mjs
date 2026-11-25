@@ -24,7 +24,7 @@
 
 import { renameSync, writeFileSync } from "node:fs";
 import { encodeFunctionData, getAddress } from "viem";
-import { FRESH_SECONDS, HUB_SLOTS, MAX_CONF_BPS, NO_QUOTE_PROPOSAL, SHARE_PRICED_IDS, TX_GAS_CAP, parseConfig } from "./bot/config.mjs";
+import { FRESH_SECONDS, HUB_SLOTS, MAX_CONF_BPS, NO_QUOTE_PROPOSAL, TX_GAS_CAP, parseConfig } from "./bot/config.mjs";
 import { MAX_REVERTED_FILLS, MAX_REVERTED_REQUEST_FILLS, revertedFills } from "./bot/backoff.mjs";
 import { ABI, createChain, revertReason } from "./bot/chain.mjs";
 import { createHermes, priceKey } from "./bot/hermes.mjs";
@@ -34,6 +34,7 @@ import { createPythFor } from "./bot/pyth.mjs";
 import { TxTracker } from "./bot/nonce.mjs";
 import { createRequestFiller } from "./bot/requests.mjs";
 import { createRoutes, marketOf } from "./bot/routes.mjs";
+import { createSValues } from "./bot/svalues.mjs";
 import * as U from "./bot/units.mjs";
 
 const START_COOLDOWN = 86_400n; // a start of ours that nobody filled is not repeated for a day
@@ -68,6 +69,8 @@ const passed = async (L) => (await chain.blockNumber()) - L.number >= LAND_BLOCK
 const chain = createChain(cfg);
 const hermes = createHermes({ url: cfg.hermesUrl, apiKey: cfg.pythApiKey });
 const routes = createRoutes(chain, cfg, ABI, marketOf(cfg.chain));
+// Ondo's sValues, read from its oracle on this chain, at which a share-priced Ondo leg is valued (bot/svalues.mjs).
+const svalues = createSValues({ chain, oracle: cfg.chain.ondoOracle, log });
 const tip = M.gweiToWei(cfg.priorityFeeGwei);
 const feeCap = M.gweiToWei(cfg.maxFeeGwei);
 const tracker = new TxTracker(chain.txIo, log, { feeCap, landBlocks: Number(LAND_BLOCKS) });
@@ -82,7 +85,6 @@ const needs = cfg.needsFile
     })
   : createNeeds({ write: () => {} });
 const isUsdc = (token) => token.toLowerCase() === cfg.chain.usdc.toLowerCase();
-const sharePriced = (id) => SHARE_PRICED_IDS.includes(id.toLowerCase());
 const kept = (keepMask, i) => ((keepMask >> BigInt(i)) & 1n) === 1n;
 const tokensOf = (short) => short.map((s) => s.token).join(", ");
 let subsidies = []; // {at, usd}: fills sent below zero profit, for SUBSIDY_BUDGET_USD's rolling day (RX-16)
@@ -166,8 +168,11 @@ async function withStatics(list, L, what, onUnread = () => {}) {
 /// change of weights opens.
 const weightsOf = (index, blockNumber) => chain.read(index, ABI.hub, "componentWeights", [], blockNumber);
 
-/// The Hermes prices of `ids`, with none for a coin without an id.
-const pricesFrom = (latest, ids) => ids.map((id) => (id ? latest.get(priceKey(id)) : undefined));
+/// The Hermes prices of `st`'s legs as each token's own price at block L, with none for a coin without an id: a
+/// share-priced Ondo leg at its share's price times Ondo's settled sValue, or at its share's price where there is
+/// none, as before (bot/svalues.mjs).
+const pricesFrom = async (latest, st, L) =>
+  (await svalues.legs(st, st.ids.map((id) => (id ? latest.get(priceKey(id)) : undefined)), L)).map((leg) => leg.price ?? undefined);
 
 async function refresh(L) {
   if (cfg.indexes) indexes = cfg.indexes.map((a) => getAddress(a));
@@ -196,16 +201,18 @@ async function refresh(L) {
 const pythChain = (L) => ({ read: chain.read, call: chain.call, pyth: setup.pyth, abi: ABI.pyth, blockNumber: L.number });
 
 /// The keeper's price of each leg of `st` it may move, as Pyth's {price, expo}, and null for the rest: a kept leg, a
-/// coin without an id, a share-priced Ondo leg, which the bot cannot value (RX-2), and a price that is not Hermes'
-/// signed one as Pyth's contract parses it, or is stale or wide (RX-1, RX-9, RY-7).
+/// coin without an id, a price that is not Hermes' signed one as Pyth's contract parses it, or is stale or wide (RX-1,
+/// RX-9, RY-7), and a share-priced Ondo leg without a settled sValue, which the bot cannot value (RX-2). A share-priced
+/// leg with one is priced at its share's price times that sValue (bot/svalues.mjs).
 async function pricesOf(st, L, keepMask) {
-  const wanted = st.ids.map((id, i) => (id && !sharePriced(id) && !kept(keepMask, i) ? id : null));
+  const wanted = st.ids.map((id, i) => (id && !kept(keepMask, i) ? id : null));
   const ids = wanted.filter(Boolean);
   const trusted = ids.length ? await hermes.trusted(ids, Date.now() + HERMES_MS, pythChain(L)) : new Map();
-  return wanted.map((id) => {
+  const feeds = wanted.map((id) => {
     const p = id ? trusted.get(priceKey(id)) : null;
     return p && M.freshPrice(p, L.timestamp, FRESH_SECONDS, MAX_CONF_BPS) ? p : null;
   });
+  return (await svalues.legs(st, feeds, L)).map((leg) => (leg.shared ? null : leg.price));
 }
 
 /// What a fill on a factory with an oracle posts to Pyth and what Pyth's check will make of its legs: bot/pyth.mjs.
@@ -466,7 +473,7 @@ async function worthChecking(open, L) {
       const latest = ids.size ? await hermes.latest([...ids], Date.now() + HERMES_MS) : new Map();
       for (const r of readable) {
         const st = statics.get(r.index);
-        const prices = pricesFrom(latest, st.ids);
+        const prices = await pricesFrom(latest, st, L);
         worth.set(keyOf(r.index), { supply: r.supply, tvl: M.tvlUsd({ supply: r.supply, units: r.units, decimals: st.decimals, prices }), block: L.number });
       }
     }
@@ -608,7 +615,7 @@ async function startChecks(L, open) {
   const worthyAhead = [];
   for (const r of readable) {
     const st = statics.get(r.index);
-    const tvl = M.tvlUsd({ supply: r.supply, units: r.units, decimals: st.decimals, prices: pricesFrom(latest, st.ids) });
+    const tvl = M.tvlUsd({ supply: r.supply, units: r.units, decimals: st.decimals, prices: await pricesFrom(latest, st, L) });
     if (tvl < cfg.minTvlUsd) {
       if (r.stage === "ready") say(r.index, `not starting: worth ${tvl.toFixed(0)} USD, below MIN_TVL_USD`);
       continue;
@@ -792,7 +799,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => (stopping =
 
 setup = await chain.checkSetup();
 if (cfg.fillRequests) {
-  filler = createRequestFiller({ chain, cfg, hermes, routes, requests: setup.requests, pyth: setup.pyth, stableDecimals: setup.stableDecimals, staticsOf, log, needs });
+  filler = createRequestFiller({ chain, cfg, hermes, routes, svalues, requests: setup.requests, pyth: setup.pyth, stableDecimals: setup.stableDecimals, staticsOf, log, needs });
 }
 log(`keeper ${chain.account.address} on ${cfg.chain.name}, executor ${cfg.executor}, factory ${cfg.factory}, auctions ${cfg.fillAuctions ? "on" : "off"}, requests ${cfg.fillRequests ? setup.requests : "off"}`);
 let last = -1n;

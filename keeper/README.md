@@ -180,11 +180,18 @@ held move with the index: that risk is the operator's, and the default holds non
 demand; an operator who wants some sends the executor shares. An index holding a share-priced Ondo leg has shares the
 bot cannot value, so it keeps and delivers none of them.
 
-The 343 Ondo legs priced at their share's feed (every listed Ondo stock and ETF but the 9 Pyth prices directly, NVDA,
+The 344 Ondo legs priced at their share's feed (every listed Ondo stock and ETF but the 9 Pyth prices directly, NVDA,
 AAPL, GOOGL, MSFT, TSLA, HOOD, MSTR, COIN and CRCL; `SHARE_PRICED_IDS` in `bot/config.mjs`) are worth sValue
-shares, which the bot cannot read. Keep
-their stock allowance at **zero**: the bot refuses any fill that would deliver them from stock, and counts any it keeps
-as worth nothing (RX-2). After a split or a reverse split the share's feed is off by the ratio. The bot logs `restock <coins>` and does not start or fill an
+shares. Since 2026-11-25 the bot reads each one's sValue from Ondo's `SyntheticSharesOracle` on its chain
+(`bot/svalues.mjs`, `ondoOracle` in the chain table) and values the leg at the share's price times it, as Ondo's own
+notes on the oracle say to, once the sValue is settled: Ondo's oracle holds it, no corporate action is scheduled or
+under way (Ondo pauses the asset for one, and an operator of theirs lifts the pause), and it last changed at least
+`SVALUE_SETTLE_SECONDS` (twenty minutes) ago. Such a leg is valued like any other: named units, delivered from stock,
+counted as stock. Read on 2026-11-25, BNB Chain's oracle holds 349 of the list's 353 Ondo tokens, with multipliers
+from 0.10 (SOXSon, a reverse split) to 10.04 (KLACon; NFLXon and PPLTon are 10), and Ethereum's 10, so on Ethereum
+336 legs are still left alone. A leg without a settled sValue is share-priced as before. Keep its stock allowance at
+**zero**: the bot refuses any fill that would deliver it from stock, and counts any it keeps as worth nothing (RX-2).
+Base has no Ondo oracle. The bot logs `restock <coins>` and does not start or fill an
 auction its usable stock (the lower of the balance and the allowance) cannot cover. Usable stock comes first for a
 routed coin too; only the rest is bought. The executor's address must be able to hold and send every coin it stocks.
 
@@ -255,7 +262,7 @@ pools sell: it buys them on Ethereum through UniswapX and deposits them ("Ondo s
    and a receipt lookup that fails is never taken for a missing receipt (RS-5). A signature that goes stale while a
    move waits is renewed: Circle is asked, at most hourly, to sign again a message whose expiry passed, and a VAA a
    replaced guardian set signed is fetched again (PD-10). A round resumes every signed move before any other step, so
-   no signer builds over a transaction it may have in flight (PD-9). Each CCTP burn allows the route's standard fee from
+   no move is built over a transaction that may be in flight (PD-9). Each CCTP burn allows the route's standard fee from
    Iris's table, zero today, and refuses a rate over 10 bps (PD-12).
 2. It reads the keeper's `NEEDS_FILE`, the executor's stock and allowances, the treasury's USDC, each home wallet's
    coins, float and gas, and Pyth's prices, kept only where Pyth's contract on Ethereum, parsing the signed update Hermes
@@ -270,9 +277,7 @@ pools sell: it buys them on Ethereum through UniswapX and deposits them ("Ondo s
      (RS-1). A coin whose restock allowance is spent is neither bought nor brought in, and the service names the call.
      Stock the executor holds beyond its stock allowance counts as held: nothing is bought for it, and the service
      asks the owner for `setStockAllowance` instead (RZ-20). Coins at home worth less than `RESTOCK_MIN_USD` wait,
-     in a round that buys, for the buy's coins, and come in with them in one transfer (RZ-21). Of a coin that is its
-     home chain's own gas coin (SUI, APT, ALGO), twice the chain's gas minimum stays in the wallet, never sold or
-     bridged, and the signer refuses a sale or a transfer that would leave less than the minimum (CA-M14);
+     in a round that buys, for the buy's coins, and come in with them in one transfer (RZ-21);
    - a covered coin's coins at home first top the stock up to the needs and the buffer, as far as the restock
      allowance goes, and only the rest is sold (RS-10); stock the executor holds beyond the needs, the buffer and
      `RESTOCK_KEEP_USD`, not counting what is on its way (RS-9), is bridged out to the treasury's wallet on its home
@@ -302,7 +307,6 @@ address was read on its chain on 2026-10-19:
 
 | Home chain | Coins | Venue | Float |
 |---|---|---|---|
-| BNB Chain | XRP, ADA, LTC, DOT, BNB (as WBNB): off Ethereum's list since 2026-11-13, so served only when `RESTOCK_COINS` names one | PancakeSwap v3 | USDT, topped up by hand (CCTP mints no USDC there) |
 | Avalanche | AVAX (WAVAX) | Uniswap v3 | USDC, by CCTP |
 | Optimism | OP: off Ethereum's list since 2026-11-21, so served only when `RESTOCK_COINS` names it | Uniswap v3 | USDC, by CCTP |
 | Base | AERO | Uniswap v3 | USDC, by CCTP |
@@ -314,41 +318,19 @@ that, 17 of its 29 checks passing). On that the owner took OP's copy off Ethereu
 the table for a relisting once the pools deepen or the restock is given another venue there. Base and Avalanche
 passed the same test that day, 29 of 29 each.
 
-Depth read on 2026-10-19, selling $3,000: LTC 88 bps, DOT 73, OP 88; selling $10,000: XRP 26, ADA 102, AVAX 19,
-AERO 46. **ATOM is not served** (the owner's call of 2026-10-20): Binance-Peg ATOM, the only source its copy redeems
-for, has almost no market on BNB Chain (selling $500 lost 305 bps on PancakeSwap v3, $1,000 lost 22% on v2), and
-Ethereum's other ATOM tokens, Gravity Bridge's and Axelar's, are other bridges with no Uniswap market. An index holding
-ATOM fills only from stock the operator adds, within its stock allowance.
+Depth read on 2026-10-19, selling $3,000: OP 88 bps; selling $10,000: AVAX 19, AERO 46.
 
-**JUP and PYTH (Solana), SUI, APT and ALGO** (opt-in, named in `RESTOCK_COINS`; `design/2026-11-01-non-evm-restock.md`).
-None of the five is on Ethereum's list since 2026-11-18 (the owner's call,
-`design/2026-11-18-bridged-coins-in-a-rebalance.md`): their signers have never run end to end, and with no Ethereum
-pool an index holding one could rebalance only from stock they bring in. The code stays for a relisting once a run
-has proven it. Each chain's libraries and key live in a process of their own, its signer (`restock/solana/`, `restock/sui/`,
-`restock/aptos/`, `restock/algorand/`, each with its own `package.json` and lockfile: run `npm ci --ignore-scripts` in
-each one served),
-which the service starts with an environment naming only that chain's RPC, its key and its venue's key, never the
-treasury's (`signer-home.mjs`). Bridging goes through Wormhole's own SDK, the float through CCTP V2 (Circle's programs
-on Solana, its scripts on Sui and Aptos; Algorand has no CCTP, so its USDC float is topped up by hand, as BNB Chain's
-is), and swaps through Jupiter's Swap V2 (Solana), Cetus's aggregator (Sui), Panora (Aptos) and Tinyman v2's USDC/ALGO
-pool (Algorand), each with its on-chain minimum at the plan's floor or above. A signer builds and signs each move and
-first checks it by simulation: the wallet's coins may move only as the move says, and on Solana no delegate or close
-authority may be left on its token accounts and a swap may call only Jupiter's program. The service journals the signed
-move before asking the signer to send it, has it sent again while it may still land, and drops it once it cannot:
-Solana's blockhash expired at finalized height, Sui's gas coin moved without it or its epoch ended, Aptos's sequence
-number passed or its expiry reached, Algorand's last valid round passed. Sui's, Aptos's and Algorand's signers keep one
-transaction in flight at a time, and re-send by themselves only the steps that complete a move. Solana's bridge pays a
-token account, so the executor pins, for JUP and PYTH, the wallet's associated token account for each mint; Sui's,
-Aptos's and Algorand's pay the wallet itself. The service prints each missing pin at startup. Each wallet needs its
-chain's gas coin, and on Solana the rent of the accounts its moves open, which a burn's event account returns five days
-on.
+The service's home chains are these three since 2026-11-25. BNB Chain's, which served the copies of XRP, ADA, LTC, DOT
+and BNB, and the signers of Solana, Sui, Aptos and Algorand, which served JUP, PYTH, SUI, APT and ALGO, went with those
+copies, which had left Ethereum's list (`audit/2026-11-25-non-evm-restock-retirement.md`).
 
 **Ondo stocks through UniswapX** (the owner's call of 2026-11-24, `design/2026-11-24-uniswapx-restock.md`). Since
 2026-06-30 Ondo's stocks and ETFs trade on Ethereum through UniswapX: a swapper signs an order, and fillers compete to
 settle it through UniswapX's V2 Dutch order reactor, Ondo's own minting desk among them (read on 2026-11-24: ten fills
 of AAPLon and NVDAon in 9,000 blocks, the filler minting the coin it paid). The service serves the nine whose Pyth feed
-prices the token itself (NVDAon, AAPLon, GOOGLon, MSFTon, TSLAon, HOODon, MSTRon, COINon, CRCLon): the keeper values
-only those, so stock of the other 343 would serve no fill (RX-2). For a short one it asks Uniswap's Trading API for an
+prices the token itself (NVDAon, AAPLon, GOOGLon, MSFTon, TSLAon, HOODon, MSTRon, COINon, CRCLon): these are the ones
+the keeper values on every chain; the other 344 it values only where Ondo's oracle holds a settled sValue. For a
+short one it asks Uniswap's Trading API for an
 order spending an exact amount of the treasury's USDC on the coin, and signs it only if every field the signature
 commits to is what the plan allows (`restock/uniswapx.mjs`): UniswapX's V2 reactor, the treasury as swapper and as the
 one output's recipient, USDC in at no more than the plan's amount, the coin out at no less than its worth at Pyth less
@@ -367,13 +349,12 @@ stocks are offered through it to eligible users only, never US persons, so the o
 eligible; and the API may route an order under about 300 USDC to the pools, a route the service does not sign.
 
 **Setup, once, by `OWNER`:** deploy the executor with Wormhole's Token Bridge; `setTreasury(<treasury address>)`;
-`setHomeRecipient(<Wormhole chain id>, <copy>, <treasury address, left-padded to 32 bytes>)` for each coin served (BNB
-Chain 4: XRP, ADA, LTC, DOT, BNB; Avalanche 6: AVAX; Optimism 24: OP; Base 30: AERO): the treasury's key is the same on
-every EVM chain, and the executor pins a recipient per coin because Solana's bridge pays a token account per mint; `setTreasuryUsdcAllowance`, the
+`setHomeRecipient(<Wormhole chain id>, <copy>, <treasury address, left-padded to 32 bytes>)` for each coin served
+(Avalanche 6: AVAX; Optimism 24: OP; Base 30: AERO): the treasury's key is the same on every chain; `setTreasuryUsdcAllowance`, the
 most USDC the treasury may hold off the float, what it holds counted; and `setRestockAllowance(<copy>, <amount>)` for
 each coin served, the restocking you allow until you next look: what arrives through the bridge earns the keeper stock
 allowance only within it (RS-1), the nine Ondo stocks among them when served, whose deposits earn it the same way.
-Then send the treasury gas on each chain and Ethereum, and USDT to its BNB Chain wallet. The service checks every pin
+Then send the treasury gas on each chain and Ethereum. The service checks every pin
 at startup and names the call that is missing, and, serving an Ondo stock, that the executor takes deposits and that
 UniswapX's reactor names Permit2.
 
@@ -400,15 +381,7 @@ home wallets.
 | `RESTOCK_COINS` | AVAX, AERO, and the nine Ondo stocks when `UNISWAP_API_KEY` is set | Comma-separated symbols to serve (an Ondo stock as `NVDAON`). |
 | `UNISWAP_API_KEY` | required for the Ondo stocks | Uniswap's Trading API key (its developer dashboard), for UniswapX's orders. |
 | `UNISWAP_API_URL` | `https://trade-api.gateway.uniswap.org/v1` | |
-| `BSC_RPC_URL`, `AVALANCHE_RPC_URL`, `OPTIMISM_RPC_URL`, `BASE_RPC_URL` | required for their coins | Each home chain's JSON-RPC. |
-| `SOLANA_RPC_URL`, `SOLANA_KEY` | required for JUP, PYTH | Solana's JSON-RPC, and the service's Solana wallet, its 64-byte secret key in base58; both go to the signer alone. The RPC must keep transaction history: a move whose blockhash expired is dropped only on the word of a node caught up to the finalized slot that keeps the slots since it was built, and stays signed, reported unknown, otherwise (PD-8). A node that caps the accounts a simulation returns, as the public one does at 3, is asked in chunks (PD-1). |
-| `JUPITER_API_KEY` | required for JUP, PYTH | Jupiter's Swap API key (its portal), which every Swap V2 call needs. |
-| `JUPITER_URL`, `JUPITER_PROGRAMS`, `SOLANA_MAX_UNIT_PRICE` | `https://api.jup.ag`, none, `1000000` | Jupiter's API; more Jupiter program ids a swap may call; the most micro-lamports per compute unit a transaction bids. |
-| `SUI_RPC_URL`, `SUI_KEY` | required for SUI | A Sui gRPC fullnode (`https://fullnode.mainnet.sui.io:443`) and the wallet's `suiprivkey1...` key; both go to the Sui signer alone. |
-| `APTOS_RPC_URL`, `APTOS_KEY` | required for APT | An Aptos fullnode's REST API, through `/v1` (`https://api.mainnet.aptoslabs.com/v1`), and the wallet's 32-byte Ed25519 key in hex. A move whose sequence number was used is dropped only by a node at or past that version that keeps the versions since it was built (PD-4). |
-| `PANORA_API_KEY`, `PANORA_URL` | required for APT, `https://api.panora.exchange` | Panora's API key (its docs publish a public one) and its API. |
-| `ALGORAND_ALGOD_URL`, `ALGORAND_MNEMONIC` | required for ALGO | An algod (`https://mainnet-api.algonode.cloud`) and the wallet's 25-word mnemonic; the wallet must hold USDC (asset 31566704), opted in. |
-| `ALGORAND_INDEXER_URL` | `https://mainnet-idx.algonode.cloud` | The indexer that confirms a transaction algod no longer remembers (1000 rounds). |
+| `AVALANCHE_RPC_URL`, `OPTIMISM_RPC_URL`, `BASE_RPC_URL` | required for their coins | Each home chain's JSON-RPC. |
 | `RESTOCK_BUFFER_BPS` | `1000` | How far above the needs a buy fills. |
 | `RESTOCK_MIN_USD` | `200` | Smallest trade or transfer worth its fees. |
 | `RESTOCK_DAILY_USD` | `20000` | Most the buys of a day may cost, each one's loss bound included (CA-M13), gas aside; the last one is cut to what is left (RS-7). |
@@ -460,15 +433,9 @@ executor per chain, each under its own keeper key and with its own float. What d
 `test/KeeperExecutor.chains.fork.t.sol` deploys the executor on each chain's real market, checks every address the
 table names against the chain, and fills a real mint request through Uniswap V3 (BNB_RPC_URL, BASE_RPC_URL).
 
-To attest a token on Solana or Sui for its Wormhole copy on Ethereum (the owner's step before a copy can be listed,
-`design/2026-10-10-one-index-wormhole-legs.md`, section 2a), with the restock service's settings:
-
-    node restock.mjs --attest solana <mint>      # or: --attest sui <coin type>
-
-The chain's signer attests the token, after a simulation in which no token of its wallet moves. The service then
-waits for the guardians' signature, checks it on Ethereum's core, and creates the copy from the treasury, or updates
-an existing copy's name and symbol (`updateWrapped`, as RAY's needs). It follows Wormhole's SDK route, the one Wormhole's
-docs now give; legacy Portal's own interface closed on 2026-06-30 (PD-7).
+A Wormhole copy still to attest (the owner's step before a copy can be listed,
+`design/2026-10-10-one-index-wormhole-legs.md`, section 2a) is attested through Wormhole's own SDK, on the token's home
+chain: the service's attestation tool went with the non-EVM signers on 2026-11-25.
 
 Before Glamsterdam reaches mainnet: under EIP-8037 a transaction's state gas comes from a reservoir the GAS opcode does
 not show, so the executor's `gasUsed` undercounts fills that write new slots. The bot already simulates every fill it
@@ -484,7 +451,7 @@ raising to what EIP-8037 allows (RX-36).
 | `EXECUTOR` | required | This bot's `KeeperExecutor`. |
 | `PYTH_API_KEY` | required | Hermes' API key, sent as `Authorization: Bearer`: the keeper's own price source. No contract reads a price. |
 | `HERMES_URL` | `https://pyth.dourolabs.app/hermes` | Hermes since 2026-08-26. |
-| `PRICE_IDS` | none | `token=id` pairs, comma-separated: Pyth ids for coins the catalogue (`bot/price-ids.mjs`, the 414 listed coins) does not hold, a testnet's for instance, or another feed for one it does. A coin without an id is left alone. |
+| `PRICE_IDS` | none | `token=id` pairs, comma-separated: Pyth ids for coins the catalogue (`bot/price-ids.mjs`, the 415 listed coins) does not hold, a testnet's for instance, or another feed for one it does. A coin without an id is left alone. |
 | `TRADE_COST_BPS` | `30` | What trading a leg is taken to cost when the bot names a fill's units: a leg within this of its weight is not traded for its own sake. |
 | `INDEXES` | every index | Comma-separated indexes to serve. Only wallets the factory's owner approved create indexes, so the set is the team's; a list still caps the bot's work. |
 | `MIN_PROFIT_USD` | `5` | Least profit a fill or a start must promise; negative is a subsidy the operator accepts, for auctions only and within `SUBSIDY_BUDGET_USD`. |

@@ -19,7 +19,10 @@ const BNB_ID = "0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c
 ///   which it reverts on its deadline (`M.landing`); windows the bot keeps in blocks scale with `blockMs`;
 /// - `l1FeeOracle`: on an OP Stack chain, the predeploy that prices a transaction's data posted to Ethereum, which the
 ///   chain charges on top of its gas;
-/// - `maxFeeGwei`, `priorityFeeGwei`: the defaults of MAX_FEE_GWEI and PRIORITY_FEE_GWEI there.
+/// - `maxFeeGwei`, `priorityFeeGwei`: the defaults of MAX_FEE_GWEI and PRIORITY_FEE_GWEI there;
+/// - `ondoOracle`: Ondo's SyntheticSharesOracle, which holds each Ondo token's sValue, the shares one token is worth
+///   (bot/svalues.mjs), or null where Ondo has none. Both are the addresses Ondo's documentation names, read on chain
+///   on 2026-11-25: verified source `SyntheticSharesOracle`, `minimumPauseDuration()` 1800 on each.
 /// Every address of BNB Chain's and Base's entries was read on chain on 2026-11-24: SwapRouter02 and QuoterV2 answer
 /// `factory()` with the address book's Uniswap V3 factory and `WETH9()` with its wrapped gas coin, and the Token
 /// Bridge answers `chainId()` with Wormhole's id for the chain (4, 30); `test/unit/chains.test.mjs` pins the rest
@@ -45,6 +48,9 @@ export const CHAINS = Object.freeze({
     l1FeeOracle: null,
     maxFeeGwei: "100",
     priorityFeeGwei: "2",
+    // Holds 10 of the list's 353 Ondo tokens on 2026-11-25 (SPYon, QQQon, STRCon and seven more); the rest stay
+    // share-priced here.
+    ondoOracle: "0x9BC39DB6fbB44B91a48b8D5A6C208B82B1741bE6",
   }),
   // The test deployment's market (docs/deployment.md, "Testnet (Sepolia)"): Uniswap V3 pools against tUSDC, the
   // FaucetToken the deployment mints with. Read on chain on 2026-10-31: SwapRouter02 and QuoterV2 answer factory()
@@ -76,6 +82,7 @@ export const CHAINS = Object.freeze({
     l1FeeOracle: null,
     maxFeeGwei: "100",
     priorityFeeGwei: "2",
+    ondoOracle: null,
   }),
   // BNB Chain: a block every 450 ms (measured 2026-11-24: 200 blocks in 90 s), no base fee and a gas price of 0.05
   // gwei, gas paid in BNB. Uniswap V3 is the keeper's venue as on Ethereum; it routes six of the twelve coins of 2026-11-13
@@ -100,6 +107,8 @@ export const CHAINS = Object.freeze({
     l1FeeOracle: null,
     maxFeeGwei: "1",
     priorityFeeGwei: "0.1",
+    // Holds 349 of the list's 353 Ondo tokens on 2026-11-25, ANTon among them; NTRAon, INSMon, TWSTon and CAIon not.
+    ondoOracle: "0xF4Fd8a1B412633e10527454137A29Db7Aa35F15e",
   }),
   // Base: a block every 200 ms (measured 2026-11-24: 200 blocks in 40 s), gas paid in ETH, and the L1 data fee on top,
   // which GasPriceOracle prices (OP Stack's predeploy at 0x42…0F).
@@ -122,6 +131,7 @@ export const CHAINS = Object.freeze({
     l1FeeOracle: "0x420000000000000000000000000000000000000F",
     maxFeeGwei: "1",
     priorityFeeGwei: "0.01",
+    ondoOracle: null,
   }),
 });
 
@@ -160,9 +170,16 @@ export const FRESH_SECONDS = 60n;
 /// The widest confidence interval a price the bot values anything at may carry, in basis points of the price (RX-1).
 export const MAX_CONF_BPS = 200n;
 
-/// The 343 Ondo legs whose Pyth feed prices the share, while each token is worth sValue shares (script/PythIds.sol,
-/// CF-3). The bot cannot read sValue, so it never values these at Pyth: it names no new units for them, delivers none
-/// from stock and counts any it keeps as nothing (RX-2). `test/unit/config.test.mjs` pins the list against PythIds.sol.
+/// How long after Ondo last changed a token's sValue the keeper waits before it values the token at it, in seconds
+/// (M.sValueUsable): twenty minutes, an operator's time to look. A corporate action's new sValue lands when Ondo lifts
+/// its pause, at a moment the share's feed need not share.
+export const SVALUE_SETTLE_SECONDS = 1200n;
+
+/// The 344 Ondo legs whose Pyth feed prices the share, while each token is worth sValue shares (script/PythIds.sol,
+/// CF-3). Since 2026-11-25 the bot values one at the share's price times the sValue Ondo's oracle on the chain holds
+/// for it, once settled (bot/svalues.mjs). One it reads no settled sValue for it never values at Pyth: it names no new
+/// units for it, delivers none from stock and counts any it keeps as nothing (RX-2). `test/unit/config.test.mjs` pins
+/// the list against PythIds.sol.
 export const SHARE_PRICED_IDS = Object.freeze(
   [
     "0x329635cf9e705e01ed2d842fafbb6c426d7e5630e75847740d89957222fd68b8", // AMZNon, Equity.Index.AMZN/USD
@@ -508,6 +525,7 @@ export const SHARE_PRICED_IDS = Object.freeze(
     "0x71a19a2d91626d9d184ba85c4a9d21289640013a7dacc113d007847ea1a09ec8", // DRAMon, Equity.US.DRAM/USD
     "0xb89885277fd07887353cb63d641afe432a5231256f844b3b993f8fe1764fdfca", // SATAon, Equity.US.SATA/USD
     "0x27c7bbc9755d847f7fc63620c2edcc6a91d2c0c67a28c7999907b59c505b3c17", // STRCon, Equity.US.STRC/USD
+    "0x5da511a7c68b17a3bc94380cab4756bc83ab87f86307af10ea58467a64b6689d", // ANTon, Equity.Index.ANT/USD
   ].map((id) => id.toLowerCase()),
 );
 

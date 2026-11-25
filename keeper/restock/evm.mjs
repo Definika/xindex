@@ -17,7 +17,7 @@ import {
   parseAbi,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { avalanche, base, bsc, mainnet, optimism } from "viem/chains";
+import { avalanche, base, mainnet, optimism } from "viem/chains";
 import { MAINNET } from "../bot/config.mjs";
 import { ABI as KEEPER_ABI, isRevert, revertReason } from "../bot/chain.mjs";
 import { createRoutes } from "../bot/routes.mjs";
@@ -36,24 +36,6 @@ const STANDARD_FINALITY = 2000;
 /// factory, each token's symbol and decimals, and each CCTP contract's domain and the USDC it mints.
 export const EVM_CHAINS = Object.freeze({
   ethereum: { viem: mainnet, wormhole: 2, tokenBridge: MAINNET.tokenBridge, cctpDomain: 0, usdc: MAINNET.usdc },
-  bsc: {
-    viem: bsc,
-    wormhole: 4,
-    tokenBridge: "0xB6F6D86a8f9879A9c87f643768d9efc38c1Da6E7",
-    cctpDomain: null,
-    // PancakeSwap v3, whose SmartRouter takes SwapRouter02's exact-input and exact-output calls.
-    router: "0x13f4EA83D0bd40E75C8222255bc855a974568Dd4",
-    market: {
-      usdc: "0x55d398326f99059fF775485246999027B3197955",
-      usdcDecimals: 18,
-      weth: "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",
-      v3Factory: "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865",
-      quoterV2: "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997",
-      directFees: [100, 500, 2500, 10000],
-      viaWethFees: [100, 500, 2500, 10000],
-      wethUsdcFee: 100,
-    },
-  },
   avalanche: {
     viem: avalanche,
     wormhole: 6,
