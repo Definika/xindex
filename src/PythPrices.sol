@@ -28,7 +28,9 @@ import {IMultiplierToken} from "./interfaces/IMultiplierToken.sol";
 ///        bar, and where the vault leaves it only tightens the check.
 contract PythPrices is IPythPrices {
     /// @inheritdoc IPythPrices
-    uint256 public constant MAX_PRICE_AGE = 60;
+    uint256 public constant MAX_PRICE_AGE = 15;
+    /// @inheritdoc IPythPrices
+    uint256 public constant MAX_CREATION_PRICE_AGE = 60;
     /// @inheritdoc IPythPrices
     uint256 public constant VALUE_SCALE = 1e36;
     /// @dev The decimal digits of VALUE_SCALE.
@@ -81,26 +83,28 @@ contract PythPrices is IPythPrices {
         uint256 n = tokens.length;
         values = new uint256[](n);
         for (uint256 i = 0; i < n; ++i) {
-            values[i] = _valueAt(tokens[i], feeds[i], decimals[i], leaving);
+            values[i] = _valueAt(tokens[i], feeds[i], decimals[i], leaving, MAX_CREATION_PRICE_AGE);
         }
     }
 
     /// @dev One raw unit of `token` at its feed's price, leaning against the executor: up for a leg that leaves, down
-    ///      for one that arrives. The feed and the decimals are the factory's.
+    ///      for one that arrives. The feed and the decimals are the factory's, and the price no older than a fill's
+    ///      `MAX_PRICE_AGE`.
     function _value(address token, bool leaving) private view returns (uint256) {
         IWeightedIndexFactory factory = IWeightedIndexFactory(FACTORY);
-        return _valueAt(token, factory.priceFeedOf(token), factory.decimalsOf(token), leaving);
+        return _valueAt(token, factory.priceFeedOf(token), factory.decimalsOf(token), leaving, MAX_PRICE_AGE);
     }
 
-    /// @dev {_value} at `feed` and `decimals`.
-    function _valueAt(address token, PriceFeed memory feed, uint8 decimals, bool leaving)
+    /// @dev {_value} at `feed` and `decimals`, of a price at most `maxAge` seconds old. The filler posts the update
+    ///      itself, so it picks the price among those of the last `maxAge` seconds (HK-25): a fill's age is short.
+    function _valueAt(address token, PriceFeed memory feed, uint8 decimals, bool leaving, uint256 maxAge)
         private
         view
         returns (uint256 value)
     {
         if (feed.kind == FeedKind.None) revert NoPriceFeed(token);
         IPythReader.Price memory p = IPythReader(PYTH).getPriceUnsafe(feed.id);
-        if (p.publishTime + MAX_PRICE_AGE < block.timestamp) revert StalePrice(token, p.publishTime);
+        if (p.publishTime + maxAge < block.timestamp) revert StalePrice(token, p.publishTime);
         int256 digits = SCALE_DIGITS + p.expo;
         if (p.price <= 0 || digits < 0 || digits > MAX_DIGITS) revert UnusablePrice(token);
         uint256 price = SafeCast.toUint256(p.price);

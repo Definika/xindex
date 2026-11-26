@@ -603,6 +603,117 @@ contract ChainVenuesTest is XindexTest {
         assertEq(aeroBuilder.escrowOf(alice, address(wbtc)), 0);
         vm.stopPrank();
     }
+
+    // ---------------------------------------------------------------------
+    // attacks replayed on the chain's DEX (audit/2026-11-27-attack-replay-ii.md)
+    // ---------------------------------------------------------------------
+
+    /// @dev HK-21, SushiSwap's RouteProcessor2 (April 2023): whoever held an approval to the router was drained
+    ///      through it. Neither the zap nor the builder approves a router, through any DEX: each leg pays by a transfer
+    ///      the same call sweeps back. After a mint, a burn, a buy and a sale through PancakeSwap and Aero, no router
+    ///      holds an allowance from either, and the user approved the zap and the builder alone.
+    function test_HK21_noRouterEverHoldsAnApproval() public {
+        _mint(pancakeZap, _pancakeMintLegs());
+        _burn(pancakeZap, _pancakeBurnLegs());
+        _mint(aeroZap, _aeroMintLegs());
+        _burn(aeroZap, _aeroBurnLegs());
+        test_venue_theBuilderBuysAndSellsThroughEitherDex();
+
+        address[5] memory tokens = [address(wbtc), address(weth), address(link), address(usdc), address(usdt)];
+        address[3] memory routers = [address(uniswap), address(pancake), address(aero)];
+        address[5] memory owners =
+            [address(pancakeZap), address(aeroZap), address(pancakeBuilder), address(aeroBuilder), alice];
+        for (uint256 t = 0; t < tokens.length; ++t) {
+            for (uint256 r = 0; r < routers.length; ++r) {
+                for (uint256 o = 0; o < owners.length; ++o) {
+                    assertEq(IERC20(tokens[t]).allowance(owners[o], routers[r]), 0, "no router holds an approval");
+                }
+            }
+        }
+    }
+
+    /// @dev HK-22, RouteProcessor2 again: it called whatever pool its caller named, and a fake pool's callback took
+    ///      the approvals. A route here names tokens and a parameter, never a pool. PancakeSwap's router derives each
+    ///      pool from its own deployer, and the engine asks Aero's pinned factories for each, so a hop Aero never made,
+    ///      a tick spacing or a basic pair with no pool, names address zero, which the Metarouter refuses before
+    ///      anything moves. The real routers do the same on their chains (`testFork_HK22_...`).
+    function test_HK22_aRouteCannotNameAPoolTheDexDidNotMake() public {
+        IUniversalRouterSwaps.MintLeg[] memory noSpacing = _aeroMintLegs();
+        noSpacing[0] = _mintLeg(_local(CONCENTRATED, _hop(address(wbtc), 7, address(usdc))));
+        IUniversalRouterSwaps.MintLeg[] memory noPair = _aeroMintLegs();
+        noPair[2] = _mintLeg(_local(CONSTANT_FUNCTION, _hop(address(link), STABLE, address(usdc))));
+        IUniversalRouterSwaps.MintLeg[][2] memory attempts = [noSpacing, noPair];
+
+        usdc.mint(alice, 200e6);
+        for (uint256 a = 0; a < attempts.length; ++a) {
+            IIndexZap.MintParams memory p = _mintParams(attempts[a], alice);
+            vm.startPrank(alice);
+            usdc.approve(address(aeroZap), 200e6);
+            vm.expectRevert(abi.encodeWithSelector(MockMetarouter.InvalidPool.selector, address(0)));
+            aeroZap.mintWithToken(p);
+            vm.stopPrank();
+        }
+        assertEq(usdc.balanceOf(alice), 200e6, "nothing moved");
+        assertEq(index.totalSupply(), 0);
+    }
+
+    /// @dev HK-23, self-aliasing: Allbridge (July 2026) took one pool as both its send and receive side, and Unifund
+    ///      (November 2026) credited both legs of a cyclic WETH path to one ledger key. A route here may come back to
+    ///      a token it passed, the component itself included, and each hop is measured alone against the balance it
+    ///      leaves. A sale of WBTC through WETH, back to WBTC and on to USDC pays exactly what the WBTC was worth, once:
+    ///      through the zap on PancakeSwap, and out of the builder's escrow on Aero, every escrow and the builder's
+    ///      balances square after.
+    function test_HK23_aRouteThatComesBackToItsTokenIsCountedOnce() public {
+        _mint(pancakeZap, _pancakeMintLegs());
+        IUniversalRouterSwaps.BurnLeg[] memory legs = _pancakeBurnLegs();
+        legs[0] = _burnLeg(
+            _local(
+                CONCENTRATED,
+                abi.encodePacked(address(wbtc), FEE, address(weth), FEE, address(wbtc), FEE, address(usdc))
+            )
+        );
+        assertEq(_burn(pancakeZap, legs), 105e6, "the cycle pays what the coins are worth, once");
+        assertEq(wbtc.balanceOf(address(pancakeZap)), 0);
+        assertEq(weth.balanceOf(address(pancakeZap)), 0);
+        assertEq(wbtc.balanceOf(alice), 0, "and no hop's output came back as unsold input");
+
+        _mint(aeroZap, _aeroMintLegs());
+        vm.startPrank(alice);
+        index.approve(address(aeroBuilder), 1e18);
+        aeroBuilder.redeem(address(index), 1e18);
+        address[] memory tokens = new address[](1);
+        tokens[0] = address(wbtc);
+        IUniversalRouterSwaps.BurnLeg[] memory cycle = new IUniversalRouterSwaps.BurnLeg[](1);
+        cycle[0] = _burnLeg(
+            _local(
+                CONCENTRATED,
+                abi.encodePacked(
+                    address(wbtc), uint24(100), address(weth), uint24(100), address(wbtc), uint24(100), address(usdc)
+                )
+            )
+        );
+        uint256 out = aeroBuilder.sell(
+            IBasketBuilder.SellParams({
+                tokenOut: address(usdc),
+                minAmountOut: 1,
+                tokens: tokens,
+                amounts: new uint256[](1),
+                legs: cycle,
+                to: alice,
+                deadline: block.timestamp
+            })
+        );
+        vm.stopPrank();
+        assertEq(out, 60e6, "the escrow's WBTC was worth $60, paid once");
+        assertEq(aeroBuilder.escrowOf(alice, address(wbtc)), 0);
+        assertEq(aeroBuilder.escrowOf(alice, address(weth)), 1e16, "the WETH leg's escrow is untouched");
+        address[3] memory held = [address(wbtc), address(weth), address(usdc)];
+        for (uint256 t = 0; t < held.length; ++t) {
+            assertEq(
+                IERC20(held[t]).balanceOf(address(aeroBuilder)), aeroBuilder.totalEscrow(held[t]), "escrows square"
+            );
+        }
+    }
 }
 
 /// @dev Aero's structs as its verified source declares them, written out apart from `src`.

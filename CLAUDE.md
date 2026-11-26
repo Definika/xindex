@@ -548,7 +548,7 @@ built on it and found in it.
   way of calculating price" of a creator naming units, Ondo's tokens at their share's price, and the work finished in
   this branch. The night's work was copied from the main checkout, which still holds it uncommitted.
   - `src/PythPrices.sol` values a fill's moving legs at Pyth's prices (feed kinds Token, Vault, Multiplier; a minute's
-    freshness; confidence against the executor), and `WeightedMath.oracleCheck` requires what a fill brings in to cover
+    freshness, fifteen seconds for a fill since 2026-11-27 (HK-25); confidence against the executor), and `WeightedMath.oracleCheck` requires what a fill brings in to cover
     what it takes less a tolerance rising to 2% over the auction. Feeds are the owner's per token, behind
     `LISTING_DELAY`; `script/PriceFeeds.sol` names all 415 of Ethereum's, 365 of BNB Chain's and 32 of Base's, built
     once per call (`table`, `find`), since 414 lookups that each built the table ran out of memory.
@@ -693,6 +693,24 @@ built on it and found in it.
   - The factory is 19,096 bytes and its init code 48,024, 1,128 under EIP-3860. Its release hash moved; no ABI did.
   - Not covered, and said so in the record: anything off chain (a signer's machine, the app, the bot's host), the
     compiler and libraries, economics.
+- **The attack replay of 2026-11-27** (`audit/2026-11-27-attack-replay-ii.md`, ids `HK-21`..`HK-26`; the owner's ask
+  that day: find the hacks DeFi protocols suffered and test our code against them). The exploits of July to November
+  2026, and the chain's own DEX of 2026-11-26, which no replay had seen. An internal review by the code's author.
+  - One bound narrowed (HK-25, the owner's call that day: "კი, 15 წამი", then a fill's fifteen and a creation's
+    sixty): the executor chooses which Pyth price its fill is checked against, since it posts the update itself, and
+    the 2% tolerance is counted at the one that suits it. That was a stated bound since 2026-11-23, but the passages
+    that state the 2% did not count it. `PythPrices.MAX_PRICE_AGE` is 15 seconds for a fill now, and a new
+    `MAX_CREATION_PRICE_AGE` keeps a creation's check, which a person signs in a wallet, at 60. The factory's release
+    hash and `abi/PythPrices.json` moved (`test_HK25_...`, mutants HK11 and HK12).
+  - Replayed and refused: no router ever holds an approval from the zap or the builder (HK-21, RouteProcessor2, K3
+    Capital); a route cannot name a pool the DEX never made, on mocks and on PancakeSwap's and Aero's real routers
+    (HK-22); a route that comes back to its own token is counted once (HK-23, Allbridge, Unifund); `accrueFees`
+    between an issue and a redeem pays nothing (HK-24, Set's `actualizeFee`). Index Coop's helper class is refused
+    by the zap's nonce recheck and the builder's exact approvals (HK-26). The period's other classes are refused by
+    tests that already stood, which the record names.
+  - New: five tests in `test/UniversalRouterSwaps.venues.t.sol`, `test/Attacks.t.sol` and
+    `test/WeightedHub.oracle.t.sol`, two fork tests, mutants HK8 to HK12, all killed. The one contract change is the
+    reader's two ages.
 - **The six findings left open, fixed on 2026-11-23** (the owner's call: "Fix six findings"). Each has a test that
   fails without its fix and a mutant (RB5, Z7 to Z13), all killed; the records' status tables say what changed.
   - RB-5, in `src/`: the zap refuses every factory index as a recipient, not only the index of the call, as the
@@ -1101,7 +1119,10 @@ stablecoins from that chain's address book and refuses any other address
      and CA-M14, CA-R2-12, CA-R2-13, CA-L7 and CA-L8 with them). The record's "Status of the fixes" names every test, the
      ids fixed by documentation alone, the ones left as they are, and the wiring fixes that have no unit suite
      (CA-M8, CA-R2-04, CA-R2-11, CA-R2-20, CA-L12).
-   - The attack replay of 2026-11-23: `HK-1`..`HK-20` (`audit/2026-11-23-attack-replay.md`), a test named
+   - The attack replays of 2026-11-23 and 2026-11-27: `HK-1`..`HK-20` (`audit/2026-11-23-attack-replay.md`) and
+     `HK-21`..`HK-26` (`audit/2026-11-27-attack-replay-ii.md`, its tests in `test/UniversalRouterSwaps.venues.t.sol`,
+     `test/Attacks.t.sol`, `test/WeightedHub.oracle.t.sol` (HK-25) and, for HK-22, `testFork_HK22_...` in the BNB
+     Chain and Base suites, its mutants HK8 to HK12), a test named
      `test_HK01_...` in `test/Attacks.t.sol`, HK-1's in `keeper/test/KeeperExecutor.attacks.t.sol`, and node tests
      named `HK-01: ...` in `keeper/test/unit/executor-source.test.mjs`, with their mutants HK1 to HK7. Only HK-16
      was a finding; the rest are replays that found nothing, kept as regression tests. HK-7, HK-11, HK-17, HK-19
@@ -1205,8 +1226,11 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   `test_onlyThePriceReaderReadsPyth`), so no feed can block an exit or misprice a mint. A fill must pass the units'
   check first and the price's check after it: at Pyth's prices it brings in at least what it takes out, less a
   tolerance from nothing at the auction's start to `MAX_ORACLE_TOLERANCE`, 2%, at its end (`WeightedMath.oracleCheck`,
-  `BelowOracleValue`), each price no older than a minute and leaning against the executor by its confidence. So a
-  price that is wrong, stale, missing or hostile, Pyth's keys included, can stop a fill as a cancel can and never pass
+  `BelowOracleValue`), each price no older than `MAX_PRICE_AGE`, fifteen seconds, and leaning against the executor by
+  its confidence; a creation's check reads prices of the last minute (`MAX_CREATION_PRICE_AGE`). The executor picks
+  which price a fill reads: it posts Pyth's update itself, so of the prices Pyth signed in the last fifteen seconds
+  and newer than the one stored, it reads the one that suits it, and the tolerance is counted at that price. Say so
+  wherever the tolerance is described (HK-25). So a price that is wrong, stale, missing or hostile, Pyth's keys included, can stop a fill as a cancel can and never pass
   one the units refuse (`test_aWrongPriceCannotPassAFillTheUnitsRefuse`). Keep it that way: never let a price accept
   what the bar refuses, replace the bar, or reach an issue, a redeem or a claim. A token's feed is the owner's to set
   behind `LISTING_DELAY` (`proposePriceFeed`); a token with none stops a fill that moves it (`NoPriceFeed`). The id
@@ -1215,8 +1239,8 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
   `script/PriceFeeds.sol`'s table and its tests are the check, and a wrong id can only refuse. Ondo's
   tokens are priced at their share's feed, the multiplier left out (about 1% on SPYon), save the nine Pyth prices as
   tokens; the guardian keeps such a leg out of a rebalance around a corporate action (the owner's call of
-  2026-11-23). Pyth is a pull oracle: every fill needs an update from the last minute, which the keeper buys from
-  Hermes. Valuing an index for display is still the app's job, off chain. The zap swaps, but reads no price: it
+  2026-11-23). Pyth is a pull oracle: every fill needs an update from the last fifteen seconds, which the keeper
+  buys from Hermes. Valuing an index for display is still the app's job, off chain. The zap swaps, but reads no price: it
   enforces the limits its caller sets.
 - **A quote can only refuse.** The one place a price enters a contract is the quote the owner or guardian may post
   with a start (`startRebalance(keepMask, prices, tolerance)`, the owner's call of 2026-11-10, after Reserve's price
@@ -1847,8 +1871,8 @@ without an on-chain price, the owner chose their share's price, the multiplier l
 of 2026-10-18 around a corporate action; refusing a fill that moves one would have kept stock indexes from rebalancing,
 and skipping the check for it would have let an executor skip it at will. It amends "No oracle" of 2026-11-10 below in
 part: no issue, redeem or claim reads a price, and the units' check still comes first. What it costs, said to the
-owner: a Hermes plan for the keeper, since every fill needs Pyth's update from the last minute, and an update with every
-creation.
+owner: a Hermes plan for the keeper, since every fill needs Pyth's update from the last fifteen seconds (a minute until
+2026-11-27), and an update with every creation.
 
 **Coinbase's coins and stocks on Base** (the owner's calls of 2026-11-22: "add stocks on base also", then, told that
 Base's stock tokens are Coinbase's and that Backed has deployed only four wrappers of older tokens there, "add all

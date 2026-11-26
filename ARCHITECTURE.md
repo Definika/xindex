@@ -55,7 +55,7 @@ on a mainnet.
 | Mint and burn | In-kind `issue` / `redeem` on the hub; USDC/USDT through the zap, or at a limit through `MintRequests` |
 | Trade the index into other coins | Standard ERC-20 (transferable, listable); the zap burns into USDC or USDT only |
 | USDC/USDT in, USDC/USDT out | The zap mints from either stable; the burner chooses the payout token |
-| Rebalancing and index price | The units are brought back toward the weights through an auction, at most once per the index's interval (7 to 91 days): an executor names the units, and the index accepts them when a weighted gain in units clears a bar that falls with time (section 3). A fill the units accept must also hold at Pyth's prices of the last minute, within a tolerance that rises to 2% over the auction (section 3.10); the owner or guardian may post a quote with a start. Both can only refuse a fill. The owner or guardian may start again a week after any fill. No issue, redeem or claim reads a price; the index price is the basket's value, computed off chain |
+| Rebalancing and index price | The units are brought back toward the weights through an auction, at most once per the index's interval (7 to 91 days): an executor names the units, and the index accepts them when a weighted gain in units clears a bar that falls with time (section 3). A fill the units accept must also hold at Pyth's prices of the last fifteen seconds, within a tolerance that rises to 2% over the auction (section 3.10); the owner or guardian may post a quote with a start. Both can only refuse a fill. The owner or guardian may start again a week after any fill. No issue, redeem or claim reads a price; the index price is the basket's value, computed off chain |
 | Layer-1 coins | Ethereum tokens, Bitcoin as WBTC, and coins neither chain has in kind as Wormhole-wrapped copies on Ethereum: SOL, AVAX, SUI and others; XRP, ADA, LTC, DOT, ATOM and BNB on BNB Chain |
 
 Constraints kept from v3 and v4: in-kind backing, CREATE2 addresses that commit to their contents, fixed constituents,
@@ -136,7 +136,7 @@ on a factory without an oracle.
   `rebalanceQuote()` (the pending proposal's prices and tolerance, empty and zero when it has none),
   `canStartRebalance()`, and `previewRebalance(newUnits)`, which returns the bar, the gain and the amounts a fill of
   those units in this block would settle, and reverts as the fill would, Pyth's check included, so on a factory with
-  an oracle it answers only while Pyth's contract holds prices of the last minute. No function values the index. The
+  an oracle it answers only while Pyth's contract holds prices of the last fifteen seconds. No function values the index. The
   only prices any function takes or returns are a quote's, the owner's or guardian's own (section 3.9); Pyth's are
   read through `PRICES` inside a fill and its preview (section 3.10).
 - **Access:** `issue`, `redeem`, `redeemSkipping`, both `startRebalance` overloads, `cancelRebalance` and both
@@ -710,7 +710,7 @@ Pyth's prices, and so is its preview (`_checkValues`).
 nothing and writes nothing. For each leg a fill moves it reads the factory's feed for the token (`priceFeedOf`: an
 id and a kind) and the decimals the listing recorded, then Pyth's stored price (`getPriceUnsafe`). A leg that keeps
 its units is not read. It refuses a leg with no feed (`NoPriceFeed`), a price published more than `MAX_PRICE_AGE`,
-60 seconds, ago (`StalePrice`), and a price that is not positive, no wider than its confidence, of an exponent
+15 seconds, ago (`StalePrice`; a creation's check allows `MAX_CREATION_PRICE_AGE`, 60), and a price that is not positive, no wider than its confidence, of an exponent
 outside the range, or that comes to a value of zero or of more than 128 bits (`UnusablePrice`). A value is one raw
 unit's worth in dollars times 1e36, leaning against the executor: Pyth's price plus its confidence, rounded up, for
 a leg that leaves, and the price less the confidence, rounded down, for one that arrives. The kind says what the
@@ -741,7 +741,7 @@ second, less before. It is also what lets a creation be held to its weights (`_c
 
 **Who posts the price.** Pyth is a pull oracle: a price reaches its contract only when someone posts a signed
 update and pays its fee. A filler posts it in its own transaction, before it fills; the keeper's executor does so
-inside `fill` (`pythUpdate`), for exactly Pyth's fee. A filler chooses which update of the last minute to post, and
+inside `fill` (`pythUpdate`), for exactly Pyth's fee. A filler chooses which update of the last fifteen seconds to post (HK-25: a minute until 2026-11-27), and
 anyone can post a newer one first, which can make a fill named at the edge of the tolerance revert.
 
 **What it adds to the trust model.** Pyth's publishers and signers become a party that can stop rebalancing, or, by

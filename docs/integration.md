@@ -17,7 +17,7 @@ is to be worth at the start. Then, in order:
    `gross = ceil(shares × 10,000 / (10,000 − fee))`. Only this factory can deploy at that address, and only for
    that creator, so nobody else can spend the approval.
 3. Pyth's update for the components' feeds (`priceFeedOf(token)`) is posted to Pyth's contract, since the creation
-   reads prices of the last minute.
+   reads prices of the last minute (`MAX_CREATION_PRICE_AGE`; a fill reads those of the last fifteen seconds).
 4. `createAndIssue(name, symbol, components, params, shares, to)` creates the index and issues `shares` to `to`,
    pulling the basket from the creator. It is an issue like any other: the index's fee is charged, a gated index
    issues only to its creator, and a component that arrives short, or that the index could not send out again,
@@ -107,9 +107,10 @@ non-zero overall `minAmountOut`, passes `rebalanceNonce()`, and calls `burnToTok
      that rises in a straight line from nothing at the auction's first second to `MAX_ORACLE_TOLERANCE`, 2%, at its
      last, or the call reverts `BelowOracleValue(valueIn, floor)`. Each component that moves is valued through the
      factory's reader (`IPythPrices`, at `priceFeedOf(token)`): what leaves at Pyth's price plus its confidence,
-     what arrives at the price less it. The price must have been published within the last 60 seconds
-     (`StalePrice`), so the executor posts Pyth's update to Pyth's contract in the same transaction, before it
-     fills; a component without a feed (`NoPriceFeed`), or with a price the reader cannot use (`UnusablePrice`),
+     what arrives at the price less it. The price must have been published within the last 15 seconds,
+     `MAX_PRICE_AGE` (`StalePrice`), so the executor posts Pyth's update to Pyth's contract in the same transaction, before it
+     fills, and so chooses, of the prices Pyth signed in those seconds and newer than the stored one, which one its
+     fill is checked against (HK-25); a component without a feed (`NoPriceFeed`), or with a price the reader cannot use (`UnusablePrice`),
      stops only a fill that moves it. This check can only refuse: a fill the units refuse is refused whatever the
      prices say.
 

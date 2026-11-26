@@ -16,6 +16,8 @@ import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
 import {IIndexHub} from "../../src/interfaces/IIndexHub.sol";
 import {IRebalanceExecutor} from "../../src/interfaces/IRebalanceExecutor.sol";
 import {IUniversalRouterSwaps} from "../../src/interfaces/IUniversalRouterSwaps.sol";
+import {IAeroCLFactory} from "../../src/interfaces/IAeroCLFactory.sol";
+import {IAeroPoolFactory} from "../../src/interfaces/IAeroPoolFactory.sol";
 import {IXindexErrors} from "../../src/interfaces/IXindexErrors.sol";
 import {IWeightedHub} from "../../src/interfaces/IWeightedHub.sol";
 import {IPythPrices} from "../../src/interfaces/IPythPrices.sol";
@@ -761,6 +763,45 @@ contract BaseAddressesForkTest is Test, IRebalanceExecutor {
         assertEq(IERC20(B.USDC).balanceOf(B.UNIVERSAL_ROUTER), uniswapBefore, "Uniswap's router was never paid");
     }
 
+    /// @dev HK-22 on Aero's real Metarouter (audit/2026-11-27-attack-replay-ii.md): a route names tokens and a
+    ///      parameter, and the engine asks Aero's pinned factories for each pool. A tick spacing Aero has no pool at,
+    ///      or a stable pair it never made (cbBTC's against USDC; WETH has one), names address zero, which the
+    ///      Metarouter refuses before anything moves.
+    function testFork_HK22_aeroRefusesAPoolItsFactoriesNeverMade() public {
+        (WeightedIndexFactory factory, IndexZap zap,,) = _deploy();
+        WeightedHub index = _aeroThree(factory);
+        assertEq(IAeroCLFactory(B.AERO_CL_FACTORY).getPool(B.WETH, B.USDC, 7), address(0), "no pool at spacing 7");
+        assertEq(IAeroPoolFactory(B.AERO_STABLE_FACTORY).getPool(B.CBBTC, B.USDC), address(0), "no stable pair");
+        uint256 budget = 1_000e6;
+        deal(B.USDC, alice, budget);
+        for (uint256 attempt = 0; attempt < 2; ++attempt) {
+            IUniversalRouterSwaps.MintLeg[] memory legs = new IUniversalRouterSwaps.MintLeg[](3);
+            legs[0] = _aeroMintLeg(_local(0, abi.encodePacked(B.WETH, uint24(attempt == 0 ? 7 : 50), B.USDC)));
+            legs[1] = attempt == 0
+                ? _aeroMintLeg(_local(0, abi.encodePacked(B.CBBTC, uint24(100), B.USDC)))
+                : _aeroMintLeg(_local(1, abi.encodePacked(B.CBBTC, uint24(1), B.USDC)));
+            legs[2] = _aeroMintLeg(_local(0, abi.encodePacked(B.CBETH, uint24(1), B.WETH, uint24(50), B.USDC)));
+            IIndexZap.MintParams memory p = IIndexZap.MintParams({
+                index: address(index),
+                expectedNonce: 0,
+                tokenIn: B.USDC,
+                maxAmountIn: budget,
+                shares: 3e18,
+                legs: legs,
+                to: alice,
+                deadline: block.timestamp,
+                referrer: address(0)
+            });
+            vm.startPrank(alice);
+            IERC20(B.USDC).forceApprove(address(zap), budget);
+            vm.expectRevert();
+            zap.mintWithToken(p);
+            vm.stopPrank();
+        }
+        assertEq(IERC20(B.USDC).balanceOf(alice), budget, "nothing moved");
+        assertEq(index.totalSupply(), 0);
+    }
+
     /// @dev The zap takes and pays only Base's USDC and USDT: a mint paid in WETH is refused before anything moves,
     ///      and no entry point takes ether.
     function testFork_theZapRefusesEther() public {
@@ -794,22 +835,27 @@ contract BaseAddressesForkTest is Test, IRebalanceExecutor {
     // Pyth's check, on Pyth's own contract
     // ---------------------------------------------------------------------
 
-    /// @dev The publish time of the batch Pyth's contract on Base last stored cbXRP's, cbDOGE's, cbLTC's and cbADA's
-    ///      coins' prices in, read on 2026-11-22: the fill below runs half a minute after it.
-    uint256 constant COINBASE_BATCH = 1_795_197_594;
+    /// @dev The publish time of the batch Pyth's contract on Base last stored cbXRP's coin's price in, at the fork's
+    ///      block: 1,795,197,594 at the pin, read on 2026-11-22, when cbDOGE's, cbLTC's and cbADA's were stored with it.
+    ///      Read from the fork, so a run near the head checks the batch stored there: the fill below runs ten seconds
+    ///      after it.
+    function _coinbaseBatch() internal view returns (uint256) {
+        return IPythReader(B.PYTH).getPriceUnsafe(PriceFeeds.feedOf(B.CHAIN_ID, B.CBXRP).id).publishTime;
+    }
 
     /// @dev A deployment from the book checks its fills against Base's Pyth through `PythPrices`: an index of four
     ///      Coinbase Wrapped coins, created 4% off its weights, within the 5% creation allows, fills on its weights at
     ///      Pyth's stored prices, is
-    ///      refused a fill that keeps 3% of what it should bring in, at a tolerance of 1.5%, and a minute later is
-    ///      refused for a stale price. The clock is moved back to the batch's time, since a filler posts its own
+    ///      refused a fill that keeps 3% of what it should bring in, at a tolerance of 1.5%, ten seconds after the
+    ///      batch, inside a fill's fifteen. The clock is moved back to the batch's time, since a filler posts its own
     ///      update and the test cannot sign one: the contract, its proxy, its storage and its answer are Pyth's.
     function testFork_aFillIsCheckedAgainstPythsOwnContract() public {
         (WeightedIndexFactory factory,,,) = _deploy();
         assertEq(IPythPrices(factory.PRICES()).PYTH(), B.PYTH, "the deployment reads the book's Pyth");
         address[] memory coins = new address[](4);
         (coins[0], coins[1], coins[2], coins[3]) = (B.CBXRP, B.CBDOGE, B.CBLTC, B.CBADA);
-        uint256 fill = COINBASE_BATCH + 30;
+        uint256 batch = _coinbaseBatch();
+        uint256 fill = batch + 10;
         vm.warp(fill - 2 days - 7 days - 2 hours - 3 hours);
         _list(factory, coins);
 
@@ -818,7 +864,7 @@ contract BaseAddressesForkTest is Test, IRebalanceExecutor {
         IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](4);
         for (uint256 i = 0; i < coins.length; ++i) {
             IPythReader.Price memory p = IPythReader(B.PYTH).getPriceUnsafe(factory.priceFeedOf(coins[i]).id);
-            assertEq(p.publishTime, COINBASE_BATCH, "one batch");
+            assertEq(p.publishTime, batch, "one batch");
             uint8 decimals = IERC20Metadata(coins[i]).decimals();
             market[i] = uint256(int256(p.price)) * 1e28 / 10 ** decimals;
             // $26, $24, $25 and $25 a share, against weights of a quarter each.
@@ -849,12 +895,13 @@ contract BaseAddressesForkTest is Test, IRebalanceExecutor {
         assertEq(index.recordedUnits(), fair);
     }
 
-    /// @dev The same index's next fill, a minute and a second after the batch, reads a price older than a minute.
+    /// @dev A fill sixteen seconds after the batch reads a price older than a fill's fifteen (HK-25).
     function testFork_aStalePythPriceStopsAFill() public {
         (WeightedIndexFactory factory,,,) = _deploy();
         address[] memory coins = new address[](2);
         (coins[0], coins[1]) = (B.CBXRP, B.CBDOGE);
-        vm.warp(COINBASE_BATCH + 61 - 2 days - 7 days - 2 hours - 3 hours);
+        uint256 batch = _coinbaseBatch();
+        vm.warp(batch + 16 - 2 days - 7 days - 2 hours - 3 hours);
         _list(factory, coins);
         uint256[] memory weights = new uint256[](2);
         (weights[0], weights[1]) = (5000, 5000);
@@ -866,11 +913,11 @@ contract BaseAddressesForkTest is Test, IRebalanceExecutor {
         _issueInKind(index, alice, 10e18);
         vm.warp(index.earliestRebalance());
         index.startRebalance(0);
-        vm.warp(COINBASE_BATCH + 61);
+        vm.warp(batch + 16);
         uint256[] memory units = index.recordedUnits();
         units[0] = units[0] * 9 / 10;
         units[1] = units[1] * 12 / 10;
-        vm.expectRevert(abi.encodeWithSelector(IPythPrices.StalePrice.selector, coins[0], COINBASE_BATCH));
+        vm.expectRevert(abi.encodeWithSelector(IPythPrices.StalePrice.selector, coins[0], batch));
         index.previewRebalance(units);
     }
 

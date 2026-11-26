@@ -34,9 +34,13 @@ The prices are read through `PythPrices`, which the factory deploys with the imp
 
 - Each value leans against the executor: a leg the fill takes out at the price plus its confidence, rounded up; a leg it
   brings in at the price less it, rounded down.
-- A price older than `MAX_PRICE_AGE`, 60 seconds, not positive, or no wider than its confidence values nothing, and the
+- A price older than `MAX_PRICE_AGE`, 15 seconds (60 until 2026-11-27; a creation's check keeps 60,
+  `MAX_CREATION_PRICE_AGE`), not positive, or no wider than its confidence values nothing, and the
   fill that needs it reverts (`StalePrice`, `UnusablePrice`). Pyth on these chains is a pull oracle: a filler posts
-  Pyth's update itself, in the fill's transaction or the one before it.
+  Pyth's update itself, in the fill's transaction or the one before it. So the filler chooses the price: Pyth's
+  contract keeps any update newer than the one it stores, and of the prices Pyth signed in that window the filler
+  posts the one that suits it. The tolerance is counted at that price, so a fill can keep the tolerance plus the
+  most a coin moved within those fifteen seconds (HK-25, `audit/2026-11-27-attack-replay-ii.md`).
 - A token's decimals are the ones its listing recorded. A token's feed is the factory's, set by the owner behind
   `LISTING_DELAY`, executable by anyone within `PROPOSAL_WINDOW`, cancellable by the owner or the guardian
   (`proposePriceFeed`, `executePriceFeed`, `cancelPriceFeed`), and of one of three kinds: `Token` (the feed prices one
@@ -107,7 +111,7 @@ hold a rebalance off, never take holders' funds and never block an exit.
 
 ## What it costs to run
 
-- Every fill needs Pyth's update from within the last minute, so the keeper fetches updates from Hermes, Pyth's price
+- Every fill needs Pyth's update from within the last fifteen seconds, so the keeper fetches updates from Hermes, Pyth's price
   service, a paid plan: the key on file was entitled to none of 91 feeds when it was read on 2026-11-02. Until the
   keeper has one, no rebalance fills under the check.
 - Every creation needs Pyth's update too: the app's create flow posts it before `createIndex`.

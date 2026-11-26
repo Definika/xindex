@@ -4,8 +4,12 @@ What the contracts do not protect against, and what an app built on them has to 
 
 - **A lone executor keeps the index's distance from its weights.** That is the bound on units alone, and Pyth's
   check narrows it: on a factory with an oracle, which every mainnet factory is, a fill must bring in, at Pyth's
-  prices of the last minute, at least what it takes less a tolerance that rises from nothing to 2% over the
-  auction, so an executor bidding alone keeps at most 2% of what it trades, and an earlier fill keeps less. Pyth's
+  prices of the last fifteen seconds, at least what it takes less a tolerance that rises from nothing to 2% over the
+  auction, so an executor bidding alone keeps at most 2% of what it trades, and an earlier fill keeps less. The
+  executor chooses the price that 2% is counted at: it posts Pyth's update itself, so of the prices Pyth signed in
+  the last fifteen seconds (`MAX_PRICE_AGE`), and newer than the one Pyth's contract stores, it posts the one that
+  suits it, and can keep the 2% plus the most a coin moved within those seconds, as long as the units clear the bar
+  (HK-25; the window was a minute until 2026-11-27). Pyth's
   check can only refuse. If Pyth is stale or missing, no fill that moves the affected coins lands until it is back;
   if it is wrong or hostile, a fill is bounded by the units alone, as on a factory without an oracle, and the rest
   of this entry is that bound. The executor names

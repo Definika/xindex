@@ -568,8 +568,8 @@ contract MainnetAddressesForkTest is Test {
     }
 
     /// @dev The book's Pyth is Pyth's contract on Ethereum: it knows ETH/USD, and a factory built on it values WETH at
-    ///      the price it stores, its confidence leaning against the executor, while that price is under a minute
-    ///      old, and refuses it after. The clock is moved to the stored price's publish time: on Ethereum a price is
+    ///      the price it stores, its confidence leaning against the executor, while that price is no older than a
+    ///      fill's `MAX_PRICE_AGE`, fifteen seconds, and refuses it after. The clock is moved to the stored price's publish time: on Ethereum a price is
     ///      stored only when someone pays to post it, a filler in its own transaction.
     function testFork_aFactoryOnTheBooksPythValuesAtItsStoredPrice() public {
         IPythPrices.PriceFeed memory feed = PriceFeeds.feedOf(1, M.WETH);
@@ -584,11 +584,11 @@ contract MainnetAddressesForkTest is Test {
         factory.executePriceFeed(M.WETH);
 
         IPythPrices prices = IPythPrices(factory.PRICES());
-        vm.warp(p.publishTime + 60);
+        vm.warp(p.publishTime + prices.MAX_PRICE_AGE());
         uint256 price = uint256(int256(p.price));
         assertEq(prices.valueOf(M.WETH, true), (price + p.conf) * 1e28 / 1e18, "leaving: up by the confidence");
         assertEq(prices.valueOf(M.WETH, false), (price - p.conf) * 1e28 / 1e18, "arriving: down by it");
-        vm.warp(p.publishTime + 61);
+        vm.warp(p.publishTime + prices.MAX_PRICE_AGE() + 1);
         vm.expectRevert(abi.encodeWithSelector(IPythPrices.StalePrice.selector, M.WETH, p.publishTime));
         prices.valueOf(M.WETH, true);
     }

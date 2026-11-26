@@ -25,6 +25,19 @@
   },
   {
     "type": "function",
+    "name": "MAX_CREATION_PRICE_AGE",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "MAX_PRICE_AGE",
     "inputs": [],
     "outputs": [

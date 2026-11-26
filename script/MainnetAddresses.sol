@@ -561,9 +561,9 @@ library MainnetAddresses {
     // ---------------------------------------------------------------------
     /// @dev AVAX as the bridge wraps Avalanche's WAVAX (0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7, Wormhole chain 6): symbol WAVAX, 18 decimals.
     address internal constant AVAX = 0x85f138bfEE4ef8e540890CFb48F620571d67Eda3;
+    // AERO's copy is off the list since 2026-11-26 (the owner's call), and kept here for a relisting: it is a copy of
+    // Aerodrome's AERO, which Aero replaced with a token of its own, so it redeems to a token whose depth is leaving.
     /// @dev AERO as the bridge wraps Base's 0x940181a94a35a4569e4529a3cdfb74e38fd98631 (Wormhole chain 30): symbol AERO, 18 decimals.
-    ///      Off the list since 2026-11-26 (the owner's call), and kept here for a relisting: it is a copy of Aerodrome's
-    ///      AERO, which Aero replaced with a token of its own, so it redeems to a token whose depth is leaving.
     address internal constant AERO = 0x750525C1877E30304F1E22b1b49b4C9DdE674ddF;
     // OP's copy is off the list since 2026-11-21 (the owner's call), and kept here for a relisting: OP's pools on
     // Optimism were too thin that day for the restock to buy it.

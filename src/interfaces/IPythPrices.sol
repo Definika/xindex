@@ -33,7 +33,8 @@ interface IPythPrices {
 
     /// @notice A fill moves `token`, and it has no feed.
     error NoPriceFeed(address token);
-    /// @notice `token`'s price was published at `publishTime`, more than MAX_PRICE_AGE ago.
+    /// @notice `token`'s price was published at `publishTime`, longer ago than its reader allows: MAX_PRICE_AGE for a
+    ///         fill, MAX_CREATION_PRICE_AGE for a creation.
     error StalePrice(address token, uint256 publishTime);
     /// @notice `token`'s price is not positive, no wider than its confidence, or out of the range a value can take:
     ///         too large for the check's sums, or so small, or at a rate or multiplier of zero, that one raw unit
@@ -46,8 +47,14 @@ interface IPythPrices {
     /// @notice The factory whose listings name each token's feed.
     function FACTORY() external view returns (address);
 
-    /// @notice The oldest a price may be, in seconds, when a fill reads it.
+    /// @notice The oldest a price may be, in seconds, when a fill reads it ({legValues}, {valueOf}): fifteen. The
+    ///         filler posts Pyth's update itself and so picks the price among those of this window (HK-25), which is
+    ///         why it is short; a filler posting in its own transaction meets it on every chain the protocol runs on.
     function MAX_PRICE_AGE() external view returns (uint256);
+
+    /// @notice The oldest a price may be, in seconds, when a creation's check of its weights reads it
+    ///         ({valuesWith}): sixty. A creator signs in a wallet, and only an approved wallet creates.
+    function MAX_CREATION_PRICE_AGE() external view returns (uint256);
 
     /// @notice The scale of every value: one raw unit's worth in dollars times 1e36.
     function VALUE_SCALE() external view returns (uint256);
@@ -65,7 +72,8 @@ interface IPythPrices {
 
     /// @notice What one raw unit of each of `tokens` is worth at the feed and the decimals given for it, all leaving
     ///         or all arriving: {valueOf} for a caller that holds each token's feed and decimals itself, as the factory
-    ///         does when it checks a new index's weights, in one call instead of three a token.
+    ///         does when it checks a new index's weights, in one call instead of three a token, of a price at most
+    ///         {MAX_CREATION_PRICE_AGE} old.
     function valuesWith(address[] calldata tokens, PriceFeed[] calldata feeds, uint8[] calldata decimals, bool leaving)
         external
         view

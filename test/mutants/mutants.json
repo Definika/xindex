@@ -2742,21 +2742,21 @@
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
       {
-        "old": "        if (p.publishTime + MAX_PRICE_AGE < block.timestamp) revert StalePrice(token, p.publishTime);",
+        "old": "        if (p.publishTime + maxAge < block.timestamp) revert StalePrice(token, p.publishTime);",
         "new": ""
       }
     ]
   },
   {
     "id": "PY11",
-    "what": "a price exactly a minute old is refused",
+    "what": "a price exactly as old as its reader allows is refused",
     "origin": "design/2026-11-22-pyth-check.md",
     "file": "src/PythPrices.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
       {
-        "old": "        if (p.publishTime + MAX_PRICE_AGE < block.timestamp)",
-        "new": "        if (p.publishTime + MAX_PRICE_AGE <= block.timestamp)"
+        "old": "        if (p.publishTime + maxAge < block.timestamp)",
+        "new": "        if (p.publishTime + maxAge <= block.timestamp)"
       }
     ]
   },
@@ -4737,6 +4737,71 @@
       {
         "old": "            if (dex[i] != address(0)) list[at++] = dex[i];",
         "new": "            if (false) list[at++] = dex[i];"
+      }
+    ]
+  },
+  {
+    "id": "HK8",
+    "what": "a buy approves the router for every token it holds, which the next caller of a router could spend (HK-21)",
+    "origin": "audit/2026-11-27-attack-replay-ii.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "        token.safeTransfer(_routerOf(venue), cap);",
+        "new": "        token.forceApprove(_routerOf(venue), type(uint256).max);\n        token.safeTransfer(_routerOf(venue), cap);"
+      }
+    ]
+  },
+  {
+    "id": "HK9",
+    "what": "a sale hop approves its router for the input token as well as paying it (HK-21)",
+    "origin": "audit/2026-11-27-attack-replay-ii.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "        IERC20(token).safeTransfer(router, amount);",
+        "new": "        IERC20(token).forceApprove(router, type(uint256).max);\n        IERC20(token).safeTransfer(router, amount);"
+      }
+    ]
+  },
+  {
+    "id": "HK10",
+    "what": "a redeem is paid at the scale before its own accrual, so the shares it burns escape the streaming fee (HK-24)",
+    "origin": "audit/2026-11-27-attack-replay-ii.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/Attacks.t.sol",
+    "edits": [
+      {
+        "old": "        _accrueStreamingFee(to, creator, platform, cfg);\n\n        uint256[] memory amounts = _basketAmounts(shares - feeShares, _scale, Math.Rounding.Floor);",
+        "new": "        uint256[] memory amounts = _basketAmounts(shares - feeShares, _scale, Math.Rounding.Floor);\n        _accrueStreamingFee(to, creator, platform, cfg);"
+      }
+    ]
+  },
+  {
+    "id": "HK11",
+    "what": "a fill reads a price of the last minute again, so the filler picks among sixty seconds of prices (HK-25)",
+    "origin": "audit/2026-11-27-attack-replay-ii.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "    uint256 public constant MAX_PRICE_AGE = 15;",
+        "new": "    uint256 public constant MAX_PRICE_AGE = 60;"
+      }
+    ]
+  },
+  {
+    "id": "HK12",
+    "what": "a creation's check reads prices at a fill's fifteen seconds, which a wallet's signer rarely meets (HK-25)",
+    "origin": "audit/2026-11-27-attack-replay-ii.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "            values[i] = _valueAt(tokens[i], feeds[i], decimals[i], leaving, MAX_CREATION_PRICE_AGE);",
+        "new": "            values[i] = _valueAt(tokens[i], feeds[i], decimals[i], leaving, MAX_PRICE_AGE);"
       }
     ]
   }

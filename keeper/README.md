@@ -13,7 +13,7 @@ hold on chain.
 No issue, redeem or claim reads a price. A fill names the units the index settles at, and the index accepts them
 when every leg is inside its unit caps and a weighted gain in units clears the auction's bar, which starts at a half
 and halves every twelve minutes for four hours (`design/2026-11-10-oracle-free-rebalance.md`). On a factory with an
-oracle the index then checks the fill against Pyth's prices of the last minute, a check that can only refuse
+oracle the index then checks the fill against Pyth's prices of the last fifteen seconds, a check that can only refuse
 (`design/2026-11-22-pyth-check.md`); the keeper's fill posts those prices itself, below. So the keeper prices its
 own trades, off chain: Pyth's prices from Hermes, each kept only where Pyth's contract confirms the signed update that
 carries it, through the keeper's own catalogue of each coin's Pyth id (`bot/price-ids.mjs`, and `PRICE_IDS`).

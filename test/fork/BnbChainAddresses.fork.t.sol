@@ -1109,6 +1109,53 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
         assertEq(IERC20(B.USDT).balanceOf(B.UNIVERSAL_ROUTER), uniswapBefore, "Uniswap's router was never paid");
     }
 
+    /// @dev HK-22 on PancakeSwap's real router (audit/2026-11-27-attack-replay-ii.md): a route names tokens and a
+    ///      fee tier, and the router derives the pool from its own deployer, so no caller can name a pool of its own.
+    ///      A tier PancakeSwap never enabled, 0.3%, has no pool at the derived address, and the swap reverts before
+    ///      anything moves.
+    function testFork_HK22_pancakeRefusesAFeeTierWithNoPool() public {
+        (IndexZap zap, WeightedHub index) = _threeCoinIndex();
+        uint256 budget = 10_000e18;
+        deal(B.USDT, alice, budget);
+        IUniversalRouterSwaps.MintLeg[] memory legs = new IUniversalRouterSwaps.MintLeg[](3);
+        legs[0] = IUniversalRouterSwaps.MintLeg({
+            v3Path: "",
+            v4Path: new PathKey[](0),
+            localRoute: _local(1, abi.encodePacked(B.WBNB, uint24(0), B.USDT)),
+            maxAmountIn: 0
+        });
+        legs[1] = IUniversalRouterSwaps.MintLeg({
+            v3Path: "",
+            v4Path: new PathKey[](0),
+            localRoute: _local(0, abi.encodePacked(B.BTCB, uint24(3000), B.USDT)),
+            maxAmountIn: 0
+        });
+        legs[2] = IUniversalRouterSwaps.MintLeg({
+            v3Path: "",
+            v4Path: new PathKey[](0),
+            localRoute: _local(0, abi.encodePacked(B.ETH, uint24(100), B.USDT)),
+            maxAmountIn: 0
+        });
+        IIndexZap.MintParams memory p = IIndexZap.MintParams({
+            index: address(index),
+            expectedNonce: 0,
+            tokenIn: B.USDT,
+            maxAmountIn: budget,
+            shares: 10e18,
+            legs: legs,
+            to: alice,
+            deadline: block.timestamp,
+            referrer: address(0)
+        });
+        vm.startPrank(alice);
+        IERC20(B.USDT).approve(address(zap), budget);
+        vm.expectRevert();
+        zap.mintWithToken(p);
+        vm.stopPrank();
+        assertEq(IERC20(B.USDT).balanceOf(alice), budget, "nothing moved");
+        assertEq(index.totalSupply(), 0);
+    }
+
     /// @dev CAKE, listed on 2026-11-27 for its market on PancakeSwap: an index of WBNB and CAKE is minted from USDT and
     ///      burnt back through PancakeSwap's pools alone, CAKE through its V3 pool against USDT at 0.25%, which held about
     ///      2.7M CAKE and $480k of USDT on 2026-11-27, its deepest on BNB Chain. The round trip loses under 1%.
@@ -1241,7 +1288,7 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
         assertEq(IPythPrices(factory.PRICES()).PYTH(), B.PYTH, "the deployment reads the book's Pyth");
         address[] memory coins = new address[](2);
         (coins[0], coins[1]) = (B.WBNB, B.ETH);
-        uint256 fill = BNB_BATCH + 30;
+        uint256 fill = BNB_BATCH + 10;
         vm.warp(fill - 2 days - 7 days - 2 hours - 3 hours);
         _list(factory, coins);
         uint256[] memory market = new uint256[](2);

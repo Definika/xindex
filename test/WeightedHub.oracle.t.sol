@@ -296,17 +296,44 @@ contract WeightedHubOracleTest is WeightedTest {
         assertEq(index.recordedUnits()[2], USD_UNITS, "the dollar leg kept its units");
     }
 
-    /// @dev A price published more than a minute before the fill values nothing.
+    /// @dev A price published more than `MAX_PRICE_AGE`, fifteen seconds, before the fill values nothing.
     function test_aStalePriceStopsTheFill() public {
         _open(2 hours);
-        uint256 published = block.timestamp - 61;
+        uint256 published = block.timestamp - prices.MAX_PRICE_AGE() - 1;
         pyth.setPrice(ETH_FEED, 2500e8, 0, -8, published);
         uint256[] memory fair = _onWeights(index, _market(2500, BTC_PRICE, USD_PRICE));
         vm.expectRevert(abi.encodeWithSelector(IPythPrices.StalePrice.selector, address(eth), published));
         executor.execute(index, fair, "");
-        // Exactly a minute old is still fresh.
+        // Exactly fifteen seconds old is still fresh.
         pyth.setPrice(ETH_FEED, 2500e8, 0, -8, published + 1);
         executor.execute(index, fair, "");
+    }
+
+    /// @dev HK-25 (audit/2026-11-27-attack-replay-ii.md): the filler posts Pyth's update itself, so it picks the price
+    ///      it is checked against among those of the reader's window. A fill's window is fifteen seconds; a creation's,
+    ///      which a person signs in a wallet, a minute. A price forty seconds old creates an index on its weights and
+    ///      stops a fill; at sixty-one seconds it stops the creation too.
+    function test_HK25_aFillReadsTheLastFifteenSecondsAndACreationTheLastMinute() public {
+        assertEq(prices.MAX_PRICE_AGE(), 15);
+        assertEq(prices.MAX_CREATION_PRICE_AGE(), 60);
+        _open(2 hours);
+        uint256 published = block.timestamp - 40;
+        pyth.setPrice(ETH_FEED, 2500e8, 0, -8, published);
+
+        IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](2);
+        specs[0] = _spec(address(eth), 5000, 0.02e18); // $50 at $2,500
+        specs[1] = _spec(address(usd), 5000, 50e6);
+        assertEq(_create(specs).componentWeights()[0], 5000, "a creation reads a price forty seconds old");
+
+        uint256[] memory fair = _onWeights(index, _market(2500, BTC_PRICE, USD_PRICE));
+        vm.expectRevert(abi.encodeWithSelector(IPythPrices.StalePrice.selector, address(eth), published));
+        executor.execute(index, fair, "");
+
+        vm.warp(published + prices.MAX_CREATION_PRICE_AGE() + 1);
+        specs[1] = _spec(address(usd), 5000, 50e6 + 1);
+        vm.prank(creator);
+        vm.expectRevert(abi.encodeWithSelector(IPythPrices.StalePrice.selector, address(eth), published));
+        factory.createIndex("Late", "LATE", specs, _params());
     }
 
     /// @dev Posts ETH alone at `ethDollars`, fresh, leaving the other two as they are.
@@ -589,7 +616,8 @@ contract WeightedHubOracleTest is WeightedTest {
         assertEq(index.PRICES(), factory.PRICES());
         assertEq(prices.PYTH(), address(pyth));
         assertEq(prices.FACTORY(), address(factory));
-        assertEq(prices.MAX_PRICE_AGE(), 60);
+        assertEq(prices.MAX_PRICE_AGE(), 15);
+        assertEq(prices.MAX_CREATION_PRICE_AGE(), 60);
         assertEq(prices.VALUE_SCALE(), 1e36);
     }
 

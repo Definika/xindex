@@ -1013,4 +1013,61 @@ contract AttacksTest is WeightedTest {
         factory.acceptCreator(address(index));
         assertEq(vm.getRecordedLogs().length, 1, "a handover with nothing pending emitted a cancel");
     }
+
+    // ---------------------------------------------------------------------
+    // HK-24: a public recompute between an issue and a redeem (Set's RebalancingSetTokenV3, October 2026)
+    // ---------------------------------------------------------------------
+
+    /// @dev Set's token let anyone call `actualizeFee()`, which recomputed every share's backing and rounded it up even
+    ///      when no fee was due; a flash-funded loop of issue, recompute and redeem took $50K. Here anyone may call
+    ///      `accrueFees`, and an index charging no entry or exit fee leaves only the streaming fee's scale to work on.
+    ///      Three hundred rounds, in one block and across a second, each recomputing up to twice between the issue
+    ///      and the redeem, never pay the attacker a wei, never cost the index one, never raise the scale, and leave
+    ///      every share backed: a redeem pays at the scale its own accrual left (mutant HK10).
+    function test_HK24_recomputingTheFeeBetweenAnIssueAndARedeemPaysNothing() public {
+        vm.prank(owner);
+        factory.setFeePolicy(0, 100, 0, makeAddr("platform"), 0);
+        IWeightedIndexFactory.IndexParams memory params = _params();
+        params.creatorStreamingBps = 500;
+        WeightedHub target = _create(_defaultSpecs(), params);
+        address[] memory tokens = target.componentTokens();
+        address bob = makeAddr("bob");
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            MockERC20(tokens[i]).mint(mallory, 1e30);
+            MockERC20(tokens[i]).mint(bob, 1e30);
+            vm.prank(mallory);
+            MockERC20(tokens[i]).approve(address(target), type(uint256).max);
+            vm.prank(bob);
+            MockERC20(tokens[i]).approve(address(target), type(uint256).max);
+        }
+        vm.prank(bob);
+        target.issue(1000e18, bob); // a holder whose backing the loop would have to take
+
+        uint256[] memory hadIndex = _held(target);
+        uint256[] memory hadMallory = _balances(target, mallory);
+        (, uint256 scale) = target.pendingStreamingFee();
+        vm.startPrank(mallory);
+        for (uint256 round = 0; round < 300; ++round) {
+            // Dust one round in five, and otherwise up to a thousand whole shares with an odd tail.
+            target.issue(round % 5 == 0 ? 1 + round : (round + 1) * 3e18 + round, mallory);
+            // Every other round lets a second pass between the issue and the redeem, so a fee is due there.
+            if (round % 2 == 0) vm.warp(block.timestamp + 1);
+            for (uint256 r = 0; r < round % 3; ++r) {
+                target.accrueFees();
+            }
+            target.redeem(target.balanceOf(mallory), mallory);
+
+            (, uint256 now_) = target.pendingStreamingFee();
+            assertLe(now_, scale, "the scale rose");
+            scale = now_;
+            uint256[] memory hasIndex = _held(target);
+            uint256[] memory hasMallory = _balances(target, mallory);
+            for (uint256 i = 0; i < tokens.length; ++i) {
+                assertGe(hasIndex[i], hadIndex[i], "the index paid out more than it took in");
+                assertLe(hasMallory[i], hadMallory[i], "a round paid the attacker");
+            }
+        }
+        vm.stopPrank();
+        _assertBacked(target);
+    }
 }

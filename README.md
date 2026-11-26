@@ -40,7 +40,7 @@ Pyth's prices, a check that can only refuse a fill ([`design/2026-11-22-pyth-che
   the index accepts them only if their weighted gain clears a bar that halves every twelve minutes. The bar falls
   until some executor finds the trade worth making. One fill takes at most 20% of a component and at most doubles
   one, and never lowers the weighted product of the units, a constant-weight pool's invariant. A fill the units
-  accept must then bring in, at Pyth's prices of the last minute, at least what it takes less a tolerance that rises
+  accept must then bring in, at Pyth's prices of the last fifteen seconds, at least what it takes less a tolerance that rises
   from nothing to 2% over the auction: so an executor bidding alone keeps at most 2% of what it trades, and
   competition, filling earlier, returns the rest. The executor posts Pyth's update itself. The owner or guardian may
   also start a rebalance with a quote, their own prices and a tolerance, which likewise can only refuse a fill; and
