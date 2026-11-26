@@ -23,6 +23,7 @@ import {MockTwoAddressToken} from "./mocks/MockTwoAddressToken.sol";
 import {MockUniversalRouter} from "./mocks/MockUniversalRouter.sol";
 import {MockUSDT} from "./mocks/MockUSDT.sol";
 import {PathKey} from "../src/libraries/UniswapV4Types.sol";
+import {LocalVenues} from "./LocalVenues.sol";
 
 /// @notice The basket builder: an escrow per caller that the legs of a basket are bought into over several calls and
 ///         issued out of in one, and the mirror of it for selling. Routes and prices come from the mock router the
@@ -91,7 +92,7 @@ contract BasketBuilderTest is XindexTest {
     /// @dev Replaces the builder with one whose stablecoins are the suite's USDC and `usdt`, for a test whose
     ///      currency is a token of its own: Tether's pattern, a fee, a hook, two addresses behind one balance.
     function _payingIn(address usdt) internal {
-        builder = new BasketBuilder(IIndexFactory(address(factory)), router, address(usdc), usdt);
+        builder = new BasketBuilder(IIndexFactory(address(factory)), router, LocalVenues.none(), address(usdc), usdt);
     }
 
     function _noV4() internal pure returns (PathKey[] memory) {
@@ -116,7 +117,7 @@ contract BasketBuilderTest is XindexTest {
     }
 
     function _mintLeg(bytes memory v3Path) internal pure returns (IUniversalRouterSwaps.MintLeg memory) {
-        return IUniversalRouterSwaps.MintLeg({v3Path: v3Path, v4Path: _noV4(), maxAmountIn: 0});
+        return IUniversalRouterSwaps.MintLeg({localRoute: "", v3Path: v3Path, v4Path: _noV4(), maxAmountIn: 0});
     }
 
     function _burnLeg(bytes memory v3Path, uint256 minOut)
@@ -124,7 +125,7 @@ contract BasketBuilderTest is XindexTest {
         pure
         returns (IUniversalRouterSwaps.BurnLeg memory)
     {
-        return IUniversalRouterSwaps.BurnLeg({v3Path: v3Path, v4Path: _noV4(), minAmountOut: minOut});
+        return IUniversalRouterSwaps.BurnLeg({localRoute: "", v3Path: v3Path, v4Path: _noV4(), minAmountOut: minOut});
     }
 
     /// @dev The index's three legs from usdc: WBTC through WETH, WETH, LINK through WETH.
@@ -259,15 +260,17 @@ contract BasketBuilderTest is XindexTest {
         assertEq(builder.USDC(), address(usdc));
         assertTrue(usdt != address(0) && usdt != address(usdc));
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new BasketBuilder(IIndexFactory(address(0)), router, address(usdc), usdt);
+        new BasketBuilder(IIndexFactory(address(0)), router, LocalVenues.none(), address(usdc), usdt);
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new BasketBuilder(IIndexFactory(address(factory)), IUniversalRouter(address(0)), address(usdc), usdt);
+        new BasketBuilder(
+            IIndexFactory(address(factory)), IUniversalRouter(address(0)), LocalVenues.none(), address(usdc), usdt
+        );
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new BasketBuilder(IIndexFactory(address(factory)), router, address(0), usdt);
+        new BasketBuilder(IIndexFactory(address(factory)), router, LocalVenues.none(), address(0), usdt);
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new BasketBuilder(IIndexFactory(address(factory)), router, address(usdc), address(0));
+        new BasketBuilder(IIndexFactory(address(factory)), router, LocalVenues.none(), address(usdc), address(0));
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotAStable.selector, address(usdc)));
-        new BasketBuilder(IIndexFactory(address(factory)), router, address(usdc), address(usdc));
+        new BasketBuilder(IIndexFactory(address(factory)), router, LocalVenues.none(), address(usdc), address(usdc));
     }
 
     // ---------------------------------------------------------------------
@@ -535,7 +538,9 @@ contract BasketBuilderTest is XindexTest {
         p.legs[1] = _mintLeg(_path2(address(weth), address(link)));
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.BadRoute.selector, 1));
         builder.buy(p);
-        p.legs[1] = IUniversalRouterSwaps.MintLeg({v3Path: "", v4Path: _v4Path1(address(usdc)), maxAmountIn: 0});
+        p.legs[1] = IUniversalRouterSwaps.MintLeg({
+            localRoute: "", v3Path: "", v4Path: _v4Path1(address(usdc)), maxAmountIn: 0
+        });
         p.legs[1].v4Path[0].hooks = address(1);
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.BadRoute.selector, 1));
         builder.buy(p);
@@ -551,7 +556,9 @@ contract BasketBuilderTest is XindexTest {
     function test_buyWithAV4Leg() public {
         uint256[] memory need = index.previewIssue(1e18);
         IBasketBuilder.BuyParams memory p = _buyParams(index, 1e18, address(usdc), 200e6, _one(1));
-        p.legs[0] = IUniversalRouterSwaps.MintLeg({v3Path: "", v4Path: _v4Path1(address(usdc)), maxAmountIn: 0});
+        p.legs[0] = IUniversalRouterSwaps.MintLeg({
+            localRoute: "", v3Path: "", v4Path: _v4Path1(address(usdc)), maxAmountIn: 0
+        });
         usdc.mint(alice, 200e6);
         vm.startPrank(alice);
         usdc.approve(address(builder), 200e6);
@@ -939,7 +946,9 @@ contract BasketBuilderTest is XindexTest {
         _redeemFor(alice, 1e18);
         uint256 held = builder.escrowOf(alice, address(weth));
         IBasketBuilder.SellParams memory p = _sellParams(address(usdc), 1, _one(address(weth)), bob);
-        p.legs[0] = IUniversalRouterSwaps.BurnLeg({v3Path: "", v4Path: _v4Path1(address(usdc)), minAmountOut: 0});
+        p.legs[0] = IUniversalRouterSwaps.BurnLeg({
+            localRoute: "", v3Path: "", v4Path: _v4Path1(address(usdc)), minAmountOut: 0
+        });
         vm.prank(alice);
         uint256 amountOut = builder.sell(p);
         assertEq(amountOut, router.quoteOut(address(weth), address(usdc), held));
@@ -1115,7 +1124,8 @@ contract BasketBuilderTest is XindexTest {
         (throughWeth[0], throughWeth[1]) = (_hop(address(weth)), _hop(second));
         bytes memory refusal = abi.encodeWithSelector(IXindexErrors.SharedBalance.selector, second, address(token));
 
-        p.legs[0] = IUniversalRouterSwaps.BurnLeg({v3Path: "", v4Path: _v4Path1(second), minAmountOut: 0});
+        p.legs[0] =
+            IUniversalRouterSwaps.BurnLeg({localRoute: "", v3Path: "", v4Path: _v4Path1(second), minAmountOut: 0});
         vm.prank(bob);
         vm.expectRevert(refusal);
         builder.sell(p);

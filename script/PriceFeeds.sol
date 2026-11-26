@@ -20,7 +20,7 @@ import {BaseAddresses} from "./BaseAddresses.sol";
 ///        hours ahead (the owner's call of 2026-11-23, renewing the procedure of 2026-10-18,
 ///        `design/2026-10-18-pre-mainnet-readings.md`, section 2).
 ///      - BNB Chain: WBNB at BNB/USD; BTCB at BTC/USD, Pyth having no BTCB feed and Binance backing it one for one;
-///        ETH, XRP, ZEC, ADA, BCH, LTC, DOT, ATOM, ASTER and STABLE at their coins' feeds; each Ondo token at the feed
+///        ETH, XRP, ZEC, ADA, BCH, LTC, DOT, ATOM, ASTER, STABLE and CAKE at their coins' feeds; each Ondo token at the feed
 ///        Ethereum's Ondo token of the same ticker takes.
 ///      - Base: WETH at ETH/USD, AERO and ZRO at their own feeds, each copy of Base's bridge at its Ethereum coin's,
 ///        cbBTC and cbETH at their own, cbXRP, cbDOGE, cbLTC and cbADA at their coins', and each Coinbase stock token,
@@ -31,13 +31,13 @@ import {BaseAddresses} from "./BaseAddresses.sol";
 ///      refuses to propose it: a first update of each, by anyone, comes before the proposals (`docs/deployment.md`).
 library PriceFeeds {
     /// @notice How many entries each table holds: its chain's list's `COUNT`, which a test pins.
-    uint256 internal constant ETHEREUM_COUNT = 415;
-    uint256 internal constant BNB_COUNT = 365;
+    uint256 internal constant ETHEREUM_COUNT = 414;
+    uint256 internal constant BNB_COUNT = 366;
     uint256 internal constant BASE_COUNT = 32;
 
     /// @notice `token`'s feed on chain `chainId`, or kind `None` for a token off that chain's list. Each call builds
     ///         the chain's whole table, and memory is never freed within a call: a loop over a list looks its tokens up
-    ///         in one {table} with {find} instead, since 415 calls of this one run out of memory.
+    ///         in one {table} with {find} instead, since 414 calls of this one run out of memory.
     function feedOf(uint256 chainId, address token) internal pure returns (IPythPrices.PriceFeed memory feed) {
         (address[] memory tokens, IPythPrices.PriceFeed[] memory feeds) = table(chainId);
         return find(token, tokens, feeds);
@@ -176,7 +176,6 @@ library PriceFeeds {
             bytes32(0xeff7446475e218517566ea99e72a4abec2e1bd8498b43b7d8331e29dcb059389),
             bytes32(0xfb7565b77267ba3f6ef770bed5d7f9b22b8542db676dbd9b934a2fcf945f4371),
             bytes32(0x93da3352f9f1d105fdfe4971cfa80e9dd777bfc5d0f683ebb6e1294b92137bb7),
-            bytes32(0x9db37f4d5654aad3e37e2e14ffd8d53265fb3026d1d8f91146539eebaa2ef45f),
             bytes32(0xe65ff435be42630439c96396653a342829e877e2aafaeaf1a10d0ee5fd2cf3f2),
             bytes32(0x5967c196ca33171a0b2d140ddc6334b998dd71c2ddd85ba7920c35fd6ed20fe9),
             bytes32(0xf32c3fbdd20b846bb53395bf175c42955e00b1bffb5a778bb624982b318f5461),
@@ -516,7 +515,6 @@ library PriceFeeds {
         ];
         kinds = [
             uint8(1),
-            1,
             1,
             1,
             1,
@@ -950,6 +948,7 @@ library PriceFeeds {
             bytes32(0xb00b60f88b03a6a625a8d1c048c3f66653edf217439983d037e7222c4e612819),
             bytes32(0xa903b5a82cb572397e3d47595d2889cf80513f5b4cf7a36b513ae10cc8b1e338),
             bytes32(0x98d7f32f2c26ea94c79a15df45239b7c2e04368e46f49fdbf06dd5e449374e64),
+            bytes32(0x2356af9529a1064d41e32d617e2ce1dca5733afa901daba9e2b68dee5d53ecf9),
             bytes32(0xe6734de88a83d9d2fb33072adab319004700aefd069653aba30ba9e3cac056f2),
             bytes32(0x29b228e9fd72bbd306bcca3b10c165d8dba5d535ef8d5aab6c6e4bc18912d150),
             bytes32(0x207ddea2a443d30b7e13a7c88a9e3f106765deb97049afc65a18cede50fffc82),
@@ -1306,6 +1305,7 @@ library PriceFeeds {
         ];
         kinds = [
             uint8(1),
+            1,
             1,
             1,
             1,

@@ -38,11 +38,13 @@ description, as the keeper's own catalogue.
 
 ## The list
 
-`script/Listings.sol` lists 415 assets with their tiers: `default` is the first four (WETH, WBTC, LINK, UNI) and `wide`
-the other 411.
+`script/Listings.sol` lists 414 assets with their tiers: `default` is the first four (WETH, WBTC, LINK, UNI) and `wide`
+the other 410.
 
-- 61 coins of the top 300, held as the issuer's own Ethereum contract where one exists, and otherwise as the copy
-  Wormhole's token bridge wraps from the coin's home chain (3 copies: SOL, AVAX and AERO). OP's copy left the list on
+- 60 coins of the top 300, held as the issuer's own Ethereum contract where one exists, and otherwise as the copy
+  Wormhole's token bridge wraps from the coin's home chain (2 copies: SOL and AVAX). AERO's copy left the list on
+  2026-11-26 (the owner's call): it is a copy of Aerodrome's AERO, which Aero replaced with a token of its own, the one
+  Base's list holds. OP's copy left the list on
   2026-11-21 (the owner's call): the restock found no route to buy OP on Optimism within its loss bound that day, its
   pools there being too thin. The copies of XRP,
   ADA, LTC, DOT, ATOM and BNB, each wrapped from BNB Chain, left the list on 2026-11-13 (the owner's call): BNB Chain's
@@ -50,7 +52,7 @@ the other 411.
   (the owner's call): no Ethereum pool trades them, so a rebalance could buy them only from stock bridged in from
   Solana, Sui, Aptos or Algorand, whose restock has never run
   ([`design/2026-11-18-bridged-coins-in-a-rebalance.md`](../design/2026-11-18-bridged-coins-in-a-rebalance.md)).
-  SOL's copy trades on Uniswap, and the restock serves AVAX's and AERO's from their EVM home chains.
+  SOL's copy trades on Uniswap, and the restock serves AVAX's from its EVM home chain.
 - Tether Gold.
 - 353 tokenized US stocks and ETFs issued by Ondo, every one Pyth has a feed for (since 2026-11-22, the owner's call;
   [`design/2026-11-22-ondo-stocks-and-etfs.md`](../design/2026-11-22-ondo-stocks-and-etfs.md)), among them funds of
@@ -71,7 +73,8 @@ of 2026-11-21 and 2026-11-22 ([`design/2026-11-21-base-deployment.md`](../design
 [`design/2026-11-22-coinbase-on-base.md`](../design/2026-11-22-coinbase-on-base.md)), each held in kind there and
 none through Wormhole:
 
-- WETH and AERO, Native: ether wrapped, and Aerodrome's token, which its own Minter contract mints.
+- WETH and AERO, Native: ether wrapped, and Aero's token (since 2026-11-26, in place of Aerodrome's), which only its
+  immutable `MINTER` mints; it has no owner, pause or blocklist.
 - ZRO, Bridged, as on Ethereum: LayerZero's own omnichain token.
 - UNI, AAVE, MORPHO, FET, CRV, VIRTUAL, PENDLE, PEPE, GRT, COMP, SNX, 1INCH and RSR, Bridged: the copies Base's
   standard bridge mints of those coins on Ethereum's list. Each names its Ethereum token and the bridge on chain, and
@@ -93,23 +96,28 @@ none through Wormhole:
 Backed's four wrappers on Base (wbCOIN, wbMSTR, wbNVDA, wbTSLA, over its older tokens) are not listed: no Pyth feed
 names their tokens, the rule Ethereum's list follows. Base's mint currencies are Circle's USDC
 and the token that answers USDT there, six decimals each; who can mint that USDT and replace its code is to be read
-before a deployment. Uniswap, the zap's one venue, routes WETH, AERO and VIRTUAL there; most of Base's depth sits on
-Aerodrome, so the other coins mint in kind or through `MintRequests`.
+before a deployment. The zap routes Base's coins through Uniswap or Aero, per leg (since 2026-11-26): Uniswap is the
+deeper venue for WETH and cbBTC, Aero for AAVE, MORPHO, cbETH, cbXRP and Coinbase's stocks. The bridged copies FET,
+GRT, PEPE, SNX and CRV have no depth on any of Base's venues, so they mint in kind or through `MintRequests`. The
+listed AERO is Aero's (`0x3f5bF3EdAc59d650D8fDf9657a71F2f904A3a4Ee`, the owner's call of 2026-11-26), whose depth is on
+Aero's own pools; Aerodrome's AERO, listed until then, converts to it one for one through Aero's migration while Aero
+keeps it open.
 
 ### BNB Chain
 
 `script/BnbChainAddresses.sol` lists 12 assets for the BNB Chain deployment (`V5_WHITELIST=bnb`), each held in kind
 there and none through Wormhole:
 
-- WBNB and ASTER, Native.
+- WBNB, ASTER and CAKE, Native. CAKE is PancakeSwap's own token, listed since 2026-11-27, and PancakeSwap's
+  MasterChef mints it.
 - BTCB, ETH, XRP, ZEC, ADA, BCH, LTC, DOT and ATOM, Custodial: Binance-Peg tokens, which Binance backs and one key of
   Binance's mints. None is a proxy.
 - STABLE, Bridged: a LayerZero token a 3-of-5 Safe upgrades.
 
-All twelve passed `CheckToken` on BNB Chain on 2026-11-13. Binance-Peg DOGE, AVAX and FIL are left out: each is a
+The twelve passed `CheckToken` on BNB Chain on 2026-11-13, and CAKE on 2026-11-27. Binance-Peg DOGE, AVAX and FIL are left out: each is a
 proxy whose code one key can replace. Six of the twelve (WBNB, BTCB, ETH, XRP, ZEC, ASTER) have a Uniswap market the
-zap can route a mint through; ADA, LTC, DOT, BCH, ATOM and STABLE trade mostly on PancakeSwap, which the zap does not
-use, so they mint in kind or through `MintRequests`
+zap can route a mint through. ADA, LTC, DOT, BCH, ATOM, STABLE and CAKE trade mostly on PancakeSwap, which the zap
+routes through since 2026-11-26 (`design/2026-11-26-chain-venues.md`); ATOM's market there is thin
 ([`design/2026-11-13-bnb-chain-deployment.md`](../design/2026-11-13-bnb-chain-deployment.md), section 6).
 
 ## Labels the app shows

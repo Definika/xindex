@@ -65,6 +65,13 @@ contract BaseAddressesForkTest is Test, IRebalanceExecutor {
     bytes32 constant UNIVERSAL_ROUTER_CODEHASH = 0x27713951fb0660a1422b710122022d90723d883dc7b72949be79cb2957d234e0;
     bytes32 constant POOL_MANAGER_CODEHASH = 0x83b2af6e9f3158defc2811cbcb0db71ecf8b2ba2abea39c39e370ac5c6f43eb6;
     bytes32 constant UNISWAP_V3_FACTORY_CODEHASH = 0x95707a4ac71f20181a63ef7d180e3c625be5d20fc8f6f980befa966bad568132;
+    /// @dev Aero's Metarouter and its three factories, the chain's own DEX beside Uniswap since 2026-11-26: none a
+    ///      proxy, read on 2026-11-26; the Metarouter's matches its verified source (Sourcify, exact match).
+    bytes32 constant AERO_METAROUTER_CODEHASH = 0x73b6a400a151c2609fdfdb73dc282e8273c84943feb37662176e2b7ade2a70d9;
+    bytes32 constant AERO_CL_FACTORY_CODEHASH = 0x6c09090837ace0aefe6bfa24a3bc772d13a9775b7e3109c9fece534a0ce053a6;
+    bytes32 constant AERO_VOLATILE_FACTORY_CODEHASH =
+        0x975417bdbc8e5df051479a271f5a03582df5f09f179771c68e2708dddeb56ef0;
+    bytes32 constant AERO_STABLE_FACTORY_CODEHASH = 0x3b34cd7ed303be01986b097c49f1a29d211783ef63f5e920db0ffb9291396cc2;
     /// @dev Ethereum's router and BNB Chain's, by their runtime code: the suites of those chains pin the same hashes
     ///      there, and both addresses carry that very code on Base.
     bytes32 constant ETHEREUM_ROUTER_CODEHASH = 0x6a5f46971b50c6e1b7eef97902311444e479d734e4f80ad88367783cf373fe7f;
@@ -558,14 +565,18 @@ contract BaseAddressesForkTest is Test, IRebalanceExecutor {
     function _mintLegs(bytes[3] memory paths) internal pure returns (IUniversalRouterSwaps.MintLeg[] memory legs) {
         legs = new IUniversalRouterSwaps.MintLeg[](3);
         for (uint256 i = 0; i < 3; ++i) {
-            legs[i] = IUniversalRouterSwaps.MintLeg({v3Path: paths[i], v4Path: new PathKey[](0), maxAmountIn: 0});
+            legs[i] = IUniversalRouterSwaps.MintLeg({
+                localRoute: "", v3Path: paths[i], v4Path: new PathKey[](0), maxAmountIn: 0
+            });
         }
     }
 
     function _burnLegs(bytes[3] memory paths) internal pure returns (IUniversalRouterSwaps.BurnLeg[] memory legs) {
         legs = new IUniversalRouterSwaps.BurnLeg[](3);
         for (uint256 i = 0; i < 3; ++i) {
-            legs[i] = IUniversalRouterSwaps.BurnLeg({v3Path: paths[i], v4Path: new PathKey[](0), minAmountOut: 0});
+            legs[i] = IUniversalRouterSwaps.BurnLeg({
+                localRoute: "", v3Path: paths[i], v4Path: new PathKey[](0), minAmountOut: 0
+            });
         }
     }
 
@@ -636,6 +647,118 @@ contract BaseAddressesForkTest is Test, IRebalanceExecutor {
         assertEq(IERC20(B.USDC).balanceOf(alice), budget - spent + out);
         assertGe(out, spent * 97 / 100, "the zap held the burn to its floor: a round trip loses under 3%");
         assertLt(out, spent, "and gains nothing");
+    }
+
+    /// @dev The deployment's DEX beside Uniswap is Aero's, each of its four contracts pinned by its code.
+    function testFork_aerosContractsAreThePinnedBuilds() public {
+        (, IndexZap zap,,) = _deploy();
+        assertEq(uint8(zap.LOCAL_DEX()), uint8(IUniversalRouterSwaps.LocalDex.Aero));
+        assertEq(zap.LOCAL_ROUTER(), B.AERO_METAROUTER);
+        assertEq(B.AERO_METAROUTER.codehash, AERO_METAROUTER_CODEHASH, "Aero's Metarouter");
+        assertEq(B.AERO_CL_FACTORY.codehash, AERO_CL_FACTORY_CODEHASH, "its CL pool factory");
+        assertEq(B.AERO_VOLATILE_FACTORY.codehash, AERO_VOLATILE_FACTORY_CODEHASH, "its volatile pool factory");
+        assertEq(B.AERO_STABLE_FACTORY.codehash, AERO_STABLE_FACTORY_CODEHASH, "its stable pool factory");
+    }
+
+    function _local(uint8 family, bytes memory path) internal pure returns (bytes memory) {
+        return abi.encodePacked(family, path);
+    }
+
+    /// @dev A share of the Aero index, in dollars: enough that a share's cbBTC is more than its smallest holding.
+    uint256 constant AERO_THREE_DOLLARS = 300;
+
+    /// @dev WETH, cbBTC and cbETH, the three of Base's list with Aero's deepest pools.
+    function _aeroThree(WeightedIndexFactory factory) internal returns (WeightedHub index) {
+        address[] memory three = new address[](3);
+        (three[0], three[1], three[2]) = (B.WETH, B.CBBTC, B.CBETH);
+        uint256[] memory weights = new uint256[](3);
+        (weights[0], weights[1], weights[2]) = (3334, 3333, 3333);
+        _list(factory, three);
+        _freshPrices(factory, three);
+        factory.setApprovedCreator(address(this), true);
+        index = WeightedHub(
+            factory.createIndex(
+                "Aero Three", "AERO3", _specsOnWeights(factory, three, weights, AERO_THREE_DOLLARS), _params()
+            )
+        );
+    }
+
+    function _aeroMintLeg(bytes memory route) internal pure returns (IUniversalRouterSwaps.MintLeg memory) {
+        return IUniversalRouterSwaps.MintLeg({v3Path: "", v4Path: new PathKey[](0), localRoute: route, maxAmountIn: 0});
+    }
+
+    function _aeroBurnLeg(bytes memory route) internal pure returns (IUniversalRouterSwaps.BurnLeg memory) {
+        return IUniversalRouterSwaps.BurnLeg({v3Path: "", v4Path: new PathKey[](0), localRoute: route, minAmountOut: 0});
+    }
+
+    /// @dev The zap mints an index from USDC through Aero's real pools and burns it back: WETH and cbBTC through CL
+    ///      pools, cbETH along two CL hops through WETH, and WETH's sale through a volatile basic pool, so both of
+    ///      Aero's families and a two-hop route run on the Metarouter. Nothing goes through Uniswap, nothing stays in
+    ///      the zap or the Metarouter, and the round trip costs the pools' fees alone.
+    function testFork_theZapMintsAndBurnsThroughAero() public {
+        (WeightedIndexFactory factory, IndexZap zap,,) = _deploy();
+        WeightedHub index = _aeroThree(factory);
+        uint256 shares = 3e18;
+        uint256 budget = 1_000e6;
+        deal(B.USDC, alice, budget);
+        uint256 uniswapBefore = IERC20(B.USDC).balanceOf(B.UNIVERSAL_ROUTER);
+
+        // A buy's route runs from the component back to what is paid; the three bytes are Aero's tick spacing.
+        IUniversalRouterSwaps.MintLeg[] memory mintLegs = new IUniversalRouterSwaps.MintLeg[](3);
+        mintLegs[0] = _aeroMintLeg(_local(0, abi.encodePacked(B.WETH, uint24(50), B.USDC)));
+        mintLegs[1] = _aeroMintLeg(_local(0, abi.encodePacked(B.CBBTC, uint24(100), B.USDC)));
+        mintLegs[2] = _aeroMintLeg(_local(0, abi.encodePacked(B.CBETH, uint24(1), B.WETH, uint24(50), B.USDC)));
+        vm.startPrank(alice);
+        IERC20(B.USDC).forceApprove(address(zap), budget);
+        uint256 spent = zap.mintWithToken(
+            IIndexZap.MintParams({
+                index: address(index),
+                expectedNonce: 0,
+                tokenIn: B.USDC,
+                maxAmountIn: budget,
+                shares: shares,
+                legs: mintLegs,
+                to: alice,
+                deadline: block.timestamp,
+                referrer: address(0)
+            })
+        );
+        vm.stopPrank();
+        assertEq(index.balanceOf(alice), shares);
+        assertEq(IERC20(B.USDC).balanceOf(alice), budget - spent, "what the swaps did not take came back");
+        uint256[] memory units = index.recordedUnits();
+        assertEq(IERC20(B.WETH).balanceOf(address(index)), shares * units[0] / 1e18, "the index holds ether in kind");
+        assertEq(IERC20(B.CBBTC).balanceOf(address(index)), shares * units[1] / 1e18);
+        assertEq(IERC20(B.CBETH).balanceOf(address(index)), shares * units[2] / 1e18);
+        assertEq(IERC20(B.USDC).balanceOf(address(zap)), 0, "nothing stays in the zap");
+        assertEq(IERC20(B.USDC).balanceOf(B.AERO_METAROUTER), 0, "nor in the Metarouter");
+
+        // A sale's route runs from the component to what is paid; WETH's goes through the volatile basic pool.
+        IUniversalRouterSwaps.BurnLeg[] memory burnLegs = new IUniversalRouterSwaps.BurnLeg[](3);
+        burnLegs[0] = _aeroBurnLeg(_local(1, abi.encodePacked(B.WETH, uint24(0), B.USDC)));
+        burnLegs[1] = _aeroBurnLeg(_local(0, abi.encodePacked(B.CBBTC, uint24(100), B.USDC)));
+        burnLegs[2] = _aeroBurnLeg(_local(0, abi.encodePacked(B.CBETH, uint24(1), B.WETH, uint24(50), B.USDC)));
+        vm.startPrank(alice);
+        index.approve(address(zap), shares);
+        uint256 out = zap.burnToToken(
+            IIndexZap.BurnParams({
+                index: address(index),
+                expectedNonce: 0,
+                shares: shares,
+                tokenOut: B.USDC,
+                minAmountOut: spent * 98 / 100,
+                legs: burnLegs,
+                to: alice,
+                deadline: block.timestamp
+            })
+        );
+        vm.stopPrank();
+        assertEq(index.totalSupply(), 0);
+        assertEq(IERC20(B.USDC).balanceOf(alice), budget - spent + out);
+        assertGe(out, spent * 98 / 100, "a round trip through Aero loses under 2%");
+        assertLt(out, spent, "and gains nothing");
+        assertEq(IERC20(B.WETH).balanceOf(address(zap)), 0, "every coin was sold, the middle WETH included");
+        assertEq(IERC20(B.USDC).balanceOf(B.UNIVERSAL_ROUTER), uniswapBefore, "Uniswap's router was never paid");
     }
 
     /// @dev The zap takes and pays only Base's USDC and USDT: a mint paid in WETH is refused before anything moves,

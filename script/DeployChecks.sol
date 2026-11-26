@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {Script, console2} from "forge-std/Script.sol";
 import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
+import {IUniversalRouterSwaps} from "../src/interfaces/IUniversalRouterSwaps.sol";
 import {ISafeThreshold} from "./interfaces/ISafeThreshold.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
 import {BnbChainAddresses} from "./BnbChainAddresses.sol";
@@ -18,6 +19,9 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 ///         (`design/2026-11-21-base-deployment.md`). On a pinned chain the market addresses are the book's and
 ///         nothing else; elsewhere they come from the environment.
 abstract contract DeployChecks is Script {
+    /// @dev The addresses a `LocalVenue` names: its router and Aero's three factories.
+    uint256 internal constant DEX_ADDRESSES = 4;
+
     /// @notice Default {resolveRouter} uses on chain 1, from `MainnetAddresses`.
     address public constant MAINNET_UNIVERSAL_ROUTER = MainnetAddresses.UNIVERSAL_ROUTER;
     /// @notice Default {resolveRouter} uses on chain 56, from `BnbChainAddresses`.
@@ -236,17 +240,29 @@ abstract contract DeployChecks is Script {
 
     /// @notice The contracts a deployment on this chain trades or prices through, none of which may hold a role.
     /// @param router The resolved Universal Router.
-    /// @return list The router and the PoolManager it settles against, then, on a pinned chain, every token and mint
-    ///         currency in that chain's address book, and its Pyth contract.
+    /// @return list The router and the PoolManager it settles against, then, on a pinned chain, the chain's own DEX
+    ///         ({pinnedLocalVenue}: its router, and Aero's factories on Base), every token and mint currency in that
+    ///         chain's address book, and its Pyth contract.
     function marketContracts(address router) public view returns (address[] memory list) {
         address[] memory book = onBase()
             ? _baseMarket()
             : onBnbChain() ? _bnbMarket() : isPinnedChain() ? _mainnetMarket() : new address[](0);
-        list = new address[](book.length + 2);
+        IUniversalRouterSwaps.LocalVenue memory local = pinnedLocalVenue();
+        address[DEX_ADDRESSES] memory dex = [local.router, local.clFactory, local.volatileFactory, local.stableFactory];
+        uint256 named = 0;
+        for (uint256 i = 0; i < dex.length; ++i) {
+            if (dex[i] != address(0)) ++named;
+        }
+        list = new address[](2 + named + book.length);
         list[0] = router;
         list[1] = IUniversalRouter(router).poolManager();
+        // The chain's own DEX, its router and, for Aero, its factories: as many as it names.
+        uint256 at = 2;
+        for (uint256 i = 0; i < dex.length; ++i) {
+            if (dex[i] != address(0)) list[at++] = dex[i];
+        }
         for (uint256 i = 0; i < book.length; ++i) {
-            list[i + 2] = book[i];
+            list[at + i] = book[i];
         }
     }
 
@@ -329,6 +345,35 @@ abstract contract DeployChecks is Script {
     function pinnedRouter() public view returns (address) {
         if (onBase()) return BASE_UNIVERSAL_ROUTER;
         return onBnbChain() ? BNB_UNIVERSAL_ROUTER : MAINNET_UNIVERSAL_ROUTER;
+    }
+
+    /// @notice The chain's own DEX beside Uniswap, from its address book: PancakeSwap on BNB Chain, Aero on Base, none
+    ///         on Ethereum and off the pinned chains (the owner's call of 2026-11-26). Never taken from the
+    ///         environment: the engine encodes against these routers' command inputs, read from their verified source.
+    function pinnedLocalVenue() public view returns (IUniversalRouterSwaps.LocalVenue memory local) {
+        if (onBase()) {
+            return IUniversalRouterSwaps.LocalVenue({
+                dex: IUniversalRouterSwaps.LocalDex.Aero,
+                router: BaseAddresses.AERO_METAROUTER,
+                clFactory: BaseAddresses.AERO_CL_FACTORY,
+                volatileFactory: BaseAddresses.AERO_VOLATILE_FACTORY,
+                stableFactory: BaseAddresses.AERO_STABLE_FACTORY
+            });
+        }
+        if (onBnbChain()) {
+            local.dex = IUniversalRouterSwaps.LocalDex.PancakeSwap;
+            local.router = BnbChainAddresses.PANCAKE_UNIVERSAL_ROUTER;
+        }
+    }
+
+    /// @notice {pinnedLocalVenue}, each address of it required to have code.
+    function resolveLocalVenue() public view returns (IUniversalRouterSwaps.LocalVenue memory local) {
+        local = pinnedLocalVenue();
+        address[DEX_ADDRESSES] memory named =
+            [local.router, local.clFactory, local.volatileFactory, local.stableFactory];
+        for (uint256 i = 0; i < named.length; ++i) {
+            if (named[i] != address(0) && named[i].code.length == 0) revert AddressHasNoCode("LOCAL_VENUE", named[i]);
+        }
     }
 
     /// @notice The pinned chain's USDC.

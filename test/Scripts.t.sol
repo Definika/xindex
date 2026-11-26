@@ -29,6 +29,9 @@ import {MockUniversalRouter} from "./mocks/MockUniversalRouter.sol";
 import {MockUniswapV3Factory, MockUniswapV3Pool} from "./mocks/MockUniswapV3.sol";
 import {MockWETH} from "./mocks/MockWETH.sol";
 import {MockUSDT} from "./mocks/MockUSDT.sol";
+import {LocalVenues} from "./LocalVenues.sol";
+import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
+import {IUniversalRouterSwaps} from "../src/interfaces/IUniversalRouterSwaps.sol";
 
 contract MockSafe {
     /// @dev Safe's sentinel, which both starts and ends its module list.
@@ -576,8 +579,9 @@ contract ScriptsTest is Test {
         );
         deployer.checkDeployment(factory, zap, otherBuilder, requests);
         // A builder on this factory but another router.
-        BasketBuilder otherRouter =
-            new BasketBuilder(factory, new MockUniversalRouter(makeAddr("poolManager")), usdc, usdt);
+        BasketBuilder otherRouter = new BasketBuilder(
+            factory, new MockUniversalRouter(makeAddr("poolManager")), LocalVenues.none(), usdc, usdt
+        );
         vm.expectRevert(
             abi.encodeWithSelector(
                 DeployChecks.WrongWiring.selector,
@@ -635,22 +639,34 @@ contract ScriptsTest is Test {
         deployer.checkDeployment(priced, pricedZap, pricedBuilder, pricedRequests);
     }
 
+    /// @dev The zap and the builder of one deployment name the same DEX beside Uniswap: a builder naming another is
+    ///      refused, address by address.
+    function test_deployWeighted_checkDeploymentRefusesAnotherDex() public {
+        (WeightedIndexFactory factory, IndexZap zap,, MintRequests requests) = _deploy(owner, guardian);
+        address other = address(new MockUniversalRouter(makeAddr("otherPoolManager")));
+        BasketBuilder pancakeBuilder = new BasketBuilder(factory, router, LocalVenues.pancake(other), usdc, usdt);
+        vm.expectRevert(
+            abi.encodeWithSelector(DeployChecks.WrongWiring.selector, "BasketBuilder.LOCAL_ROUTER", address(0), other)
+        );
+        deployer.checkDeployment(factory, zap, pancakeBuilder, requests);
+    }
+
     /// @dev The zap, the builder and MintRequests of one deployment take the same two stablecoins: a zap or a builder
     ///      naming another USDC or USDT is refused.
     function test_deployWeighted_checkDeploymentRefusesOtherStables() public {
         (WeightedIndexFactory factory, IndexZap zap, BasketBuilder builder, MintRequests requests) =
             _deploy(owner, guardian);
         address otherUsd = address(new MockERC20("Other USD", "OUSD", 6));
-        IndexZap zapUsdc = new IndexZap(factory, router, otherUsd, usdt);
+        IndexZap zapUsdc = new IndexZap(factory, router, LocalVenues.none(), otherUsd, usdt);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.WrongWiring.selector, "IndexZap.USDC", usdc, otherUsd));
         deployer.checkDeployment(factory, zapUsdc, builder, requests);
-        IndexZap zapUsdt = new IndexZap(factory, router, usdc, otherUsd);
+        IndexZap zapUsdt = new IndexZap(factory, router, LocalVenues.none(), usdc, otherUsd);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.WrongWiring.selector, "IndexZap.USDT", usdt, otherUsd));
         deployer.checkDeployment(factory, zapUsdt, builder, requests);
-        BasketBuilder builderUsdc = new BasketBuilder(factory, router, otherUsd, usdt);
+        BasketBuilder builderUsdc = new BasketBuilder(factory, router, LocalVenues.none(), otherUsd, usdt);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.WrongWiring.selector, "BasketBuilder.USDC", usdc, otherUsd));
         deployer.checkDeployment(factory, zap, builderUsdc, requests);
-        BasketBuilder builderUsdt = new BasketBuilder(factory, router, usdc, otherUsd);
+        BasketBuilder builderUsdt = new BasketBuilder(factory, router, LocalVenues.none(), usdc, otherUsd);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.WrongWiring.selector, "BasketBuilder.USDT", usdt, otherUsd));
         deployer.checkDeployment(factory, zap, builderUsdt, requests);
     }
@@ -717,6 +733,7 @@ contract ScriptsTest is Test {
         vm.etch(BnbChainAddresses.USDC, hex"00");
         vm.etch(BnbChainAddresses.USDT, hex"00");
         vm.etch(BnbChainAddresses.PYTH, hex"00");
+        vm.etch(BnbChainAddresses.PANCAKE_UNIVERSAL_ROUTER, hex"00");
         DeployWeighted bnb = new DeployWeightedThisBuild();
         assertTrue(bnb.isPinnedChain());
         assertTrue(bnb.onBnbChain());
@@ -738,14 +755,23 @@ contract ScriptsTest is Test {
 
         address[] memory market = bnb.marketContracts(bnbRouter);
         assertEq(
-            market.length, 2 + BnbChainAddresses.COUNT + 3, "the router, its PoolManager, the tokens, 2 stables, Pyth"
+            market.length,
+            3 + BnbChainAddresses.COUNT + 3,
+            "the router, its PoolManager, PancakeSwap's router, the tokens, 2 stables, Pyth"
         );
         assertEq(market[0], bnbRouter);
         assertEq(market[1], BnbChainAddresses.POOL_MANAGER);
-        assertEq(market[2], BnbChainAddresses.WBNB);
-        assertEq(market[13], BnbChainAddresses.STABLE);
-        assertEq(market[2 + BnbChainAddresses.COUNT], BnbChainAddresses.USDC);
-        assertEq(market[3 + BnbChainAddresses.COUNT], BnbChainAddresses.USDT);
+        assertEq(market[2], BnbChainAddresses.PANCAKE_UNIVERSAL_ROUTER);
+        assertEq(market[3], BnbChainAddresses.WBNB);
+        assertEq(market[14], BnbChainAddresses.STABLE);
+        assertEq(market[3 + BnbChainAddresses.COUNT], BnbChainAddresses.USDC);
+        assertEq(market[4 + BnbChainAddresses.COUNT], BnbChainAddresses.USDT);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                DeployChecks.RoleIsMarketContract.selector, BnbChainAddresses.PANCAKE_UNIVERSAL_ROUTER
+            )
+        );
+        bnb.checkRolesAreNotMarket(owner, BnbChainAddresses.PANCAKE_UNIVERSAL_ROUTER, bnbRouter);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.RoleIsMarketContract.selector, BnbChainAddresses.BTCB));
         bnb.checkRolesAreNotMarket(BnbChainAddresses.BTCB, guardian, bnbRouter);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.RoleIsMarketContract.selector, BnbChainAddresses.USDT));
@@ -775,6 +801,26 @@ contract ScriptsTest is Test {
         assertEq(builder.USDT(), BnbChainAddresses.USDT);
         assertEq(requests.USDC(), BnbChainAddresses.USDC);
         assertEq(requests.USDT(), BnbChainAddresses.USDT);
+        // BNB Chain's own DEX, PancakeSwap, from the book: its router and no factory, in the zap and the builder alike.
+        assertEq(uint8(zap.LOCAL_DEX()), uint8(IUniversalRouterSwaps.LocalDex.PancakeSwap));
+        assertEq(zap.LOCAL_ROUTER(), BnbChainAddresses.PANCAKE_UNIVERSAL_ROUTER);
+        assertEq(zap.AERO_CL_FACTORY(), address(0));
+        assertEq(builder.LOCAL_ROUTER(), BnbChainAddresses.PANCAKE_UNIVERSAL_ROUTER);
+        bnb.checkDeployment(factory, zap, builder, requests);
+        // A zap and a builder that left PancakeSwap out are not this chain's deployment.
+        IndexZap plainZap =
+            new IndexZap(factory, IUniversalRouter(bnbRouter), LocalVenues.none(), zap.USDC(), zap.USDT());
+        BasketBuilder plainBuilder =
+            new BasketBuilder(factory, IUniversalRouter(bnbRouter), LocalVenues.none(), zap.USDC(), zap.USDT());
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                DeployChecks.WrongWiring.selector,
+                "IndexZap.LOCAL_ROUTER",
+                BnbChainAddresses.PANCAKE_UNIVERSAL_ROUTER,
+                address(0)
+            )
+        );
+        bnb.checkDeployment(factory, plainZap, plainBuilder, requests);
     }
 
     /// @dev On Base the market addresses are pinned to `BaseAddresses` as the other two chains' are to theirs: zero
@@ -791,6 +837,10 @@ contract ScriptsTest is Test {
         vm.etch(BaseAddresses.USDC, hex"00");
         vm.etch(BaseAddresses.USDT, hex"00");
         vm.etch(BaseAddresses.PYTH, hex"00");
+        vm.etch(BaseAddresses.AERO_METAROUTER, hex"00");
+        vm.etch(BaseAddresses.AERO_CL_FACTORY, hex"00");
+        vm.etch(BaseAddresses.AERO_VOLATILE_FACTORY, hex"00");
+        vm.etch(BaseAddresses.AERO_STABLE_FACTORY, hex"00");
         DeployWeighted base = new DeployWeightedThisBuild();
         assertTrue(base.isPinnedChain());
         assertTrue(base.onBase());
@@ -809,8 +859,20 @@ contract ScriptsTest is Test {
         base.resolveStable("USDC", MainnetAddresses.USDC, baseUsdc);
 
         address[] memory market = base.marketContracts(baseRouter);
-        assertEq(market.length, 2 + BaseAddresses.COUNT + 3, "the router, its PoolManager, the tokens, 2 stables, Pyth");
+        assertEq(
+            market.length,
+            6 + BaseAddresses.COUNT + 3,
+            "the router, its PoolManager, Aero's router and factories, the tokens, 2 stables, Pyth"
+        );
         assertEq(market[1], BaseAddresses.POOL_MANAGER);
+        assertEq(market[2], BaseAddresses.AERO_METAROUTER);
+        assertEq(market[3], BaseAddresses.AERO_CL_FACTORY);
+        assertEq(market[4], BaseAddresses.AERO_VOLATILE_FACTORY);
+        assertEq(market[5], BaseAddresses.AERO_STABLE_FACTORY);
+        vm.expectRevert(
+            abi.encodeWithSelector(DeployChecks.RoleIsMarketContract.selector, BaseAddresses.AERO_METAROUTER)
+        );
+        base.checkRolesAreNotMarket(BaseAddresses.AERO_METAROUTER, guardian, baseRouter);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.RoleIsMarketContract.selector, BaseAddresses.AERO));
         base.checkRolesAreNotMarket(BaseAddresses.AERO, guardian, baseRouter);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.RoleIsMarketContract.selector, BaseAddresses.USDT));
@@ -838,6 +900,15 @@ contract ScriptsTest is Test {
         assertEq(address(builder.ROUTER()), baseRouter);
         assertEq(builder.USDC(), BaseAddresses.USDC);
         assertEq(requests.USDT(), BaseAddresses.USDT);
+        // Base's own DEX, Aero, from the book, in the zap and the builder alike.
+        assertEq(uint8(zap.LOCAL_DEX()), uint8(IUniversalRouterSwaps.LocalDex.Aero));
+        assertEq(zap.LOCAL_ROUTER(), BaseAddresses.AERO_METAROUTER);
+        assertEq(zap.AERO_CL_FACTORY(), BaseAddresses.AERO_CL_FACTORY);
+        assertEq(zap.AERO_VOLATILE_FACTORY(), BaseAddresses.AERO_VOLATILE_FACTORY);
+        assertEq(zap.AERO_STABLE_FACTORY(), BaseAddresses.AERO_STABLE_FACTORY);
+        assertEq(builder.LOCAL_ROUTER(), BaseAddresses.AERO_METAROUTER);
+        assertEq(builder.AERO_STABLE_FACTORY(), BaseAddresses.AERO_STABLE_FACTORY);
+        base.checkDeployment(factory, zap, builder, requests);
     }
 
     /// @dev The stablecoins the zap, the builder and MintRequests take resolve like the router: required off

@@ -6,7 +6,8 @@ import {IUniversalRouterSwaps} from "./IUniversalRouterSwaps.sol";
 
 /// @title IIndexZap
 /// @notice Stateless convenience router: mint any index with USDC or USDT, and burn any index straight into USDC or
-///         USDT, swapping through Uniswap's Universal Router. Apps encode calls against this interface.
+///         USDT, swapping through Uniswap's Universal Router or, leg by leg, the chain's own DEX (PancakeSwap on BNB
+///         Chain, Aero on Base). Apps encode calls against this interface.
 /// @dev Legs
 ///      - Each leg names its own venue, in the `MintLeg` and `BurnLeg` of {IUniversalRouterSwaps}. The basket
 ///        builder uses the same format.

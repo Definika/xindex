@@ -14,7 +14,7 @@ import {UniversalRouterSwaps} from "./UniversalRouterSwaps.sol";
 
 /// @title IndexZap
 /// @notice Stateless convenience router: mint any index with USDC or USDT, and burn any index straight into USDC or
-///         USDT, swapping through Uniswap's Universal Router.
+///         USDT, swapping through Uniswap's Universal Router or, leg by leg, the chain's own DEX.
 /// @dev Design notes
 ///      - The zap holds no state, and nothing a user is owed between transactions. The only tokens that can rest
 ///        here are ones nobody is owed: what strangers send it, and a router leftover a burn's recipient refused
@@ -52,8 +52,8 @@ contract IndexZap is ReentrancyGuard, UniversalRouterSwaps, IIndexZap {
     /// @inheritdoc IIndexZap
     address public immutable USDT;
 
-    constructor(IIndexFactory factory, IUniversalRouter router, address usdc, address usdt)
-        UniversalRouterSwaps(router)
+    constructor(IIndexFactory factory, IUniversalRouter router, LocalVenue memory local, address usdc, address usdt)
+        UniversalRouterSwaps(router, local)
     {
         if (address(factory) == address(0) || usdc == address(0) || usdt == address(0)) {
             revert ZeroAddress();
@@ -132,7 +132,7 @@ contract IndexZap is ReentrancyGuard, UniversalRouterSwaps, IIndexZap {
         for (uint256 i = 0; i < n; ++i) {
             address component = tokens[i];
             if (component == p.tokenIn) {
-                if (p.legs[i].v3Path.length != 0 || p.legs[i].v4Path.length != 0) revert BadRoute(i);
+                if (_namesRoute(p.legs[i].v3Path, p.legs[i].v4Path, p.legs[i].localRoute)) revert BadRoute(i);
                 // As on the burn side, the leg that carries no swap still honours its own limit (DA-15).
                 uint256 legCap = p.legs[i].maxAmountIn;
                 if (legCap != 0 && need[i] > legCap) revert InsufficientBudget(need[i], legCap);
@@ -212,7 +212,7 @@ contract IndexZap is ReentrancyGuard, UniversalRouterSwaps, IIndexZap {
         for (uint256 i = 0; i < n; ++i) {
             address component = tokens[i];
             if (component == p.tokenOut) {
-                if (p.legs[i].v3Path.length != 0 || p.legs[i].v4Path.length != 0) revert BadRoute(i);
+                if (_namesRoute(p.legs[i].v3Path, p.legs[i].v4Path, p.legs[i].localRoute)) revert BadRoute(i);
                 // The pass-through leg carries no swap, but its limit is still checked, as for every leg (DA-15).
                 if (got[i] < p.legs[i].minAmountOut) revert InsufficientOutput(got[i], p.legs[i].minAmountOut);
                 continue;
@@ -283,12 +283,12 @@ contract IndexZap is ReentrancyGuard, UniversalRouterSwaps, IIndexZap {
         if (!FACTORY.isIndex(index)) revert NotIndex(index);
         _checkNonce(index, expectedNonce);
         if (to == address(0)) revert ZeroAddress();
-        // Each of these would lose what it is sent: anyone can sweep tokens left in the router, anything sent to the
+        // Each of these would lose what it is sent: anyone can sweep tokens left in either router, anything sent to the
         // pool manager is a donation, and the factory and every index it made can never move a token they receive
         // (RT-21). Every index, not only the one of the call: the builder's rule, which the zap now shares (RB-5).
         if (
-            to == address(this) || to == address(ROUTER) || to == POOL_MANAGER || to == address(FACTORY)
-                || FACTORY.isIndex(to)
+            to == address(this) || to == address(ROUTER) || to == POOL_MANAGER || to == LOCAL_ROUTER
+                || to == address(FACTORY) || FACTORY.isIndex(to)
         ) revert InvalidRecipient(to);
     }
 

@@ -13,6 +13,38 @@
         "internalType": "contract IUniversalRouter"
       },
       {
+        "name": "local",
+        "type": "tuple",
+        "internalType": "struct IUniversalRouterSwaps.LocalVenue",
+        "components": [
+          {
+            "name": "dex",
+            "type": "uint8",
+            "internalType": "enum IUniversalRouterSwaps.LocalDex"
+          },
+          {
+            "name": "router",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "clFactory",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "volatileFactory",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "stableFactory",
+            "type": "address",
+            "internalType": "address"
+          }
+        ]
+      },
+      {
         "name": "usdc",
         "type": "address",
         "internalType": "address"
@@ -27,6 +59,45 @@
   },
   {
     "type": "function",
+    "name": "AERO_CL_FACTORY",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "AERO_STABLE_FACTORY",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "AERO_VOLATILE_FACTORY",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "FACTORY",
     "inputs": [],
     "outputs": [
@@ -34,6 +105,32 @@
         "name": "",
         "type": "address",
         "internalType": "contract IIndexFactory"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "LOCAL_DEX",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "enum IUniversalRouterSwaps.LocalDex"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "LOCAL_ROUTER",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
       }
     ],
     "stateMutability": "view"
@@ -170,6 +267,11 @@
                     "internalType": "bytes"
                   }
                 ]
+              },
+              {
+                "name": "localRoute",
+                "type": "bytes",
+                "internalType": "bytes"
               },
               {
                 "name": "maxAmountIn",
@@ -358,6 +460,11 @@
                     "internalType": "bytes"
                   }
                 ]
+              },
+              {
+                "name": "localRoute",
+                "type": "bytes",
+                "internalType": "bytes"
               },
               {
                 "name": "minAmountOut",
@@ -714,6 +821,11 @@
         "internalType": "uint256"
       }
     ]
+  },
+  {
+    "type": "error",
+    "name": "InvalidLocalVenue",
+    "inputs": []
   },
   {
     "type": "error",

@@ -65,8 +65,8 @@ contract ConfigureWeightedTest is Test {
         assertEq(first.length + wide.length, tokens.length);
         assertEq(
             tokens.length,
-            415,
-            "the list of 2026-10-06 and 2026-10-10's additions, less DOGE, SAND, RLB, BTT, SEI, BNB Chain's six, the five no restock has served and OP, the 335 Ondo stocks and ETFs of 2026-11-19 and ANTon"
+            414,
+            "the list of 2026-10-06 and 2026-10-10's additions, less DOGE, SAND, RLB, BTT, SEI, BNB Chain's six, the five no restock has served, OP and AERO, the 335 Ondo stocks and ETFs of 2026-11-19 and ANTon"
         );
         for (uint256 i = 0; i < tokens.length; ++i) {
             assertEq(i < 4 ? first[i] : wide[i - 4], tokens[i]);
@@ -106,7 +106,7 @@ contract ConfigureWeightedTest is Test {
             ++count[uint256(tier)];
         }
         assertEq(count[uint256(Listings.Tier.Native)], 48, "22 of the wide list and 26 of the hundred-coin list");
-        assertEq(count[uint256(Listings.Tier.Bridged)], 12, "8, ZK and W, and 2 Wormhole copies");
+        assertEq(count[uint256(Listings.Tier.Bridged)], 11, "8, ZK and W, and 1 Wormhole copy, AVAX's");
         assertEq(count[uint256(Listings.Tier.Custodial)], 355, "WBTC, Tether Gold and the 353 Ondo stocks and ETFs");
         assertEq(uint8(Listings.tierOf(MainnetAddresses.WBTC)), uint8(Listings.Tier.Custodial));
         assertEq(uint8(Listings.tierOf(MainnetAddresses.ARB)), uint8(Listings.Tier.Bridged));
@@ -122,9 +122,10 @@ contract ConfigureWeightedTest is Test {
         );
         assertEq(uint8(Listings.tierOf(MainnetAddresses.W)), uint8(Listings.Tier.Bridged), "a mesh peer, home Solana");
         assertEq(uint8(Listings.tierOf(MainnetAddresses.AVAX)), uint8(Listings.Tier.Bridged), "a Wormhole copy");
-        assertEq(uint8(Listings.tierOf(MainnetAddresses.AERO)), uint8(Listings.Tier.Bridged));
         // Wormhole's copy of OP, off since 2026-11-21: the restock found no route to buy it on Optimism
         assertEq(uint8(Listings.tierOf(MainnetAddresses.OP)), uint8(Listings.Tier.Unrecorded), "OP is off the list");
+        // Wormhole's copy of Aerodrome's AERO, off since 2026-11-26: Aero replaced the token it redeems to
+        assertEq(uint8(Listings.tierOf(MainnetAddresses.AERO)), uint8(Listings.Tier.Unrecorded), "AERO is off the list");
         for (uint256 j = 0; j < tokens.length; ++j) {
             assertTrue(tokens[j] != MainnetAddresses.OP, "OP's copy is listed");
         }
@@ -197,7 +198,7 @@ contract ConfigureWeightedTest is Test {
     function test_CRL08_theListsAreTheReleaseRecord() public view {
         address[] memory first = configure.defaultMainnetList();
         address[] memory wide = configure.wideMainnetList();
-        address[415] memory tokens = [
+        address[414] memory tokens = [
             0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2, // WETH
             0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599, // WBTC
             0x514910771AF9Ca656af840dff83E8264EcF986CA, // LINK
@@ -276,7 +277,6 @@ contract ConfigureWeightedTest is Test {
             0xB0fFa8000886e57F86dd5264b9582b2Ad87b2b91, // W
             0x320623b8E4fF03373931769A31Fc52A4E78B5d70, // RSR
             0x85f138bfEE4ef8e540890CFb48F620571d67Eda3, // AVAX
-            0x750525C1877E30304F1E22b1b49b4C9DdE674ddF, // AERO
             0x36B90aDcDC99Be31BF39A3c031288bAa0B457E10, // GOOGon
             0x62cA254a363dc3c748e7E955c20447aB5bF06fF7, // IVVon
             0xFeDC5f4a6c38211c1338aa411018DFAf26612c08, // SPYon
@@ -615,7 +615,7 @@ contract ConfigureWeightedTest is Test {
             0x43a0943893474F246aA58e9921d975aD60Adee59 // ANTon
         ];
         assertEq(first.length, 4);
-        assertEq(wide.length, 411);
+        assertEq(wide.length, 410);
         for (uint256 i = 0; i < tokens.length; ++i) {
             assertEq(i < 4 ? first[i] : wide[i - 4], tokens[i]);
         }
@@ -647,8 +647,8 @@ contract ConfigureWeightedTest is Test {
         address[] memory tokens = BnbChainAddresses.all();
         assertEq(
             list.length,
-            365,
-            "the BNB Chain list of 2026-10-07, less SOL, DOGE, AVAX, FIL and TRX, the 352 Ondo stocks and ETFs of 2026-11-19 and ANTon"
+            366,
+            "the BNB Chain list of 2026-10-07, less SOL, DOGE, AVAX, FIL and TRX, the 352 Ondo stocks and ETFs of 2026-11-19, ANTon and CAKE"
         );
         assertEq(list, tokens);
         uint256[4] memory count;
@@ -662,7 +662,7 @@ contract ConfigureWeightedTest is Test {
             ++count[uint256(tier)];
         }
         assertEq(list[0], BnbChainAddresses.WBNB);
-        assertEq(count[uint256(Listings.Tier.Native)], 2, "WBNB and ASTER");
+        assertEq(count[uint256(Listings.Tier.Native)], 3, "WBNB, ASTER and CAKE");
         assertEq(count[uint256(Listings.Tier.Bridged)], 1, "STABLE");
         assertEq(
             count[uint256(Listings.Tier.Custodial)],
@@ -689,7 +689,7 @@ contract ConfigureWeightedTest is Test {
     /// @dev CR-L08 for BNB Chain: the list is the release record, pinned against this table, written out by hand.
     function test_CRL08_theBnbListIsTheReleaseRecord() public view {
         address[] memory list = configure.bnbList();
-        address[365] memory tokens = [
+        address[366] memory tokens = [
             0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c, // WBNB
             0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c, // BTCB
             0x2170Ed0880ac9A755fd29B2688956BD959F933F8, // ETH
@@ -702,6 +702,7 @@ contract ConfigureWeightedTest is Test {
             0x0Eb3a705fc54725037CC9e008bDede697f62F335, // ATOM
             0x000Ae314E2A2172a039B26378814C252734f556A, // ASTER
             0x011EBe7d75E2C9D1E0bD0be0bEf5C36f0A90075F, // STABLE
+            0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82, // CAKE
             0x390a684EF9cADE28A7AD0DFa61AB1Eb3842618c4, // AAPLon
             0x6Bfe75D1ad432050eA973C3A3DcD88F02e2444C3, // MSFTon
             0xA9eE28C80f960B889dFbd1902055218cBa016F75, // NVDAon
@@ -1459,7 +1460,7 @@ contract ConfigureWeightedTest is Test {
         address[] memory list = configure.baseList();
         address[32] memory tokens = [
             0x4200000000000000000000000000000000000006, // WETH
-            0x940181a94A35A4569E4529A3CDfB74e38FD98631, // AERO
+            0x3f5bF3EdAc59d650D8fDf9657a71F2f904A3a4Ee, // AERO, Aero's since 2026-11-26
             0x6985884C4392D348587B19cb9eAAf157F13271cd, // ZRO
             0xc3De830EA07524a0761646a6a4e4be0e114a3C83, // UNI
             0x63706e401c06ac8513145b7687A14804d17f814b, // AAVE

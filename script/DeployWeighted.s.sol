@@ -10,6 +10,7 @@ import {BasketBuilder} from "../src/BasketBuilder.sol";
 import {MintRequests} from "../src/MintRequests.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
+import {IUniversalRouterSwaps} from "../src/interfaces/IUniversalRouterSwaps.sol";
 import {IPythPrices} from "../src/interfaces/IPythPrices.sol";
 import {DeployChecks} from "./DeployChecks.sol";
 
@@ -50,9 +51,9 @@ contract DeployWeighted is DeployChecks {
     ///         test/Scripts.t.sol fails until these equal the build, so only a reviewed, CI-green commit moves them.
     bytes32 public constant FACTORY_INITCODE_HASH = 0x500cc51cd523baa0a4bd352ef20c698532438693b309f957f4cee4255f9bcdd1;
     /// @notice keccak256 of `IndexZap`'s init code, as above.
-    bytes32 public constant ZAP_INITCODE_HASH = 0xc3ee5028c643112bfdd217d4908b40f69df3b5feadc1bd9a5e17dddad08da770;
+    bytes32 public constant ZAP_INITCODE_HASH = 0x6d07e0ce44108c62a6135fb3b08d1dc50694b92575e74303146d021a43f47966;
     /// @notice keccak256 of `BasketBuilder`'s init code, as above.
-    bytes32 public constant BUILDER_INITCODE_HASH = 0x765ff137667f291ff1ba82d2fd82d15ced38faaa7dbe192bc830ace97b2d7f92;
+    bytes32 public constant BUILDER_INITCODE_HASH = 0x33f9a6bf792f320275cdd0a4ab2b018aa0d4e11545b3e6b8e2b547ec32d5ff2d;
     /// @notice keccak256 of `WeightedMath`'s init code, as above: deployed on its own since 2026-11-23, before the
     ///         factory, which the factory's init code no longer has room to embed (EIP-3860).
     bytes32 public constant MATH_INITCODE_HASH = 0x549b47e8001ddecbf0c40c630a2d2f39439601a439ea0564efdcbc9b87f9a911;
@@ -119,8 +120,10 @@ contract DeployWeighted is DeployChecks {
         // The math first: the factory takes it for the implementation it deploys.
         factory = new WeightedIndexFactory(owner, guardian, pyth, address(new WeightedMath()));
         // The zap types its factory as `IIndexFactory`, and calls only `isIndex` on it, which this factory answers.
-        zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(router), usdc, usdt);
-        builder = new BasketBuilder(IIndexFactory(address(factory)), IUniversalRouter(router), usdc, usdt);
+        zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(router), resolveLocalVenue(), usdc, usdt);
+        builder = new BasketBuilder(
+            IIndexFactory(address(factory)), IUniversalRouter(router), resolveLocalVenue(), usdc, usdt
+        );
         requests = new MintRequests(address(factory), usdc, usdt);
         vm.stopBroadcast();
 
@@ -133,6 +136,7 @@ contract DeployWeighted is DeployChecks {
         console2.log("Guardian:                ", guardian);
         console2.log("Universal Router:        ", router);
         console2.log("PoolManager:             ", zap.POOL_MANAGER());
+        console2.log("Chain's own DEX router:  ", zap.LOCAL_ROUTER());
         console2.log("MintRequests:            ", address(requests));
         console2.log("USDC:                    ", usdc);
         console2.log("USDT:                    ", usdt);
@@ -172,6 +176,7 @@ contract DeployWeighted is DeployChecks {
         if (address(builder.ROUTER()) != address(zap.ROUTER())) {
             revert WrongWiring("BasketBuilder.ROUTER", address(zap.ROUTER()), address(builder.ROUTER()));
         }
+        _checkLocalVenue(zap, builder);
         address requestsFactory = requests.FACTORY();
         if (requestsFactory != address(factory)) {
             revert WrongWiring("MintRequests.FACTORY", address(factory), requestsFactory);
@@ -196,6 +201,33 @@ contract DeployWeighted is DeployChecks {
             address(requests).codehash,
             implementation.MATH().codehash
         ];
+    }
+
+    /// @dev Reverts WrongWiring unless the zap and the builder name the same DEX beside Uniswap, and on a pinned chain
+    ///      the one its address book names (the owner's call of 2026-11-26). The addresses alone are compared: the
+    ///      engine's constructor ties each DEX to the addresses it uses, so the same addresses are the same DEX.
+    function _checkLocalVenue(IndexZap zap, BasketBuilder builder) private view {
+        address[DEX_ADDRESSES] memory zaps =
+            [zap.LOCAL_ROUTER(), zap.AERO_CL_FACTORY(), zap.AERO_VOLATILE_FACTORY(), zap.AERO_STABLE_FACTORY()];
+        address[DEX_ADDRESSES] memory builders = [
+            builder.LOCAL_ROUTER(),
+            builder.AERO_CL_FACTORY(),
+            builder.AERO_VOLATILE_FACTORY(),
+            builder.AERO_STABLE_FACTORY()
+        ];
+        IUniversalRouterSwaps.LocalVenue memory pinned = pinnedLocalVenue();
+        address[DEX_ADDRESSES] memory book =
+            [pinned.router, pinned.clFactory, pinned.volatileFactory, pinned.stableFactory];
+        string[DEX_ADDRESSES] memory names =
+            ["LOCAL_ROUTER", "AERO_CL_FACTORY", "AERO_VOLATILE_FACTORY", "AERO_STABLE_FACTORY"];
+        for (uint256 i = 0; i < DEX_ADDRESSES; ++i) {
+            if (builders[i] != zaps[i]) {
+                revert WrongWiring(string.concat("BasketBuilder.", names[i]), zaps[i], builders[i]);
+            }
+            if (isPinnedChain() && zaps[i] != book[i]) {
+                revert WrongWiring(string.concat("IndexZap.", names[i]), book[i], zaps[i]);
+            }
+        }
     }
 
     /// @dev Reverts WrongWiring unless `name`'s stablecoins are MintRequests'.

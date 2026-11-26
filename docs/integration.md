@@ -270,12 +270,22 @@ escrow as it was taken: the stablecoin of a mint request, the shares of a redeem
   days is the check on the token itself.
 - **Zap calls take a params struct.** `MintParams {index, expectedNonce, tokenIn, maxAmountIn, shares, legs, to,
   deadline, referrer}`
-  with `MintLeg {v3Path, v4Path, maxAmountIn}`, and `BurnParams {index, expectedNonce, shares, tokenOut,
-  minAmountOut, legs, to, deadline}` with `BurnLeg {v3Path, v4Path, minAmountOut}`. `legs` has one entry per component,
+  with `MintLeg {v3Path, v4Path, localRoute, maxAmountIn}`, and `BurnParams {index, expectedNonce, shares, tokenOut,
+  minAmountOut, legs, to, deadline}` with `BurnLeg {v3Path, v4Path, localRoute, minAmountOut}`. `legs` has one entry per component,
   in component order. `expectedNonce` is `rebalanceNonce()` when the legs were quoted; after a rebalance, re-quote.
-- **One venue per leg.** A leg carries exactly one of a packed `v3Path` (Uniswap V3) and a `v4Path` (Uniswap V4). Both
-  empty means "no swap", which is only valid for the pass-through leg, the one whose component already is the stable on
-  a mint or `tokenOut` on a burn. Anything else is `BadRoute(i)`. There are no mixed-venue legs.
+- **One venue per leg.** A leg carries exactly one of a packed `v3Path` (Uniswap V3), a `v4Path` (Uniswap V4) and a
+  `localRoute` (the chain's own DEX: PancakeSwap on BNB Chain, Aero on Base, none on Ethereum; read `LOCAL_DEX()`).
+  All empty means "no swap", which is only valid for the pass-through leg, the one whose component already is the
+  stable on a mint or `tokenOut` on a burn. Anything else is `BadRoute(i)`. There are no mixed-venue legs. Quote each
+  venue and name the one that pays more: on Base Uniswap is the deeper for WETH and cbBTC, Aero for most other coins;
+  on BNB Chain PancakeSwap for nearly all (`design/2026-11-26-chain-venues.md`).
+- **Local routes.** One byte naming the pool family, `0` for concentrated liquidity (PancakeSwap V3, Aero CL) and `1`
+  for constant-function pools (PancakeSwap V2, Aero's basic pools), then a path of the V3 shape below, in the same
+  direction as a `v3Path`. The three bytes between tokens are PancakeSwap's fee tier (100, 500, 2,500 or 10,000), Aero's
+  tick spacing, zero for a PancakeSwap V2 pair, and `0` or `1` for Aero's volatile or stable basic pool. A route names
+  tokens, never pools: PancakeSwap's router computes its pools, and the zap looks Aero's up in the factories its
+  deployment pins (`AERO_CL_FACTORY`, `AERO_VOLATILE_FACTORY`, `AERO_STABLE_FACTORY`); a pair without such a pool
+  reverts the swap. Example on Base, buying cbETH with USDC through WETH: `0x00 | cbETH | 1 | WETH | 50 | USDC`.
 - **V3 routes.** Packed paths: `token(20) | fee(3) | token(20) [| fee(3) | token(20)]`. For **mint** the path is
   exact-output encoded, starting with the component and ending with the stable (e.g. `WBTC 500 WETH 500 USDC`). For
   **burn** it is exact-input encoded, starting with the component and ending with `tokenOut`.

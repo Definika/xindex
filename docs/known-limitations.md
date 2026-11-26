@@ -199,5 +199,12 @@ What the contracts do not protect against, and what an app built on them has to 
   the zap's practical limit. The in-kind path is what fits at 100.
 - The zap is pinned to **Universal Router 2.0.0** rather than the 2.1.x line, whose command inputs carry an extra
   per-hop price array. Moving to a newer router means a new zap; the hub and factory do not depend on it.
+- **The chain's own DEX adds its operators** (since 2026-11-26). On BNB Chain PancakeSwap's Safe, 3 of 7, can pause its
+  Infinity Universal Router, and its V3 factory's owner sets the farm contracts (`LMPool`) its pools call on every
+  swap; on Base Aero's Safe, 3 signatures, sets its pools' dynamic-fee and MEV-tax modules and can pause its basic
+  pools, and an Aero trade whose priority fee passes a threshold pays an MEV tax. Each can make that venue's legs
+  revert or cost more, within the limits the caller set; none can take a leg's pre-fund, which the router returns in
+  the same call. A leg can always name Uniswap instead. The zap and the builder pin each router by address, and the
+  fork suites pin their code.
 - Bytecode targets the Cancun EVM (`evm_version = "cancun"`), which Ethereum runs. Re-check before deploying to any
   other chain.

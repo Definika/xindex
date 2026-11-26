@@ -75,7 +75,7 @@ test("a local coin, which only UniswapX sells, needs Uniswap's API key and no ho
   // Unset RESTOCK_COINS: the default coins, and with the key every local coin besides.
   const { RESTOCK_COINS, ...unset } = VALID;
   const defaults = { ...unset, AVALANCHE_RPC_URL: "https://avax.example", BASE_RPC_URL: "https://base.example" };
-  assert.deepEqual(parseRestockConfig(defaults).coins.map((c) => c.symbol), ["AVAX", "AERO"]);
+  assert.deepEqual(parseRestockConfig(defaults).coins.map((c) => c.symbol), ["AVAX"]);
   const withKey = parseRestockConfig({ ...defaults, UNISWAP_API_KEY: "ux-key", UNISWAP_API_URL: "https://ux.example/v1/" });
   assert.equal(withKey.coins.filter((c) => c.local).length, 9);
   assert.equal(withKey.uniswapx.url, "https://ux.example/v1", "its trailing slash dropped");

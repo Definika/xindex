@@ -7,6 +7,7 @@ import {DeployWeighted} from "../script/DeployWeighted.s.sol";
 import {MainnetAddresses} from "../script/MainnetAddresses.sol";
 import {BnbChainAddresses} from "../script/BnbChainAddresses.sol";
 import {BaseAddresses} from "../script/BaseAddresses.sol";
+import {IUniversalRouterSwaps} from "../src/interfaces/IUniversalRouterSwaps.sol";
 
 /// @notice Which chains the deployment checks pin to an address book, and how they tell the two apart. The rest of
 ///         `DeployChecks` is tested in `test/Scripts.t.sol`.
@@ -149,14 +150,15 @@ contract DeployChecksTest is Test {
         );
         checks.resolveRouter(BnbChainAddresses.UNIVERSAL_ROUTER);
 
-        // The roles are checked against Base's market there: the router, its PoolManager, the book's tokens, the two
-        // mint currencies and Pyth.
+        // The roles are checked against Base's market there: the router, its PoolManager, Aero's router and its three
+        // factories, the book's tokens, the two mint currencies and Pyth.
         vm.mockCall(
             BaseAddresses.UNIVERSAL_ROUTER, abi.encodeWithSignature("poolManager()"), abi.encode(address(0xbeef))
         );
         address[] memory market = checks.marketContracts(BaseAddresses.UNIVERSAL_ROUTER);
-        assertEq(market.length, 2 + BaseAddresses.COUNT + 3);
-        assertEq(market[2], BaseAddresses.WETH);
+        assertEq(market.length, 6 + BaseAddresses.COUNT + 3);
+        assertEq(market[2], BaseAddresses.AERO_METAROUTER);
+        assertEq(market[6], BaseAddresses.WETH);
         assertEq(market[market.length - 3], BaseAddresses.USDC);
         assertEq(market[market.length - 2], BaseAddresses.USDT);
         assertEq(market[market.length - 1], BaseAddresses.PYTH);
@@ -190,5 +192,51 @@ contract DeployChecksTest is Test {
         assertEq(usdc, BnbChainAddresses.USDC);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.AddressHasNoCode.selector, "USDC", usdc));
         checks.resolveStable("USDC", address(0), usdc);
+    }
+
+    /// @dev Each chain's own DEX beside Uniswap comes from its address book alone: none off the pinned chains and on
+    ///      Ethereum, PancakeSwap's router on BNB Chain, Aero's Metarouter and three factories on Base; and every
+    ///      address it names must have code (the owner's call of 2026-11-26).
+    function test_eachPinnedChainNamesItsOwnDex() public {
+        IUniversalRouterSwaps.LocalVenue memory venue = checks.pinnedLocalVenue();
+        assertEq(uint8(venue.dex), uint8(IUniversalRouterSwaps.LocalDex.None));
+        assertEq(venue.router, address(0));
+        assertEq(checks.resolveLocalVenue().router, address(0), "nothing to have code");
+        vm.chainId(1);
+        assertEq(uint8(checks.pinnedLocalVenue().dex), uint8(IUniversalRouterSwaps.LocalDex.None));
+
+        vm.chainId(BnbChainAddresses.CHAIN_ID);
+        venue = checks.pinnedLocalVenue();
+        assertEq(uint8(venue.dex), uint8(IUniversalRouterSwaps.LocalDex.PancakeSwap));
+        assertEq(venue.router, BnbChainAddresses.PANCAKE_UNIVERSAL_ROUTER);
+        assertEq(venue.clFactory, address(0));
+        assertEq(venue.stableFactory, address(0));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                DeployChecks.AddressHasNoCode.selector, "LOCAL_VENUE", BnbChainAddresses.PANCAKE_UNIVERSAL_ROUTER
+            )
+        );
+        checks.resolveLocalVenue();
+        vm.etch(BnbChainAddresses.PANCAKE_UNIVERSAL_ROUTER, hex"00");
+        assertEq(checks.resolveLocalVenue().router, BnbChainAddresses.PANCAKE_UNIVERSAL_ROUTER);
+
+        vm.chainId(BaseAddresses.CHAIN_ID);
+        venue = checks.pinnedLocalVenue();
+        assertEq(uint8(venue.dex), uint8(IUniversalRouterSwaps.LocalDex.Aero));
+        assertEq(venue.router, BaseAddresses.AERO_METAROUTER);
+        assertEq(venue.clFactory, BaseAddresses.AERO_CL_FACTORY);
+        assertEq(venue.volatileFactory, BaseAddresses.AERO_VOLATILE_FACTORY);
+        assertEq(venue.stableFactory, BaseAddresses.AERO_STABLE_FACTORY);
+        vm.etch(BaseAddresses.AERO_METAROUTER, hex"00");
+        vm.etch(BaseAddresses.AERO_CL_FACTORY, hex"00");
+        vm.etch(BaseAddresses.AERO_VOLATILE_FACTORY, hex"00");
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                DeployChecks.AddressHasNoCode.selector, "LOCAL_VENUE", BaseAddresses.AERO_STABLE_FACTORY
+            )
+        );
+        checks.resolveLocalVenue();
+        vm.etch(BaseAddresses.AERO_STABLE_FACTORY, hex"00");
+        assertEq(checks.resolveLocalVenue().stableFactory, BaseAddresses.AERO_STABLE_FACTORY);
     }
 }

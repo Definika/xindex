@@ -23,6 +23,7 @@ import {MainnetAddresses as M} from "../../script/MainnetAddresses.sol";
 import {ISwapRouter02} from "../mocks/ISwapRouter02.sol";
 import {ForkAddresses as A} from "./ForkAddresses.sol";
 import {WeightedExecutorV3} from "./WeightedExecutorV3.sol";
+import {LocalVenues} from "../LocalVenues.sol";
 
 interface IQuoterV2Weighted {
     function quoteExactInput(bytes memory path, uint256 amountIn)
@@ -110,7 +111,9 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
 
         factory = new WeightedIndexFactory(address(this), guardian, address(0), address(new WeightedMath()));
         factory.setApprovedCreator(creator, true);
-        zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER), A.USDC, A.USDT);
+        zap = new IndexZap(
+            IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER), LocalVenues.none(), A.USDC, A.USDT
+        );
 
         address[] memory tokens = Listings.all();
         for (uint256 i = 0; i < tokens.length; ++i) {
@@ -549,7 +552,9 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         // Alice mints two tokens, 2 * VALUE dollars at the pools, with USDC.
         IUniversalRouterSwaps.MintLeg[] memory legs = new IUniversalRouterSwaps.MintLeg[](picked.length);
         for (uint256 i = 0; i < picked.length; ++i) {
-            legs[i] = IUniversalRouterSwaps.MintLeg({v3Path: picked[i].route, v4Path: new PathKey[](0), maxAmountIn: 0});
+            legs[i] = IUniversalRouterSwaps.MintLeg({
+                localRoute: "", v3Path: picked[i].route, v4Path: new PathKey[](0), maxAmountIn: 0
+            });
         }
         deal(A.USDC, alice, 3 * VALUE * 1e6);
         vm.startPrank(alice);
@@ -591,8 +596,9 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         // Alice burns both tokens to USDC.
         IUniversalRouterSwaps.BurnLeg[] memory burnLegs = new IUniversalRouterSwaps.BurnLeg[](picked.length);
         for (uint256 i = 0; i < picked.length; ++i) {
-            burnLegs[i] =
-                IUniversalRouterSwaps.BurnLeg({v3Path: picked[i].route, v4Path: new PathKey[](0), minAmountOut: 0});
+            burnLegs[i] = IUniversalRouterSwaps.BurnLeg({
+                localRoute: "", v3Path: picked[i].route, v4Path: new PathKey[](0), minAmountOut: 0
+            });
         }
         vm.startPrank(alice);
         index.approve(address(zap), 2e18);

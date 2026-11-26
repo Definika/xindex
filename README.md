@@ -28,7 +28,8 @@ Pyth's prices, a check that can only refuse a fill ([`design/2026-11-22-pyth-che
   pays the components out. No oracle sits on either path, so nothing can block an exit. `redeemSkipping` exits around a
   frozen component, which can be claimed later.
 - **Trade with stablecoins.** `IndexZap` mints with USDC or USDT and burns to USDC or USDT in one transaction,
-  through Uniswap's Universal Router (V3 and V4 pools); a USDC permit spares the approval, so the mint is one
+  through Uniswap's Universal Router (V3 and V4 pools) and, leg by leg, the chain's own DEX (PancakeSwap on BNB
+  Chain, Aero on Base, since 2026-11-26); a USDC permit spares the approval, so the mint is one
   transaction, signed after the permit itself. The two stablecoins are the only currencies, on each chain its own
   (the owner's call of 2026-11-18): no mint, burn, buy or sale takes ether. The one place ether enters is the
   factory's creation fee, zero today, which an approved creator pays with `createIndex`.

@@ -62,14 +62,15 @@ test("every home chain is an EVM chain that runs CCTP, and every coin's chain is
 });
 
 test("a subset of the coins is chosen by symbol, and an unknown symbol is refused", () => {
-  assert.deepEqual(coinsOf(null).map((c) => c.symbol), ["AVAX", "AERO"], "the served coins by default");
+  assert.deepEqual(coinsOf(null).map((c) => c.symbol), ["AVAX"], "the served coins by default");
   assert.deepEqual(
     coinsOf(null, { uniswapx: true }).map((c) => c.symbol),
-    ["AVAX", "AERO", ...LOCAL_COINS.map((c) => c.symbol)],
+    ["AVAX", ...LOCAL_COINS.map((c) => c.symbol)],
     "and every local coin with a UniswapX key",
   );
   assert.deepEqual(coinsOf(["NVDAON", "AVAX"]).map((c) => c.symbol), ["AVAX", "NVDAON"], "a local coin named, with or without the key");
   assert.deepEqual(coinsOf(["OP"]).map((c) => c.symbol), ["OP"], "OP, off the list since 2026-11-21, only when named");
+  assert.deepEqual(coinsOf(["AERO"]).map((c) => c.symbol), ["AERO"], "AERO, off the list since 2026-11-26, only when named");
   assert.ok(coinsOf(null).every((c) => CHAINS[c.chain].platform === "evm"), "each with its chain's adapter built");
   assert.deepEqual(coinsOf(["AERO", "OP"]).map((c) => c.symbol), ["OP", "AERO"], "in the table's order");
   assert.throws(() => coinsOf(["AERO", "XRP"]), /unknown restock coins: XRP/, "a coin that left the table");

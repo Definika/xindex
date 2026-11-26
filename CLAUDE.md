@@ -24,8 +24,9 @@ lives in a separate repo.
 factory or whatever is neccesery so on both sides we will have in kind tokens",
 `design/2026-11-13-bnb-chain-deployment.md`). They share nothing: the same contracts, each under its own owner Safe
 and guardian's Safe, each holding its own chain's tokens in kind. An index lives on one chain, and none spans both. The
-BNB Chain side is built as scripts and tests, with no contract changed: `script/BnbChainAddresses.sol` (twelve coins,
-nine of them Binance-Peg, labelled Custodial, and Ondo's 353 stocks and ETFs since 2026-11-25), `V5_WHITELIST=bnb`, `CHECK=bnb` and
+BNB Chain side is built as scripts and tests, with no contract changed: `script/BnbChainAddresses.sol` (thirteen coins
+since CAKE joined on 2026-11-27, nine of them Binance-Peg, labelled Custodial, and Ondo's 353 stocks and ETFs since
+2026-11-25), `V5_WHITELIST=bnb`, `CHECK=bnb` and
 `test/fork/BnbChainAddresses.fork.t.sol`. The call reverses the owner's refusal of 2026-11-10 ("I want to stay on
 Ethereum") and, in part, the one-index decision below, which still describes the Ethereum deployment as it stands. On
 the same day the owner named which Wormhole copies leave Ethereum's list: the six wrapped from BNB Chain (XRP, ADA,
@@ -46,13 +47,14 @@ of 2026-10-10, `design/2026-10-10-one-index-wormhole-legs.md`). `WeightedIndexFa
 `MintRequests` hold Ethereum ERC-20s in kind: the issuer's own contract where Ethereum has one (71 candidates of the
 top 300 today), and otherwise a copy wrapped by Wormhole's token bridge from the chain that has it (17 from BNB Chain,
 nine of them Binance-Peg; 31 from Solana, Sui, Aptos, Base and the other chains Wormhole serves), labelled Bridged,
-Custodial as well when the source is Binance-Peg. The list stands at 415
+Custodial as well when the source is Binance-Peg. The list stands at 414
 (`script/Listings.sol`): 353 of them Ondo's tokenized US stocks and ETFs, every one Pyth has a feed for, since 2026-11-22
 (Anthropic's ANTon the 353rd, on 2026-11-25)
 (the owner's call: "delete everything releated to xtokcs and leave only ondo", which removed the 109 wrapped xStocks
-listed on 2026-11-21, `design/2026-11-22-ondo-stocks-and-etfs.md`), and of the 62 coins three Wormhole copies
-(SOL, AVAX and AERO) since OP's copy left on 2026-11-21 (the owner's call, "remove op for now": the restock found no
-route to buy OP on Optimism that day), the copies of JUP, PYTH, SUI, APT
+listed on 2026-11-21, `design/2026-11-22-ondo-stocks-and-etfs.md`), and of the 61 coins two Wormhole copies
+(SOL and AVAX) since AERO's copy left on 2026-11-26 (the owner's call, "კი, ამოიღე": it is a copy of Aerodrome's
+AERO, which Aero replaced with a token of its own) and OP's on 2026-11-21 (the owner's call, "remove op for now": the
+restock found no route to buy OP on Optimism that day), the copies of JUP, PYTH, SUI, APT
 and ALGO left on 2026-11-18 (the owner's call: no Ethereum pool trades them, and the restock that would bridge their
 stock in from Solana, Sui, Aptos or Algorand has never run, `design/2026-11-18-bridged-coins-in-a-rebalance.md`), and
 the six wrapped from BNB Chain on 2026-11-13 (the owner's call: BNB Chain's deployment holds those coins in kind, so no
@@ -843,6 +845,57 @@ built on it and found in it.
     multiplier stays after the action, so fifteen of Ethereum's listed Ondo legs are valued off by a factor of 2 to
     10 (NFLXon at a tenth) and more by a dividend's few percent. Creation's 5% check refuses such a leg on its true
     weight; no exit reads a price. The fix is the owner's to choose.
+- **Each chain's own DEX beside Uniswap** (2026-11-26, the owner's call, under "Product decisions";
+  `design/2026-11-26-chain-venues.md`). The zap and the builder swap through Uniswap's Universal Router and, on BNB
+  Chain and Base, through that chain's DEX, a leg naming one venue:
+  - The engine (`src/UniversalRouterSwaps.sol`) takes a `LocalVenue` at construction, `LocalDex.None`, `PancakeSwap`
+    or `Aero` with the addresses each uses and no other (`InvalidLocalVenue`), and a leg gets `bytes localRoute`. A
+    PancakeSwap leg runs on its Infinity Universal Router, whose V3 and SWEEP commands are Uniswap's and whose V2
+    commands are declared beside them (`UniversalRouterCommands`); an Aero leg runs on the Metarouter
+    (`IAeroMetarouter`, `AeroCommands`), its pools looked up in Aero's factories (`IAeroCLFactory`,
+    `IAeroPoolFactory`) forward from what is paid. A sale goes one hop at a time on every venue; each pre-fund,
+    sweep, measurement and `SharedBalance` rule holds as on Uniswap. The chain's DEX router is no valid recipient.
+  - Read first, the owner's ask: both routers' deployed source, verified on Sourcify as exact matches (PancakeSwap's
+    repository head differs from its deployment in four of the files read), Aero's deployment records and both
+    DEXes' documentation. PancakeSwap's router takes ether only from WETH and its vault and refunds none, so SV-1's
+    denial of service does not return; Aero's returns a batch's ether to the caller and checks every pool against
+    its factory registry.
+  - `DeployWeighted` takes the chain's DEX from its book (`BnbChainAddresses.PANCAKE_UNIVERSAL_ROUTER`,
+    `BaseAddresses.AERO_METAROUTER` and Aero's three factories), never from the environment; the deploy checks hold
+    those addresses as market contracts no role may be, and `checkDeployment` compares them. The zap's and the
+    builder's release hashes moved; the factory's, the math's and `MintRequests`' did not, the new error living in
+    `IUniversalRouterSwaps`. Both ABIs moved: every encoder of a leg, the app's, follows.
+  - Tests: `test/UniversalRouterSwaps.venues.t.sol` (both DEXes, both families, the zap and the builder),
+    `MockMetarouter` and PancakeSwap's V2 commands in `MockUniversalRouter`, the deploy checks' per-chain DEX, and on
+    real pools `testFork_theZapMintsAndBurnsThroughPancakeSwap` (BNB Chain, V2 and V3) and
+    `testFork_theZapMintsAndBurnsThroughAero` (Base, CL along one and two hops and a volatile basic pool), with each
+    router's and factory's code hash pinned. Mutants LV1 to LV24.
+  - Gates: 651 tests without an RPC, coverage 100% on all 61 files, fmt, build and lint clean, Aderyn and Wake
+    silent (Wake had flagged a router call through an address computed at the call; each router is now called
+    through its immutable); mutants LV1 to LV24 and the 31 older ones on the files this change touched all killed,
+    every one of the 354 applying (RB5 follows its rewritten line); the keeper's 93 contract tests and 258 unit
+    tests. On the real routers near each chain's head on 2026-11-26: the PancakeSwap round trip on BNB Chain and the
+    Aero round trip on Base, both passing, with the routers' code pins.
+  - Base's AERO is Aero's token since the same day (the owner's call), read from its verified source: no owner,
+    pause, blocklist or proxy. BNB Chain's suite near its head that day: 20 of 20, both PancakeSwap tests, every
+    Ondo token's check and the whole-list index among them. Base's suites on it near the head (block 62,653,143): `BaseAddresses.fork` 14 of 16,
+    the token check, both zap round trips and the whole-list index among the passing, the two Pyth tests written
+    against the pin's batch failing at the head as before; `BaseStocks.fork` 2 of 2. Ethereum's near its head (block
+    26,501,376): `MainnetAddresses.fork` 9 of 9, `Security.fork` 11 of 11, `IndexZap.fork` 11 of 12, its $100 sanity
+    floor missed at the head's prices as before (the basket at $86.89).
+  - Ethereum's Wormhole copy of Aerodrome's AERO left the list the same day (the owner's call, "კი, ამოიღე"): 414
+    coins, the copy's address kept in `MainnetAddresses` for a relisting, its feed out of `PriceFeeds`, its entry out
+    of the keeper's catalogue, and the restock serving AVAX alone by default, AERO's row kept for `RESTOCK_COINS`.
+  - CAKE joined BNB Chain's list on 2026-11-27 (the owner's call, under "Product decisions"): PancakeSwap's own
+    token, `Native`, 366 in all. Ethereum's CAKE has about $700 on Uniswap; BNB Chain's has about $4M on
+    PancakeSwap's V3 pool against USDT. `BnbChainAddresses.COINS` (13) is where the Ondo tokens start, and the fork
+    suite reads it. `testFork_cakeTradesThroughPancakeSwap` mints and burns an index of WBNB and CAKE through
+    PancakeSwap alone. BNB Chain's suite near its head (block 135,920,666): 21 of 21.
+    On it: 651 tests without an RPC, coverage 100% on all 61 files, the keeper's 258 unit tests, and near Ethereum's
+    head (block 26,501,620) `MainnetAddresses.fork` 9 of 9, the 410 of the wide list listed on a fresh factory, and
+    `Security.fork` 11 of 11. `CheckToken.fork` outran the public node's window and needs an archive node.
+  - Not done: the keeper, whose executor still buys through Uniswap's SwapRouter02 alone; the app, which encodes
+    `localRoute`, quotes each venue and shows which one a leg uses.
 - Before any mainnet: a Hermes plan, which every fill under Pyth's check now needs, and every creation; a run of the
   fork suites; an external audit (the red team of the oracle-free mechanism ran on 2026-11-14; Pyth's check has had
   none), then `DeployWeighted`'s release hashes fixed at the audited commit (CF-5); the 26 attestations and RAY's
@@ -921,8 +974,8 @@ Deployment, once on each chain, Ethereum, BNB Chain and Base: `script/DeployWeig
 to that chain's guardian's Safe,
 then `script/ConfigureWeighted.s.sol`, which lists each coin of `script/Listings.sol`; the owner then approves the
 wallets that create indexes (`setApprovedCreator`), and nobody can create one before. `script/CheckToken.s.sol` reports on every token before its first
-listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` the rest, 415 in all, on Ethereum;
-`V5_WHITELIST=bnb` is BNB Chain's 365 and `V5_WHITELIST=base` Base's thirty-two. On chains 1, 56 and 8453 the deploy script resolves the router and the
+listing; `V5_WHITELIST=default` is the first four coins and `V5_WHITELIST=wide` the rest, 414 in all, on Ethereum;
+`V5_WHITELIST=bnb` is BNB Chain's 366 and `V5_WHITELIST=base` Base's thirty-two. On chains 1, 56 and 8453 the deploy script resolves the router and the
 stablecoins from that chain's address book and refuses any other address
 (`DeployChecks.isPinnedChain`). Sepolia first needs its test market from
 `script/testnet/SetupTestMarket.s.sol`.
@@ -1478,9 +1531,23 @@ red teams of 2026-10-31 (`audit/poc/`, which their records cite) and the source 
     index does (A7-22), and the rule stays for an index that would.
   - **Permits.** `mintWithTokenPermit` and `burnToTokenWithPermit` try an EIP-2612 permit for the whole amount
     pulled and accept one already submitted; USDT has none. Fiat and other-chain entry stay app-side and undecided.
-  - **Venue.** It swaps through Uniswap's Universal Router, pinned to the 2.0.0 deployment, and nothing else (the
-    owner's call on 2026-10-14). Each leg names exactly one venue: a packed `v3Path` or a hookless `PathKey[] v4Path`,
-    never both and never neither, else `BadRoute(i)`; the pass-through leg names none.
+  - **Venue.** It swaps through Uniswap's Universal Router, pinned to the 2.0.0 deployment, and through the chain's
+    own DEX, which the deployment fixes (`LOCAL_DEX`, the owner's call of 2026-11-26,
+    `design/2026-11-26-chain-venues.md`): PancakeSwap's Infinity Universal Router on BNB Chain (its V3 and V2 pools),
+    Aero's Metarouter on Base (its CL and basic pools, found in the three factories the deployment pins), none on
+    Ethereum. Each leg names exactly one venue: a packed `v3Path`, a hookless `PathKey[] v4Path`, or a `localRoute`
+    (a family byte, `0` concentrated or `1` constant-function, then a path of V3's shape whose three bytes are the
+    DEX's fee tier, tick spacing, or zero and one for PancakeSwap's pair and Aero's volatile or stable pool), never two
+    and never none, else `BadRoute(i)`; the pass-through leg names none. A local route names tokens, never pools: no
+    caller can point the engine at a pool that is not the DEX's. Every rule below holds for every venue: the
+    Metarouter, like a Universal Router, spends its own balance when the payer is not the user and returns it in
+    the same call. `DeployWeighted` takes the chain's DEX from its address book alone (`pinnedLocalVenue`), and
+    `checkDeployment` refuses a zap and a builder that name different ones, or, on a pinned chain, not the book's.
+    What it costs, said to the owner: PancakeSwap's Safe can pause its router and its V3 factory's owner sets the
+    farm contracts its pools call; Aero's Safe sets its pools' fee and MEV-tax modules and can pause its basic pools.
+    Each can make that venue's legs revert or cost more, within the caller's limits; none can take a pre-funded leg.
+    Not used: PancakeSwap's Infinity pools and Uniswap V4's hooked pools (hooks), PancakeSwap's StableSwap, and the
+    old Aerodrome router, which reaches only pools being emptied since Aero's launch of 2026-10-21.
   - **Commands.** The zap builds every command and every action itself and forwards nothing a caller supplied. The
     router's command set includes `TRANSFER` and `PERMIT2_TRANSFER_FROM`, which move a payer's funds, so passing
     calldata through would hand a caller the router's permissions.
@@ -1832,7 +1899,8 @@ today"): the six Wormhole copies wrapped from BNB Chain (XRP, ADA, LTC, DOT, ATO
 those coins are held on BNB Chain in kind; the nine copies from other chains stay on Ethereum, since neither chain has
 an in-kind home for them (asked whether all fifteen should go, the owner kept them). Their addresses stay recorded in
 `script/MainnetAddresses.sol` for a relisting, and the keeper's restock serves AVAX, OP and AERO by default. Not
-decided: PancakeSwap as a venue on BNB Chain, which the call of 2026-10-14 below still refuses.
+decided then: PancakeSwap as a venue on BNB Chain, which the owner took on 2026-11-26 ("Each chain's own DEX beside
+Uniswap", below).
 
 **USDC and USDT are the only currencies** (the owner's call of 2026-11-18: "lets leave payments with only stable coins
 usdt and usdc"). Asked whether the contracts should enforce it or the app alone, the owner chose the contracts: the zap
@@ -2016,8 +2084,32 @@ buys the nine Ondo stocks the keeper values through UniswapX's orders on Ethereu
 one transaction, cannot use it, and the swap venues below are unchanged; Ondo's 343 share-priced stocks gain nothing,
 since the keeper never delivers them from stock; and Ondo sells them to eligible users only.
 
-**Swap venues** (the owner's call on 2026-10-14): the zap swaps through Uniswap's Universal Router 2.0.0 alone, V3 or
-V4 per leg, chosen by the caller. PancakeSwap's v3 Universal Router, a third venue per leg since 2026-10-06 (chiefly
+**Each chain's own DEX beside Uniswap** (the owner's call of 2026-11-26: "ეთერიუმი იყოს უნისვაპზე მარა ყველა ჩეინს
+თავის დექსზე აქვს დიდი ლიკვიდობები რაც ჩვენ გვაწყობს", let Ethereum be on Uniswap, but every chain has deep liquidity
+on its own DEX; then, shown the depth, "Uniswap stays on every chain, each chain adds its DEX, each leg names the
+deeper pool", and "read their docs first"; `design/2026-11-26-chain-venues.md`). BNB Chain adds PancakeSwap, Base
+adds Aero, Ethereum stays on Uniswap alone. It reverses the call of 2026-10-14 below for BNB Chain and Base. Read
+before the build: both routers' verified source on Sourcify (exact matches), Aero's deployment records, PancakeSwap's
+and Aero's documentation. Measured that day: PancakeSwap is the deeper venue for nearly every coin on BNB Chain
+(BTCB $21M against Uniswap's $6.4M); on Base Uniswap stays the deeper for WETH and cbBTC and Aero for AERO, AAVE,
+MORPHO, cbETH and Coinbase's stocks, which is why Uniswap was kept there. Asked next, the owner moved Base's AERO to
+Aero's token ("კი, გადაიყვანე", yes, move it): Base's list holds `0x3f5bF3EdAc59d650D8fDf9657a71F2f904A3a4Ee` since
+2026-11-26, where Aerodrome's `0x940181a9...8631` stood, which Aero's migration converts one for one while Aero keeps it
+open. Then Ethereum's Wormhole copy of the old token left Ethereum's list ("კი, ამოიღე", yes, take it out): it
+redeems to the old token alone, whose depth is leaving and whose conversion Aero can end. Its address stays in
+`MainnetAddresses` and its row in the restock's table, for a relisting, as OP's do. Then CAKE joined BNB Chain's list
+on 2026-11-27 ("cake bnb ში დავამატოთ", let us add CAKE on BNB), once the liquidity count showed Ethereum's CAKE with
+about $700 on Uniswap and BNB Chain's CAKE deep on PancakeSwap. Ethereum's CAKE stays listed.
+
+**The bridged copies stay** (the owner's call of 2026-11-27: "ყველა დარჩეს", let them all stay). The owner first asked
+to list only tokens issued on each chain, then asked whether the copies cause any problem. Counted that day on
+Uniswap's V3 pools, Ethereum's 61 coins outside Ondo were 5 near zero, 21 thin, 12 moderate and 23 deep, natives and
+copies alike, and Ondo's stocks have no pool on any chain: thin depth is no mark of a copy, and such a leg mints in
+kind, through `MintRequests` or from stock. Removing ICP's and AVAX's copies alone was offered and not taken. Every
+Wormhole copy and every copy of Base's bridge stays listed, each labelled Bridged.
+
+**Swap venues** (the owner's call on 2026-10-14, reversed for BNB Chain and Base on 2026-11-26, above): the zap swaps
+through Uniswap's Universal Router 2.0.0 alone, V3 or V4 per leg, chosen by the caller. PancakeSwap's v3 Universal Router, a third venue per leg since 2026-10-06 (chiefly
 for CAKE), and THORChain, an app-side rail added the same day (`design/2026-10-06-swap-venues.md`), were both removed on
 2026-10-14: users come with USDC or USDT (from 2026-10-29 to 2026-11-18 also with ether, through the zap's
 `mintWithEth` and `burnToEth`; fiat and other-chain entry stay app-side and undecided). CAKE stays listed; its legs route through Uniswap's pools, or it mints in
@@ -2041,11 +2133,11 @@ If a change would alter any of these, say so explicitly.
 ## Not built (candidate backlog)
 
 - Constituent changes (a new list is a new index).
-- Mixed-venue legs (a single leg splitting across V3 and V4).
+- Mixed-venue legs (a single leg splitting across V3 and V4, or across Uniswap and the chain's own DEX).
 - Per-pair partial-fill auctions.
 - A backstop for auctions too small to pay: the keeper in `keeper/` fills only what pays, unless its operator sets a
   subsidy (`MIN_PROFIT_USD` below zero).
 - An aggregator or Universal Router 2.1 zap.
 - V4 pools on Sepolia, so the V4 legs get a testnet rehearsal rather than only fork and mock coverage.
 - A deployment on a second L2: Base is built since 2026-11-21, and no other is planned.
-- Aerodrome as a venue on Base, where most of that chain's depth sits: the zap swaps through Uniswap alone.
+- PancakeSwap's Infinity pools and StableSwap on BNB Chain: the zap reaches its V3 and V2 pools alone.

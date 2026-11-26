@@ -378,7 +378,7 @@ home wallets.
 | `HERMES_URL` | `https://pyth.dourolabs.app/hermes` | |
 | `NEEDS_FILE` | required | The keeper's `NEEDS_FILE`, which the keeper must be set to write: missing or stale, nothing moves (RS-8). |
 | `JOURNAL_FILE` | required | Where the service keeps its moves, on the disk before each is sent. Keep it: it is what a restart resumes from, and the service refuses to start on one empty or unreadable (RS-13), or held by another running process (`<file>.lock`, CA-M12). |
-| `RESTOCK_COINS` | AVAX, AERO, and the nine Ondo stocks when `UNISWAP_API_KEY` is set | Comma-separated symbols to serve (an Ondo stock as `NVDAON`). |
+| `RESTOCK_COINS` | AVAX, and the nine Ondo stocks when `UNISWAP_API_KEY` is set (OP and AERO, off Ethereum's list, only when named) | Comma-separated symbols to serve (an Ondo stock as `NVDAON`). |
 | `UNISWAP_API_KEY` | required for the Ondo stocks | Uniswap's Trading API key (its developer dashboard), for UniswapX's orders. |
 | `UNISWAP_API_URL` | `https://trade-api.gateway.uniswap.org/v1` | |
 | `AVALANCHE_RPC_URL`, `OPTIMISM_RPC_URL`, `BASE_RPC_URL` | required for their coins | Each home chain's JSON-RPC. |
@@ -451,7 +451,7 @@ raising to what EIP-8037 allows (RX-36).
 | `EXECUTOR` | required | This bot's `KeeperExecutor`. |
 | `PYTH_API_KEY` | required | Hermes' API key, sent as `Authorization: Bearer`: the keeper's own price source. No contract reads a price. |
 | `HERMES_URL` | `https://pyth.dourolabs.app/hermes` | Hermes since 2026-08-26. |
-| `PRICE_IDS` | none | `token=id` pairs, comma-separated: Pyth ids for coins the catalogue (`bot/price-ids.mjs`, the 415 listed coins) does not hold, a testnet's for instance, or another feed for one it does. A coin without an id is left alone. |
+| `PRICE_IDS` | none | `token=id` pairs, comma-separated: Pyth ids for coins the catalogue (`bot/price-ids.mjs`, the 414 listed coins) does not hold, a testnet's for instance, or another feed for one it does. A coin without an id is left alone. |
 | `TRADE_COST_BPS` | `30` | What trading a leg is taken to cost when the bot names a fill's units: a leg within this of its weight is not traded for its own sake. |
 | `INDEXES` | every index | Comma-separated indexes to serve. Only wallets the factory's owner approved create indexes, so the set is the team's; a list still caps the bot's work. |
 | `MIN_PROFIT_USD` | `5` | Least profit a fill or a start must promise; negative is a subsidy the operator accepts, for auctions only and within `SUBSIDY_BUDGET_USD`. |

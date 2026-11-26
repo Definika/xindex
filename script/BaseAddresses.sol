@@ -47,8 +47,14 @@ library BaseAddresses {
     // ---------------------------------------------------------------------
     /// @dev "Wrapped Ether", symbol WETH, 18 decimals: the WETH9 predeploy every OP Stack chain has at this address.
     address internal constant WETH = 0x4200000000000000000000000000000000000006;
-    /// @dev "Aerodrome", symbol AERO, 18 decimals.
-    address internal constant AERO = 0x940181a94A35A4569E4529A3CDfB74e38FD98631;
+    /// @dev "Aero", symbol AERO, 18 decimals: Aero's token since Aerodrome and Velodrome launched as Aero on 2026-10-21
+    ///      (the owner's call of 2026-11-26 to list it, `design/2026-11-26-chain-venues.md`). Read from its verified
+    ///      source (Sourcify, exact match): Solady's ERC-20 with no owner, pause, blocklist or proxy; only its
+    ///      immutable `MINTER` mints, and only the voting escrow and the two migration contracts burn, each its own
+    ///      balance. It replaced Aerodrome's AERO, `0x940181a94A35A4569E4529A3CDfB74e38FD98631`, listed here until
+    ///      2026-11-26, which Aero's migration converts one for one while its owner keeps it open; the Wormhole copy
+    ///      on Ethereum's list is of that older token.
+    address internal constant AERO = 0x3f5bF3EdAc59d650D8fDf9657a71F2f904A3a4Ee;
 
     // ---------------------------------------------------------------------
     // LayerZero's ZRO, `Bridged` as on Ethereum: the issuer's own omnichain token, at the address it has on every
@@ -157,9 +163,10 @@ library BaseAddresses {
     address internal constant L1_STANDARD_BRIDGE = 0x3154Cf16ccdb4C6d922629664174b904d80F2C35;
 
     // ---------------------------------------------------------------------
-    // Uniswap on Base, the zap's and the builder's one venue. Most of Base's depth sits on Aerodrome, which neither
-    // the zap nor `CheckToken` reads. `DeployChecks` tells chain 8453 by its chain id: Ethereum's and BNB Chain's
-    // router addresses both have code on Base, replays that settle against nothing here.
+    // Uniswap on Base, and Aero, the chain's own DEX beside it for the zap and the builder (the owner's call of
+    // 2026-11-26, `design/2026-11-26-chain-venues.md`). `CheckToken` reads Uniswap's depth alone. `DeployChecks` tells
+    // chain 8453 by its chain id: Ethereum's and BNB Chain's router addresses both have code on Base, replays that
+    // settle against nothing here.
     // ---------------------------------------------------------------------
     /// @dev Uniswap's Universal Router on Base, which routes both V3 and V4 pools; answers {POOL_MANAGER}.
     address internal constant UNIVERSAL_ROUTER = 0x6fF5693b99212Da76ad316178A184AB56D299b43;
@@ -167,6 +174,17 @@ library BaseAddresses {
     address internal constant POOL_MANAGER = 0x498581fF718922c3f8e6A244956aF099B2652b2b;
     /// @dev Uniswap V3's factory on Base, where `CheckToken` looks up a token's Uniswap pools.
     address internal constant UNISWAP_V3_FACTORY = 0x33128a8fC17869897dcE68Ed026d694621f6FDfD;
+    /// @dev Aero's Metarouter, through which the zap and the builder reach Aero's pools. Aerodrome and Velodrome
+    ///      launched as Aero on 2026-10-21, on new contracts; the old Aerodrome router reaches only the old pools. Read
+    ///      from its verified source (Sourcify, exact match; deployed at block 52,856,301) and from Aero's deployment
+    ///      record (Dromos Labs' `metadex-public`, `deployment-addresses/metarouter-base.json`).
+    address internal constant AERO_METAROUTER = 0x0fEf9e88A7b76BCDBF451780C6774FE32965Ee98;
+    /// @dev Aero's concentrated-liquidity pool factory (`metadex-slipstream-public`, `cl-base.json`).
+    address internal constant AERO_CL_FACTORY = 0x9CB220581b91b0C83223012FE69688b92aD07a76;
+    /// @dev Aero's volatile basic-pool factory (`metadex-public`, `pools-base.json`).
+    address internal constant AERO_VOLATILE_FACTORY = 0x8E6a9FCd1d638CC760Ffba397605Fe3355dE76D2;
+    /// @dev Aero's stable basic-pool factory (`metadex-public`, `pools-base.json`).
+    address internal constant AERO_STABLE_FACTORY = 0x78589E876edcEbdce72ee3436ab3c9AD3a7cEF2D;
     /// @dev Pyth's price contract, a proxy, through which the factory's `PythPrices` reads the price a fill is checked
     ///      against (the owner's call of 2026-11-22). A filler posts a fresh update to it in its own transaction. Read
     ///      on chain that day: it answers `priceFeedExists` for ETH/USD, and `DeployChecks` resolves it as it does the

@@ -29,6 +29,7 @@ import {MockMarket} from "./mocks/MockMarket.sol";
 import {MockUniversalRouter} from "./mocks/MockUniversalRouter.sol";
 import {PathLib} from "../src/libraries/PathLib.sol";
 import {PathKey, V4ExactInputParams, V4ExactOutputParams} from "../src/libraries/UniswapV4Types.sol";
+import {LocalVenues} from "./LocalVenues.sol";
 
 contract IndexZapTest is XindexTest {
     IndexZap zap;
@@ -70,7 +71,7 @@ contract IndexZapTest is XindexTest {
         link = new MockERC20("Chainlink", "LINK", 18);
         usdc = market.usdc();
         usdt = new MockUSDT();
-        zap = new IndexZap(IIndexFactory(address(factory)), router, address(usdc), address(usdt));
+        zap = new IndexZap(IIndexFactory(address(factory)), router, LocalVenues.none(), address(usdc), address(usdt));
 
         router.setPrice(address(wbtc), 60_000e18, 8);
         router.setPrice(address(weth), 3_000e18, 18);
@@ -151,12 +152,13 @@ contract IndexZapTest is XindexTest {
     function _mintLegs(address stable) internal view returns (IUniversalRouterSwaps.MintLeg[] memory legs) {
         legs = new IUniversalRouterSwaps.MintLeg[](3);
         legs[0] = IUniversalRouterSwaps.MintLeg({
-            v3Path: _path3(address(wbtc), address(weth), stable), v4Path: _noV4(), maxAmountIn: 0
+            localRoute: "", v3Path: _path3(address(wbtc), address(weth), stable), v4Path: _noV4(), maxAmountIn: 0
         });
-        legs[1] =
-            IUniversalRouterSwaps.MintLeg({v3Path: _path2(address(weth), stable), v4Path: _noV4(), maxAmountIn: 0});
+        legs[1] = IUniversalRouterSwaps.MintLeg({
+            localRoute: "", v3Path: _path2(address(weth), stable), v4Path: _noV4(), maxAmountIn: 0
+        });
         legs[2] = IUniversalRouterSwaps.MintLeg({
-            v3Path: _path3(address(link), address(weth), stable), v4Path: _noV4(), maxAmountIn: 0
+            localRoute: "", v3Path: _path3(address(link), address(weth), stable), v4Path: _noV4(), maxAmountIn: 0
         });
     }
 
@@ -164,12 +166,13 @@ contract IndexZapTest is XindexTest {
     function _burnLegs(address tokenOut) internal view returns (IUniversalRouterSwaps.BurnLeg[] memory legs) {
         legs = new IUniversalRouterSwaps.BurnLeg[](3);
         legs[0] = IUniversalRouterSwaps.BurnLeg({
-            v3Path: _path3(address(wbtc), address(weth), tokenOut), v4Path: _noV4(), minAmountOut: 0
+            localRoute: "", v3Path: _path3(address(wbtc), address(weth), tokenOut), v4Path: _noV4(), minAmountOut: 0
         });
-        legs[1] =
-            IUniversalRouterSwaps.BurnLeg({v3Path: _path2(address(weth), tokenOut), v4Path: _noV4(), minAmountOut: 0});
+        legs[1] = IUniversalRouterSwaps.BurnLeg({
+            localRoute: "", v3Path: _path2(address(weth), tokenOut), v4Path: _noV4(), minAmountOut: 0
+        });
         legs[2] = IUniversalRouterSwaps.BurnLeg({
-            v3Path: _path3(address(link), address(weth), tokenOut), v4Path: _noV4(), minAmountOut: 0
+            localRoute: "", v3Path: _path3(address(link), address(weth), tokenOut), v4Path: _noV4(), minAmountOut: 0
         });
     }
 
@@ -252,17 +255,17 @@ contract IndexZapTest is XindexTest {
         returns (IUniversalRouterSwaps.BurnLeg[] memory legs)
     {
         legs = new IUniversalRouterSwaps.BurnLeg[](2);
-        legs[0] = IUniversalRouterSwaps.BurnLeg({v3Path: v3Path, v4Path: v4Path, minAmountOut: 0});
-        legs[1] = IUniversalRouterSwaps.BurnLeg({v3Path: "", v4Path: new PathKey[](0), minAmountOut: 0});
+        legs[0] = IUniversalRouterSwaps.BurnLeg({localRoute: "", v3Path: v3Path, v4Path: v4Path, minAmountOut: 0});
+        legs[1] = IUniversalRouterSwaps.BurnLeg({localRoute: "", v3Path: "", v4Path: new PathKey[](0), minAmountOut: 0});
     }
 
     /// @dev Burn legs for `_mixedIndex` into USDC: WETH sold, USDC passed through.
     function _mixedBurnLegs() internal view returns (IUniversalRouterSwaps.BurnLeg[] memory legs) {
         legs = new IUniversalRouterSwaps.BurnLeg[](2);
         legs[0] = IUniversalRouterSwaps.BurnLeg({
-            v3Path: _path2(address(weth), address(usdc)), v4Path: _noV4(), minAmountOut: 0
+            localRoute: "", v3Path: _path2(address(weth), address(usdc)), v4Path: _noV4(), minAmountOut: 0
         });
-        legs[1] = IUniversalRouterSwaps.BurnLeg({v3Path: "", v4Path: _noV4(), minAmountOut: 0});
+        legs[1] = IUniversalRouterSwaps.BurnLeg({localRoute: "", v3Path: "", v4Path: _noV4(), minAmountOut: 0});
     }
 
     /// @dev Mints one share of `_mixedIndex` to `who` through the zap, out of 100 USDC: $30 of WETH and the 50 USDC.
@@ -277,15 +280,15 @@ contract IndexZapTest is XindexTest {
     /// @dev Replaces the zap with one whose stablecoins are the suite's USDC and `usdt_`, for a test whose currency is
     ///      a token of its own, as USDT would be with its fee switch on or a callback in its transfer.
     function _payingIn(address usdt_) internal {
-        zap = new IndexZap(IIndexFactory(address(factory)), router, address(usdc), usdt_);
+        zap = new IndexZap(IIndexFactory(address(factory)), router, LocalVenues.none(), address(usdc), usdt_);
     }
 
     function _mixedLegs() internal view returns (IUniversalRouterSwaps.MintLeg[] memory legs) {
         legs = new IUniversalRouterSwaps.MintLeg[](2);
         legs[0] = IUniversalRouterSwaps.MintLeg({
-            v3Path: _path2(address(weth), address(usdc)), v4Path: _noV4(), maxAmountIn: 0
+            localRoute: "", v3Path: _path2(address(weth), address(usdc)), v4Path: _noV4(), maxAmountIn: 0
         });
-        legs[1] = IUniversalRouterSwaps.MintLeg({v3Path: "", v4Path: _noV4(), maxAmountIn: 0});
+        legs[1] = IUniversalRouterSwaps.MintLeg({localRoute: "", v3Path: "", v4Path: _noV4(), maxAmountIn: 0});
     }
 
     function _assertZapEmpty() internal view {
@@ -339,15 +342,15 @@ contract IndexZapTest is XindexTest {
         assertEq(zap.USDC(), c);
         assertEq(zap.USDT(), t);
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new IndexZap(IIndexFactory(address(0)), router, c, t);
+        new IndexZap(IIndexFactory(address(0)), router, LocalVenues.none(), c, t);
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new IndexZap(f, IUniversalRouter(address(0)), c, t);
+        new IndexZap(f, IUniversalRouter(address(0)), LocalVenues.none(), c, t);
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new IndexZap(f, router, address(0), t);
+        new IndexZap(f, router, LocalVenues.none(), address(0), t);
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new IndexZap(f, router, c, address(0));
+        new IndexZap(f, router, LocalVenues.none(), c, address(0));
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotAStable.selector, c));
-        new IndexZap(f, router, c, c);
+        new IndexZap(f, router, LocalVenues.none(), c, c);
     }
 
     // ---------------------------------------------------------------------
@@ -789,7 +792,10 @@ contract IndexZapTest is XindexTest {
         _mintFor(alice, 2e18, 400e6);
         IUniversalRouterSwaps.BurnLeg[] memory legs = _burnLegs(address(usdc));
         legs[2] = IUniversalRouterSwaps.BurnLeg({
-            v3Path: _path3(address(link), address(wbtc), address(usdc)), v4Path: _noV4(), minAmountOut: 15e6
+            localRoute: "",
+            v3Path: _path3(address(link), address(wbtc), address(usdc)),
+            v4Path: _noV4(),
+            minAmountOut: 15e6
         });
         vm.startPrank(alice);
         index.approve(address(zap), 2e18);
@@ -1059,7 +1065,7 @@ contract IndexZapTest is XindexTest {
     function test_route_v4MintEncodesTheActionsTheRouterDecodes() public {
         IUniversalRouterSwaps.MintLeg[] memory legs = _mintLegs(address(usdc));
         legs[2] = IUniversalRouterSwaps.MintLeg({
-            v3Path: "", v4Path: _v4MintPath(address(usdc), address(weth)), maxAmountIn: 0
+            localRoute: "", v3Path: "", v4Path: _v4MintPath(address(usdc), address(weth)), maxAmountIn: 0
         });
         usdc.mint(alice, 200e6);
         vm.startPrank(alice);
@@ -1105,11 +1111,13 @@ contract IndexZapTest is XindexTest {
     function test_mint_v4LegBuysTheSameBasketAsV3() public {
         IUniversalRouterSwaps.MintLeg[] memory v4 = _mintLegs(address(usdc));
         v4[0] = IUniversalRouterSwaps.MintLeg({
-            v3Path: "", v4Path: _v4MintPath(address(usdc), address(weth)), maxAmountIn: 0
+            localRoute: "", v3Path: "", v4Path: _v4MintPath(address(usdc), address(weth)), maxAmountIn: 0
         });
-        v4[1] = IUniversalRouterSwaps.MintLeg({v3Path: "", v4Path: _v4Path1(address(usdc)), maxAmountIn: 0});
+        v4[1] = IUniversalRouterSwaps.MintLeg({
+            localRoute: "", v3Path: "", v4Path: _v4Path1(address(usdc)), maxAmountIn: 0
+        });
         v4[2] = IUniversalRouterSwaps.MintLeg({
-            v3Path: "", v4Path: _v4MintPath(address(usdc), address(weth)), maxAmountIn: 0
+            localRoute: "", v3Path: "", v4Path: _v4MintPath(address(usdc), address(weth)), maxAmountIn: 0
         });
 
         usdc.mint(alice, 300e6);
@@ -1125,7 +1133,9 @@ contract IndexZapTest is XindexTest {
 
     function test_mixedBasket_v3AndV4Legs() public {
         IUniversalRouterSwaps.MintLeg[] memory legs = _mintLegs(address(usdc));
-        legs[1] = IUniversalRouterSwaps.MintLeg({v3Path: "", v4Path: _v4Path1(address(usdc)), maxAmountIn: 0});
+        legs[1] = IUniversalRouterSwaps.MintLeg({
+            localRoute: "", v3Path: "", v4Path: _v4Path1(address(usdc)), maxAmountIn: 0
+        });
 
         usdc.mint(alice, 300e6);
         vm.startPrank(alice);
@@ -1134,7 +1144,7 @@ contract IndexZapTest is XindexTest {
 
         IUniversalRouterSwaps.BurnLeg[] memory out = _burnLegs(address(usdc));
         out[2] = IUniversalRouterSwaps.BurnLeg({
-            v3Path: "", v4Path: _v4BurnPath(address(weth), address(usdc)), minAmountOut: 0
+            localRoute: "", v3Path: "", v4Path: _v4BurnPath(address(weth), address(usdc)), minAmountOut: 0
         });
         index.approve(address(zap), 1e18);
         uint256 back = zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, out, alice));
@@ -1150,7 +1160,7 @@ contract IndexZapTest is XindexTest {
         IUniversalRouterSwaps.BurnLeg[] memory legs = _burnLegs(address(usdc));
         // The last leg, so the call the router recorded is this one's.
         legs[2] = IUniversalRouterSwaps.BurnLeg({
-            v3Path: "", v4Path: _v4BurnPath(address(weth), address(usdc)), minAmountOut: 0
+            localRoute: "", v3Path: "", v4Path: _v4BurnPath(address(weth), address(usdc)), minAmountOut: 0
         });
 
         vm.startPrank(alice);
@@ -1176,7 +1186,7 @@ contract IndexZapTest is XindexTest {
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.BadRoute.selector, 2));
         zap.mintWithToken(_mintParams(address(index), address(usdc), 300e6, 1e18, legs, alice));
 
-        legs[2] = IUniversalRouterSwaps.MintLeg({v3Path: "", v4Path: _noV4(), maxAmountIn: 0}); // neither
+        legs[2] = IUniversalRouterSwaps.MintLeg({localRoute: "", v3Path: "", v4Path: _noV4(), maxAmountIn: 0}); // neither
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.BadRoute.selector, 2));
         zap.mintWithToken(_mintParams(address(index), address(usdc), 300e6, 1e18, legs, alice));
         vm.stopPrank();
@@ -1192,14 +1202,14 @@ contract IndexZapTest is XindexTest {
         IUniversalRouterSwaps.MintLeg[] memory hooked = _mintLegs(address(usdc));
         PathKey[] memory path = _v4MintPath(address(usdc), address(weth));
         path[0].hooks = makeAddr("hook");
-        hooked[2] = IUniversalRouterSwaps.MintLeg({v3Path: "", v4Path: path, maxAmountIn: 0});
+        hooked[2] = IUniversalRouterSwaps.MintLeg({localRoute: "", v3Path: "", v4Path: path, maxAmountIn: 0});
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.BadRoute.selector, 2));
         zap.mintWithToken(_mintParams(address(index), address(usdc), 300e6, 1e18, hooked, alice));
 
         IUniversalRouterSwaps.MintLeg[] memory withData = _mintLegs(address(usdc));
         PathKey[] memory dataPath = _v4MintPath(address(usdc), address(weth));
         dataPath[1].hookData = hex"01";
-        withData[2] = IUniversalRouterSwaps.MintLeg({v3Path: "", v4Path: dataPath, maxAmountIn: 0});
+        withData[2] = IUniversalRouterSwaps.MintLeg({localRoute: "", v3Path: "", v4Path: dataPath, maxAmountIn: 0});
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.BadRoute.selector, 2));
         zap.mintWithToken(_mintParams(address(index), address(usdc), 300e6, 1e18, withData, alice));
         vm.stopPrank();
@@ -1215,6 +1225,7 @@ contract IndexZapTest is XindexTest {
         IUniversalRouterSwaps.MintLeg[] memory legs = _mintLegs(address(usdc));
         // An exact-output route is walked backwards, so entry zero has to name what the user pays with.
         legs[2] = IUniversalRouterSwaps.MintLeg({
+            localRoute: "",
             v3Path: "",
             v4Path: _v4BurnPath(address(weth), address(usdc)), // the burn ordering, which a mint route may not use
             maxAmountIn: 0
@@ -1227,7 +1238,7 @@ contract IndexZapTest is XindexTest {
         IUniversalRouterSwaps.BurnLeg[] memory out = _burnLegs(address(usdc));
         // An exact-input route is walked forwards, so the last entry has to name the payout.
         out[2] = IUniversalRouterSwaps.BurnLeg({
-            v3Path: "", v4Path: _v4MintPath(address(usdc), address(weth)), minAmountOut: 0
+            localRoute: "", v3Path: "", v4Path: _v4MintPath(address(usdc), address(weth)), minAmountOut: 0
         });
         index.approve(address(zap), 1e18);
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.BadRoute.selector, 2));
@@ -1255,7 +1266,7 @@ contract IndexZapTest is XindexTest {
         router.setMode(MockUniversalRouter.Mode.CurrencyNotSettled);
         IUniversalRouterSwaps.BurnLeg[] memory legs = _burnLegs(address(usdc));
         legs[0] = IUniversalRouterSwaps.BurnLeg({
-            v3Path: "", v4Path: _v4BurnPath(address(weth), address(usdc)), minAmountOut: 0
+            localRoute: "", v3Path: "", v4Path: _v4BurnPath(address(weth), address(usdc)), minAmountOut: 0
         });
 
         vm.startPrank(alice);
@@ -1270,7 +1281,9 @@ contract IndexZapTest is XindexTest {
     function test_router_neverPullsAndNeverKeeps() public {
         _mintFor(alice, 1e18, 200e6);
         IUniversalRouterSwaps.BurnLeg[] memory legs = _burnLegs(address(usdc));
-        legs[1] = IUniversalRouterSwaps.BurnLeg({v3Path: "", v4Path: _v4Path1(address(usdc)), minAmountOut: 0});
+        legs[1] = IUniversalRouterSwaps.BurnLeg({
+            localRoute: "", v3Path: "", v4Path: _v4Path1(address(usdc)), minAmountOut: 0
+        });
         vm.startPrank(alice);
         index.approve(address(zap), 1e18);
         zap.burnToToken(_burnParams(address(index), 1e18, address(usdc), 1, legs, alice));
@@ -1521,7 +1534,7 @@ contract IndexZapTest is XindexTest {
         _mintFor(alice, 1e18, 200e6);
         IUniversalRouterSwaps.BurnLeg[] memory legs = _burnLegs(address(usdc));
         legs[2] = IUniversalRouterSwaps.BurnLeg({
-            v3Path: "", v4Path: _v4BurnPath(address(weth), address(usdc)), minAmountOut: 0
+            localRoute: "", v3Path: "", v4Path: _v4BurnPath(address(weth), address(usdc)), minAmountOut: 0
         });
         link.mint(address(router), 3e18); // three times the one LINK the V4 leg sells
         vm.startPrank(alice);
@@ -1671,7 +1684,7 @@ contract IndexZapTest is XindexTest {
         _mintFor(alice, 1e18, 200e6);
         IUniversalRouterSwaps.BurnLeg[] memory legs = _burnLegs(address(usdc));
         legs[2] = IUniversalRouterSwaps.BurnLeg({
-            v3Path: "", v4Path: _v4BurnPath(address(weth), address(usdc)), minAmountOut: 0
+            localRoute: "", v3Path: "", v4Path: _v4BurnPath(address(weth), address(usdc)), minAmountOut: 0
         });
         vm.startPrank(alice);
         index.approve(address(zap), 1e18);
@@ -1704,9 +1717,11 @@ contract IndexZapTest is XindexTest {
         zap.mintWithToken(_mintParams(address(idx), address(usdc), 100e6, 1e18, _mixedLegs(), alice));
         IUniversalRouterSwaps.BurnLeg[] memory burnLegs = new IUniversalRouterSwaps.BurnLeg[](2);
         burnLegs[0] = IUniversalRouterSwaps.BurnLeg({
-            v3Path: _path2(address(weth), address(usdc)), v4Path: _noV4(), minAmountOut: 0
+            localRoute: "", v3Path: _path2(address(weth), address(usdc)), v4Path: _noV4(), minAmountOut: 0
         });
-        burnLegs[1] = IUniversalRouterSwaps.BurnLeg({v3Path: "", v4Path: _v4Path1(address(weth)), minAmountOut: 0});
+        burnLegs[1] = IUniversalRouterSwaps.BurnLeg({
+            localRoute: "", v3Path: "", v4Path: _v4Path1(address(weth)), minAmountOut: 0
+        });
         idx.approve(address(zap), 1e18);
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.BadRoute.selector, 1));
         zap.burnToToken(_burnParams(address(idx), 1e18, address(usdc), 1, burnLegs, alice));
@@ -1801,7 +1816,7 @@ contract IndexZapTest is XindexTest {
     function test_CRI36_aV4MintLegMatchesTheUpstreamLayout() public {
         IUniversalRouterSwaps.MintLeg[] memory legs = _mintLegs(address(usdc));
         legs[2] = IUniversalRouterSwaps.MintLeg({
-            v3Path: "", v4Path: _v4MintPath(address(usdc), address(weth)), maxAmountIn: 20e6
+            localRoute: "", v3Path: "", v4Path: _v4MintPath(address(usdc), address(weth)), maxAmountIn: 20e6
         });
         usdc.mint(alice, 200e6);
         vm.startPrank(alice);
@@ -1828,7 +1843,7 @@ contract IndexZapTest is XindexTest {
         _mintFor(alice, 1e18, 200e6);
         IUniversalRouterSwaps.BurnLeg[] memory legs = _burnLegs(address(usdc));
         legs[2] = IUniversalRouterSwaps.BurnLeg({
-            v3Path: "", v4Path: _v4BurnPath(address(weth), address(usdc)), minAmountOut: 14e6
+            localRoute: "", v3Path: "", v4Path: _v4BurnPath(address(weth), address(usdc)), minAmountOut: 14e6
         });
         vm.startPrank(alice);
         index.approve(address(zap), 1e18);
@@ -2007,9 +2022,9 @@ contract IndexZapTest is XindexTest {
     function _shortBurn(WeightedHub idx, ShortToken short) internal returns (uint256 out) {
         IUniversalRouterSwaps.BurnLeg[] memory legs = new IUniversalRouterSwaps.BurnLeg[](2);
         legs[0] = IUniversalRouterSwaps.BurnLeg({
-            v3Path: _path2(address(short), address(usdc)), v4Path: _noV4(), minAmountOut: 0
+            localRoute: "", v3Path: _path2(address(short), address(usdc)), v4Path: _noV4(), minAmountOut: 0
         });
-        legs[1] = IUniversalRouterSwaps.BurnLeg({v3Path: "", v4Path: _noV4(), minAmountOut: 0});
+        legs[1] = IUniversalRouterSwaps.BurnLeg({localRoute: "", v3Path: "", v4Path: _noV4(), minAmountOut: 0});
         vm.prank(alice);
         out = zap.burnToToken(_burnParams(address(idx), 1e18, address(usdc), 1, legs, alice));
     }

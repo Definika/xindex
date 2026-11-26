@@ -17,6 +17,7 @@ import {IBasketBuilder} from "../src/interfaces/IBasketBuilder.sol";
 import {IUniversalRouterSwaps} from "../src/interfaces/IUniversalRouterSwaps.sol";
 import {PathKey} from "../src/libraries/UniswapV4Types.sol";
 import {MockPausableToken} from "./mocks/MockPausableToken.sol";
+import {LocalVenues} from "./LocalVenues.sol";
 
 /// @dev What the handler drives besides the main index: the factory and its owner, the guardian, a second, gated
 ///      index and its creator, and the basket builder.
@@ -535,6 +536,7 @@ contract WeightedHandler is Test {
             bool passThrough = address(comps[i]) == address(payIn);
             budget += passThrough ? need[i] : router.quoteIn(address(payIn), address(comps[i]), need[i]) + 1;
             legs[i] = IUniversalRouterSwaps.MintLeg({
+                localRoute: "",
                 v3Path: passThrough ? bytes("") : _path(address(comps[i]), address(payIn)),
                 v4Path: new PathKey[](0),
                 maxAmountIn: 0
@@ -569,7 +571,7 @@ contract WeightedHandler is Test {
         tokens[0] = token;
         IUniversalRouterSwaps.BurnLeg[] memory legs = new IUniversalRouterSwaps.BurnLeg[](1);
         legs[0] = IUniversalRouterSwaps.BurnLeg({
-            v3Path: _path(token, address(usdc)), v4Path: new PathKey[](0), minAmountOut: 0
+            localRoute: "", v3Path: _path(token, address(usdc)), v4Path: new PathKey[](0), minAmountOut: 0
         });
         IBasketBuilder.SellParams memory p = IBasketBuilder.SellParams({
             tokenOut: address(usdc),
@@ -952,7 +954,9 @@ contract WeightedHubInvariantTest is Test {
         // enough for any buy or sale the handler makes (RX-57).
         usdc = new MockERC20("USDC", "USDC", 6);
         // The builder's two stablecoins are USDC and the USD component, which a buy then passes through (RX-57).
-        builder = new BasketBuilder(IIndexFactory(address(factory)), router, address(usdc), address(comps[2]));
+        builder = new BasketBuilder(
+            IIndexFactory(address(factory)), router, LocalVenues.none(), address(usdc), address(comps[2])
+        );
         uint256[4] memory usd = [uint256(60_000e18), 2000e18, 1e18, 0.5e18];
         for (uint256 i = 0; i < comps.length; ++i) {
             router.setPrice(address(comps[i]), usd[i], comps[i].decimals());

@@ -62,8 +62,8 @@ contract BasketBuilder is ReentrancyGuard, UniversalRouterSwaps, IBasketBuilder 
     /// @inheritdoc IBasketBuilder
     mapping(address token => uint256 amount) public totalEscrow;
 
-    constructor(IIndexFactory factory, IUniversalRouter router, address usdc, address usdt)
-        UniversalRouterSwaps(router)
+    constructor(IIndexFactory factory, IUniversalRouter router, LocalVenue memory local, address usdc, address usdt)
+        UniversalRouterSwaps(router, local)
     {
         if (address(factory) == address(0) || usdc == address(0) || usdt == address(0)) {
             revert ZeroAddress();
@@ -177,7 +177,7 @@ contract BasketBuilder is ReentrancyGuard, UniversalRouterSwaps, IBasketBuilder 
         MintLeg calldata leg = p.legs[k];
         uint256 legCap = leg.maxAmountIn;
         if (component == p.tokenIn) {
-            if (leg.v3Path.length != 0 || leg.v4Path.length != 0) revert BadRoute(k);
+            if (_namesRoute(leg.v3Path, leg.v4Path, leg.localRoute)) revert BadRoute(k);
             // The pass-through leg carries no swap, but still honours its own limit and the overall one (DA-15).
             if (legCap != 0 && amountOut > legCap) revert InsufficientBudget(amountOut, legCap);
             if (amountOut > budget) revert InsufficientBudget(amountOut, budget);
@@ -282,7 +282,7 @@ contract BasketBuilder is ReentrancyGuard, UniversalRouterSwaps, IBasketBuilder 
             if (amount == 0) revert ZeroAmount();
             _debit(token, held, amount);
             if (token == p.tokenOut) {
-                if (p.legs[k].v3Path.length != 0 || p.legs[k].v4Path.length != 0) revert BadRoute(k);
+                if (_namesRoute(p.legs[k].v3Path, p.legs[k].v4Path, p.legs[k].localRoute)) revert BadRoute(k);
                 // The pass-through leg carries no swap, but its limit is still checked, as for every leg (DA-15).
                 if (amount < p.legs[k].minAmountOut) revert InsufficientOutput(amount, p.legs[k].minAmountOut);
                 passedThrough += amount;
@@ -367,14 +367,14 @@ contract BasketBuilder is ReentrancyGuard, UniversalRouterSwaps, IBasketBuilder 
         if (nonce != expectedNonce) revert StaleRebalanceNonce(expectedNonce, nonce);
     }
 
-    /// @dev Refuses a recipient that would lose what it is sent: anyone can sweep tokens left in the router, anything
+    /// @dev Refuses a recipient that would lose what it is sent: anyone can sweep tokens left in either router, anything
     ///      sent to the pool manager is a donation, and the factory and an index can never move a token they receive
     ///      (RT-21).
     function _checkRecipient(address to) private view {
         if (to == address(0)) revert ZeroAddress();
         if (
-            to == address(this) || to == address(ROUTER) || to == POOL_MANAGER || to == address(FACTORY)
-                || FACTORY.isIndex(to)
+            to == address(this) || to == address(ROUTER) || to == POOL_MANAGER || to == LOCAL_ROUTER
+                || to == address(FACTORY) || FACTORY.isIndex(to)
         ) revert InvalidRecipient(to);
     }
 }

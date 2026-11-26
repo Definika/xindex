@@ -23,14 +23,17 @@ through the factory's timelock.
 
 On BNB Chain the same commands run against a BNB Chain RPC, with `V5_WHITELIST=bnb` for the listings and `CHECK=bnb`
 for the admission check. The script resolves the router, USDC and USDT (the zap's and the builder's only currencies,
-there as on Ethereum) from `script/BnbChainAddresses.sol` and refuses any other address, and it holds the owner to
-the same Safe rules as on Ethereum. Before a first run there: the two Safes on BNB Chain, the source reading of the twelve coins, and
+there as on Ethereum) from `script/BnbChainAddresses.sol` and refuses any other address, gives the zap and the
+builder PancakeSwap's Infinity Universal Router as the chain's own DEX beside Uniswap (from the book alone, since
+2026-11-26), and it holds the owner to
+the same Safe rules as on Ethereum. Before a first run there: the two Safes on BNB Chain, the source reading of the thirteen coins, and
 `BNB_RPC_URL=... forge test --match-path 'test/fork/BnbChainAddresses.fork.t.sol'` passing on an archive RPC
 ([`design/2026-11-13-bnb-chain-deployment.md`](../design/2026-11-13-bnb-chain-deployment.md)).
 
 On Base the same commands run against a Base RPC, with `V5_WHITELIST=base` and `CHECK=base`. The script tells Base by
 its chain id, 8453, and by nothing else, since Ethereum's and BNB Chain's router addresses both have code there; it
-resolves the router, USDC and USDT from `script/BaseAddresses.sol`, refuses any other address, and holds the owner
+resolves the router, USDC and USDT from `script/BaseAddresses.sol`, refuses any other address, gives the zap and the
+builder Aero's Metarouter and its three pool factories as the chain's own DEX (from the book alone), and holds the owner
 and the guardian to the same Safe rules. Before a first run there: the two Safes on Base, a reading of who mints
 Base's USDT and can replace its code, and
 `BASE_RPC_URL=... forge test --match-path 'test/fork/BaseAddresses.fork.t.sol'` passing on an archive RPC
@@ -83,7 +86,8 @@ recorded commit is the deployed source, add the addresses to the README's Deploy
 explorer (`--verify` needs `ETHERSCAN_API_KEY`). The deploy log ends with the runtime code hashes of the factory, the
 `WeightedHub` implementation, the zap, the basket builder and `MintRequests`: record them with the addresses, and
 `DeployWeighted.checkDeployment(factory, zap, builder, requests)` re-reads them later (it also refuses a zap, a
-builder or a `MintRequests` that does not point at that factory, a builder on another router, and an implementation
+builder or a `MintRequests` that does not point at that factory, a builder on another router or another DEX than
+the zap's, a zap whose DEX is not the chain's book's, and an implementation
 whose `FACTORY` is another). It logs the guardian's address as well; since the factory's guardian can change,
 `checkDeployment` does not read it.
 
@@ -129,7 +133,7 @@ CHECK=<token,...> forge script script/CheckToken.s.sol --fork-url <any evm rpc>
 `script/PriceFeeds.sol` names for it: the same run proposes both, and `execute` runs both once the 2-day delay has
 passed. A token without a feed can be listed but cannot be put in a new index or moved by a fill.
 `V5_WHITELIST=default` is the first four coins of `script/Listings.sol` (WETH, WBTC, LINK and UNI)
-and `V5_WHITELIST=wide` the rest, 415 in all; on BNB Chain `V5_WHITELIST=bnb` is that chain's 365, and on Base
+and `V5_WHITELIST=wide` the rest, 414 in all; on BNB Chain `V5_WHITELIST=bnb` is that chain's 366, and on Base
 `V5_WHITELIST=base` its thirty-two. On Base the script cannot read Coinbase's ten stock tokens under the pinned
 Foundry, which does not run Base's precompiles: it takes their decimals from `script/BaseAddresses.sol` and still
 builds their proposals, and the factory reads the real decimals when each lands. Safe mode
@@ -191,7 +195,7 @@ No bot holds a role in Xindex, so these duties have owners and deadlines. Watch 
 | Watch keep-mask rebalances | `RebalanceStarted` with a non-zero `keepMask` | before `eta` (2 hours) | owner signers | while a guardian replacement is pending, cancel the outgoing guardian's keep-mask proposals (RT-07) |
 | Fill auctions | the auction opens at `eta` | `eta + AUCTION_DURATION` | any executor contract | anyone may run the keeper in `keeper/`, which holds no role; executors competing to fill earlier are what make the price fair, and a lone one keeps the index's distance from its weights |
 | Fill requests | a `MintRequested` or `RedeemRequested` event | the request's `deadline` | anyone who holds or can issue the shares, or the stablecoin | the keeper in `keeper/` fills at the request's limit when that pays; the surplus over the limit is the filler's |
-| Restock the wrapped and real-world legs | the keeper's `restock <coins>` log | before the auction that needs them | the restock service for AVAX and AERO (XRP, ADA, LTC, DOT and BNB left Ethereum's list on 2026-11-13, OP on 2026-11-21); the keeper's operator for the rest | the service buys each on its home chain and bridges it into the executor through Wormhole's Token Bridge (`keeper/restock.mjs`); for ATOM, the copies from chains it has no adapter for, Tether Gold, bridge through Wormhole's Portal or acquire the token, and send it to the executor; for an Ondo stock or ETF, mint it through Ondo's desk or buy it, and send it to the executor |
+| Restock the wrapped and real-world legs | the keeper's `restock <coins>` log | before the auction that needs them | the restock service for AVAX (XRP, ADA, LTC, DOT and BNB left Ethereum's list on 2026-11-13, OP on 2026-11-21, AERO on 2026-11-26); the keeper's operator for the rest | the service buys each on its home chain and bridges it into the executor through Wormhole's Token Bridge (`keeper/restock.mjs`); for ATOM, the copies from chains it has no adapter for, Tether Gold, bridge through Wormhole's Portal or acquire the token, and send it to the executor; for an Ondo stock or ETF, mint it through Ondo's desk or buy it, and send it to the executor |
 | Keep the restock service running | its `gas below its minimum`, `top up its USDT float by hand` or `still pending` log | before the next restock | the treasury's operator | send gas to the treasury's wallet on that chain, top up the BNB Chain USDT float, or cancel the transaction stuck past a fee spike (`keeper/README.md`, Restock) |
 | Renew a restock allowance | its `restock allowance ... is spent` log | before that coin's stock runs out | the executor's owner | `setRestockAllowance(<copy>, <amount>)`, or the other allowance the log names; what arrives through the bridge earns the keeper stock allowance only within it (RS-1) |
 | Rebalance around a frozen component | a paused or blacklisting component | each auction | guardian | the guardian's Safe calls `cancelRebalance(proposalId)`, then `startRebalance(keepMask)`, on the index; an executor fills it like any other auction, naming the kept component's units unchanged |

@@ -88,8 +88,10 @@ export const PRICE_IDS = Object.freeze({
 /// ROUTE_MAX_LOSS_BPS, its deepest Uniswap v3 pool there holding about $35,000 of USDC. It stays in the table, as its
 /// address stays in `MainnetAddresses`, for a relisting, and `RESTOCK_COINS` can still name it. The copies of XRP, ADA,
 /// LTC, DOT, ATOM, BNB, JUP, PYTH, SUI, APT and ALGO, which left the list on 2026-11-13 and 2026-11-18, went from the
-/// table on 2026-11-25 (audit/2026-11-25-non-evm-restock-retirement.md).
-export const DEFAULT_COINS = Object.freeze(["AVAX", "AERO"]);
+/// table on 2026-11-25 (audit/2026-11-25-non-evm-restock-retirement.md). AERO's copy left on 2026-11-26 (the owner's
+/// call): it is a copy of Aerodrome's AERO, which Aero replaced with a token of its own, so its home token's depth is
+/// leaving and its conversion is Aero's to end. It stays in the table, as OP does, and `RESTOCK_COINS` can name it.
+export const DEFAULT_COINS = Object.freeze(["AVAX"]);
 
 /// The coins of `symbols`, bridged or local, refusing a symbol neither table knows. When null: `DEFAULT_COINS`, and
 /// with `uniswapx` (the service has a UniswapX API key) every local coin too, since only UniswapX buys them.

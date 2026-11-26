@@ -7,6 +7,7 @@ import {IndexZap} from "../src/IndexZap.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
+import {LocalVenues} from "./LocalVenues.sol";
 
 /// @notice Repository facts that security-review findings rest on and that no contract test can reach: the pinned
 ///         compiler (v1 I10), the pinned CI toolchain and required fork RPC (I11), the dependency lock against
@@ -144,7 +145,7 @@ contract RepoTest is Test {
     ///      keeps the old check green.
     function test_I09_XS17_theKnownLimitationsAreDocumented() public view {
         string memory section = _section(_read("docs/known-limitations.md"), "# Known limitations\n");
-        string[23] memory anchors = [
+        string[24] memory anchors = [
             "**A lone executor keeps the index's distance from its weights.**",
             "**No mint, redeem or claim reads a price.**",
             "**One fill may not land on the weights.**",
@@ -167,7 +168,8 @@ contract RepoTest is Test {
             "**Airdrops, rewards and governance votes**",
             "**A hooked V4 pool cannot be routed through.**",
             "**A `tokenIn` that calls back into the zap is unsupported**",
-            "**Zap gas grows with components and hops, and nothing on chain bounds it.**"
+            "**Zap gas grows with components and hops, and nothing on chain bounds it.**",
+            "**The chain's own DEX adds its operators**"
         ];
         for (uint256 i = 0; i < anchors.length; ++i) {
             assertTrue(_contains(section, anchors[i]), anchors[i]);
@@ -678,7 +680,9 @@ contract RepoTest is Test {
     function test_LR01_checksAfterAnExpectedConstructorRevertStillRun() public {
         assertTrue(_contains(_read("foundry.toml"), "\ndynamic_test_linking = false\n"), "test linking stays static");
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new IndexZap(IIndexFactory(address(0)), IUniversalRouter(address(0)), address(0), address(0));
+        new IndexZap(
+            IIndexFactory(address(0)), IUniversalRouter(address(0)), LocalVenues.none(), address(0), address(0)
+        );
         vm.expectCall(address(this), abi.encodeCall(this.reachedAfterTheRevert, ()));
         this.reachedAfterTheRevert();
     }

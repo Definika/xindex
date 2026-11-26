@@ -57,6 +57,9 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
     bytes32 constant UNIVERSAL_ROUTER_CODEHASH = 0x4899c516cf2f0b82251ab88630a9b326d1a2668855c553f9f5a0ea2de993e63b;
     bytes32 constant POOL_MANAGER_CODEHASH = 0x48752321ee7abf0d2a17c30679df9a1ddd14dc75d28b26e2509b76396145a005;
     bytes32 constant UNISWAP_V3_FACTORY_CODEHASH = 0x34b1009d0f004e58da791225992645e2df7697ac71ac89dc5e80469c4ef7e322;
+    /// @dev PancakeSwap's Infinity Universal Router, the chain's own DEX beside Uniswap since 2026-11-26: no proxy, its
+    ///      immutables in its code, read on 2026-11-26 and matching its verified source (Sourcify, exact match).
+    bytes32 constant PANCAKE_ROUTER_CODEHASH = 0x475a0fac42fef6f5939a066498de529e7b79906eccfbb147ace899c8d21a898b;
     /// @dev Ethereum's router, by its runtime code: `MainnetAddresses.fork.t.sol` pins the same hash on Ethereum.
     bytes32 constant ETHEREUM_ROUTER_CODEHASH = 0x6a5f46971b50c6e1b7eef97902311444e479d734e4f80ad88367783cf373fe7f;
     /// @dev Block the fork pins to; BNB_FORK_BLOCK overrides it for a non-archive RPC that only serves recent state.
@@ -114,6 +117,7 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
         _assertToken(B.ATOM, "ATOM", 18);
         _assertToken(B.ASTER, "ASTER", 18);
         _assertToken(B.STABLE, "STABLE", 18);
+        _assertToken(B.CAKE, "Cake", 18);
         _assertToken(B.AAPLON, "AAPLon", 18);
         _assertToken(B.MSFTON, "MSFTon", 18);
         _assertToken(B.NVDAON, "NVDAon", 18);
@@ -571,7 +575,7 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
     ///      pull oracle: a creator or a filler posts an update Pyth's keys signed, which a test cannot sign, so the tests
     ///      that are not about prices date the stored price to their own clock. The tests of Pyth's check read the
     ///      stored prices as they are, at the time they were published. A feed nobody has posted on BNB Chain has no
-    ///      stored price (ZEC's and STABLE's at the pin, of the twelve, and most of the Ondo stocks'): it gets a
+    ///      stored price (ZEC's and STABLE's at the pin, of the coins, and most of the Ondo stocks'): it gets a
     ///      stand-in of a dollar, as the creator's own update would post a price there.
     function _freshPrices(WeightedIndexFactory factory, address[] memory tokens) internal {
         for (uint256 i = 0; i < tokens.length; ++i) {
@@ -629,12 +633,13 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
     }
 
     /// @dev Every coin of the BNB Chain list passes `CheckToken` as listable, its transfers exact, with its powers
-    ///      recorded for the signers: the Binance-Peg coins' single minting key, and STABLE's upgrade by a Safe.
+    ///      recorded for the signers: the Binance-Peg coins' single minting key, STABLE's upgrade by a Safe, and CAKE's
+    ///      mint by PancakeSwap's MasterChef, a contract.
     function testFork_everyBnbTokenPassesTheCheck() public {
         CheckToken checker = new CheckToken();
         address[] memory list = new ConfigureWeighted().bnbList();
-        // the list's twelve coins; its Ondo stocks and ETFs are checked below, a hundred a test
-        for (uint256 i = 0; i < 12; ++i) {
+        // the list's coins; its Ondo stocks and ETFs are checked below, a hundred a test
+        for (uint256 i = 0; i < B.COINS; ++i) {
             CheckToken.Report memory r = checker.check(list[i], address(0), checker.markets());
             checker.log(r);
             assertEq(uint8(r.transfers), uint8(CheckToken.Transfers.Exact), r.symbol);
@@ -648,30 +653,34 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
         CheckToken.Report memory stable = checker.check(B.STABLE, address(0), checker.markets());
         assertEq(stable.powers & checker.UPGRADE(), checker.UPGRADE());
         assertEq(uint8(stable.owner.kind), uint8(CheckToken.Kind.Safe), "STABLE is upgraded through a Safe");
+        CheckToken.Report memory cake = checker.check(B.CAKE, address(0), checker.markets());
+        assertEq(cake.powers, checker.MINT(), "CAKE's one power is its mint");
+        assertEq(uint8(cake.owner.kind), uint8(CheckToken.Kind.Contract), "which PancakeSwap's MasterChef holds");
+        assertEq(cake.implementation, address(0), "and no key can replace its code");
     }
 
-    /// @dev Ondo's stocks and ETFs of the BNB Chain list, after its twelve coins: each passes the check as listable, its
+    /// @dev Ondo's stocks and ETFs of the BNB Chain list, after its coins: each passes the check as listable, its
     ///      transfers exact. A hundred a test, since a check reads each token's code and pools at length.
     function testFork_theOndoTokensPassTheCheck_0to99() public {
-        _checkOndo(12, 112);
+        _checkOndo(B.COINS, B.COINS + 100);
     }
 
     function testFork_theOndoTokensPassTheCheck_100to199() public {
-        _checkOndo(112, 212);
+        _checkOndo(B.COINS + 100, B.COINS + 200);
     }
 
     function testFork_theOndoTokensPassTheCheck_200to299() public {
-        _checkOndo(212, 312);
+        _checkOndo(B.COINS + 200, B.COINS + 300);
     }
 
     function testFork_theOndoTokensPassTheCheck_300toTheEnd() public {
-        _checkOndo(312, type(uint256).max);
+        _checkOndo(B.COINS + 300, type(uint256).max);
     }
 
     function _checkOndo(uint256 from, uint256 to) internal {
         CheckToken checker = new CheckToken();
         address[] memory list = new ConfigureWeighted().bnbList();
-        assertEq(list.length, 12 + 353);
+        assertEq(list.length, B.COINS + 353);
         if (to > list.length) to = list.length;
         for (uint256 i = from; i < to; ++i) {
             CheckToken.Report memory r = checker.check(list[i], address(0), checker.markets());
@@ -702,7 +711,7 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
     /// @dev An index of the whole BNB Chain list issues and redeems in kind: every coin moves by exactly what the
     ///      index asks, and a full redeem returns every coin.
     function testFork_anIndexOfTheWholeListIssuesAndRedeemsInKind() public {
-        (WeightedHub index, address[] memory list) = _twelveCoinIndex();
+        (WeightedHub index, address[] memory list) = _coinIndex();
         uint256 shares = 100e18;
         uint256[] memory need = _issueInKind(index, alice, shares);
         assertEq(index.balanceOf(alice), shares);
@@ -720,22 +729,22 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
     }
 
     /// @dev An index of the whole BNB Chain list on a fresh deployment, $120 a share, created on its weights.
-    function _twelveCoinIndex() internal returns (WeightedHub index, address[] memory list) {
+    function _coinIndex() internal returns (WeightedHub index, address[] memory list) {
         (WeightedIndexFactory factory,,,) = _deploy();
-        // the list's twelve coins, which come first; its Ondo stocks and ETFs are each checked on their own above
+        // the list's coins, which come first; its Ondo stocks and ETFs are each checked on their own above
         address[] memory all = B.all();
-        list = new address[](12);
-        uint256[] memory weights = new uint256[](12);
-        for (uint256 i = 0; i < 12; ++i) {
+        list = new address[](B.COINS);
+        uint256[] memory weights = new uint256[](B.COINS);
+        for (uint256 i = 0; i < B.COINS; ++i) {
             list[i] = all[i];
-            // 12 coins: 837 for the first and 833 for each other is 10,000.
-            weights[i] = i == 0 ? 837 : 833;
+            // an equal share each, the first taking what the division leaves, so the weights make 10,000
+            weights[i] = 10_000 / B.COINS + (i == 0 ? 10_000 % B.COINS : 0);
         }
         _list(factory, list);
         _freshPrices(factory, list);
         factory.setApprovedCreator(address(this), true);
         index = WeightedHub(
-            factory.createIndex("BNB Chain Twelve", "BNB12", _onWeights(factory, list, weights, 120), _params())
+            factory.createIndex("BNB Chain Coins", "BNBC", _onWeights(factory, list, weights, 120), _params())
         );
     }
 
@@ -761,12 +770,12 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
         }
     }
 
-    /// @dev An index of the whole BNB Chain list rebalances with real transfers: WBNB leaves and each of the other
-    ///      eleven coins comes in, so the index probes that it can send every one of them (RX-12) and the post-check
+    /// @dev An index of the whole BNB Chain list rebalances with real transfers: WBNB leaves and every other coin
+    ///      comes in, so the index probes that it can send every one of them (RX-12) and the post-check
     ///      reads every real balance. The units are the ones the executor named, every balance moved by exactly the
     ///      previewed amount, and the holder then leaves in kind at the new units.
     function testFork_anIndexOfTheWholeListRebalancesWithRealTransfers() public {
-        (WeightedHub index, address[] memory list) = _twelveCoinIndex();
+        (WeightedHub index, address[] memory list) = _coinIndex();
         uint256 shares = 100e18;
         _issueInKind(index, alice, shares);
 
@@ -904,14 +913,18 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
     function _mintLegs(bytes[3] memory paths) internal pure returns (IUniversalRouterSwaps.MintLeg[] memory legs) {
         legs = new IUniversalRouterSwaps.MintLeg[](3);
         for (uint256 i = 0; i < 3; ++i) {
-            legs[i] = IUniversalRouterSwaps.MintLeg({v3Path: paths[i], v4Path: new PathKey[](0), maxAmountIn: 0});
+            legs[i] = IUniversalRouterSwaps.MintLeg({
+                localRoute: "", v3Path: paths[i], v4Path: new PathKey[](0), maxAmountIn: 0
+            });
         }
     }
 
     function _burnLegs(bytes[3] memory paths) internal pure returns (IUniversalRouterSwaps.BurnLeg[] memory legs) {
         legs = new IUniversalRouterSwaps.BurnLeg[](3);
         for (uint256 i = 0; i < 3; ++i) {
-            legs[i] = IUniversalRouterSwaps.BurnLeg({v3Path: paths[i], v4Path: new PathKey[](0), minAmountOut: 0});
+            legs[i] = IUniversalRouterSwaps.BurnLeg({
+                localRoute: "", v3Path: paths[i], v4Path: new PathKey[](0), minAmountOut: 0
+            });
         }
     }
 
@@ -980,6 +993,195 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
         assertEq(IERC20(B.USDT).balanceOf(alice), budget - spent + out);
         assertGe(out, spent * 99 / 100, "the zap held the burn to its floor: a round trip loses under 1%");
         assertLt(out, spent, "and gains nothing");
+    }
+
+    /// @dev The deployment's DEX beside Uniswap is PancakeSwap's router, pinned by its code, which takes no ether from a
+    ///      stranger: the denial of service PancakeSwap's older router on Ethereum allowed (an open `receive` and a
+    ///      refund of its whole ether balance after every call) cannot be set up here.
+    function testFork_pancakeSwapsRouterIsThePinnedBuild() public {
+        (IndexZap zap,) = _threeCoinIndex();
+        assertEq(uint8(zap.LOCAL_DEX()), uint8(IUniversalRouterSwaps.LocalDex.PancakeSwap));
+        assertEq(zap.LOCAL_ROUTER(), B.PANCAKE_UNIVERSAL_ROUTER);
+        assertEq(B.PANCAKE_UNIVERSAL_ROUTER.codehash, PANCAKE_ROUTER_CODEHASH, "PancakeSwap's Infinity router");
+        vm.deal(alice, 1 ether);
+        vm.prank(alice);
+        (bool taken,) = B.PANCAKE_UNIVERSAL_ROUTER.call{value: 1}("");
+        assertFalse(taken, "it refuses a stranger's ether");
+    }
+
+    function _local(uint8 family, bytes memory path) internal pure returns (bytes memory) {
+        return abi.encodePacked(family, path);
+    }
+
+    /// @dev The zap mints the three-coin index from USDT through PancakeSwap's real pools and burns it back: WBNB
+    ///      through its V2 pair, BTCB and ETH through its V3 pools, where most of BNB Chain's depth is. Nothing goes
+    ///      through Uniswap, nothing stays in the zap or the router, and the round trip costs the pools' fees alone.
+    function testFork_theZapMintsAndBurnsThroughPancakeSwap() public {
+        (IndexZap zap, WeightedHub index) = _threeCoinIndex();
+        uint256 shares = 10e18;
+        uint256 budget = 10_000e18;
+        deal(B.USDT, alice, budget);
+        uint256 uniswapBefore = IERC20(B.USDT).balanceOf(B.UNIVERSAL_ROUTER);
+
+        IUniversalRouterSwaps.MintLeg[] memory mintLegs = new IUniversalRouterSwaps.MintLeg[](3);
+        mintLegs[0] = IUniversalRouterSwaps.MintLeg({
+            v3Path: "",
+            v4Path: new PathKey[](0),
+            localRoute: _local(1, abi.encodePacked(B.WBNB, uint24(0), B.USDT)),
+            maxAmountIn: 0
+        });
+        mintLegs[1] = IUniversalRouterSwaps.MintLeg({
+            v3Path: "",
+            v4Path: new PathKey[](0),
+            localRoute: _local(0, abi.encodePacked(B.BTCB, uint24(500), B.USDT)),
+            maxAmountIn: 0
+        });
+        mintLegs[2] = IUniversalRouterSwaps.MintLeg({
+            v3Path: "",
+            v4Path: new PathKey[](0),
+            localRoute: _local(0, abi.encodePacked(B.ETH, uint24(100), B.USDT)),
+            maxAmountIn: 0
+        });
+        vm.startPrank(alice);
+        IERC20(B.USDT).approve(address(zap), budget);
+        uint256 spent = zap.mintWithToken(
+            IIndexZap.MintParams({
+                index: address(index),
+                expectedNonce: 0,
+                tokenIn: B.USDT,
+                maxAmountIn: budget,
+                shares: shares,
+                legs: mintLegs,
+                to: alice,
+                deadline: block.timestamp,
+                referrer: address(0)
+            })
+        );
+        vm.stopPrank();
+        assertEq(index.balanceOf(alice), shares);
+        assertEq(IERC20(B.USDT).balanceOf(alice), budget - spent, "what the swaps did not take came back");
+        uint256[] memory units = index.recordedUnits();
+        assertEq(IERC20(B.WBNB).balanceOf(address(index)), shares * units[0] / 1e18, "the index holds BNB in kind");
+        assertEq(IERC20(B.BTCB).balanceOf(address(index)), shares * units[1] / 1e18);
+        assertEq(IERC20(B.ETH).balanceOf(address(index)), shares * units[2] / 1e18);
+        assertEq(IERC20(B.USDT).balanceOf(address(zap)), 0, "nothing stays in the zap");
+        assertEq(IERC20(B.USDT).balanceOf(B.PANCAKE_UNIVERSAL_ROUTER), 0, "nor in PancakeSwap's router");
+
+        IUniversalRouterSwaps.BurnLeg[] memory burnLegs = new IUniversalRouterSwaps.BurnLeg[](3);
+        burnLegs[0] = IUniversalRouterSwaps.BurnLeg({
+            v3Path: "",
+            v4Path: new PathKey[](0),
+            localRoute: _local(1, abi.encodePacked(B.WBNB, uint24(0), B.USDT)),
+            minAmountOut: 0
+        });
+        burnLegs[1] = IUniversalRouterSwaps.BurnLeg({
+            v3Path: "",
+            v4Path: new PathKey[](0),
+            localRoute: _local(0, abi.encodePacked(B.BTCB, uint24(500), B.USDT)),
+            minAmountOut: 0
+        });
+        burnLegs[2] = IUniversalRouterSwaps.BurnLeg({
+            v3Path: "",
+            v4Path: new PathKey[](0),
+            localRoute: _local(0, abi.encodePacked(B.ETH, uint24(100), B.USDT)),
+            minAmountOut: 0
+        });
+        vm.startPrank(alice);
+        index.approve(address(zap), shares);
+        uint256 out = zap.burnToToken(
+            IIndexZap.BurnParams({
+                index: address(index),
+                expectedNonce: 0,
+                shares: shares,
+                tokenOut: B.USDT,
+                minAmountOut: spent * 99 / 100,
+                legs: burnLegs,
+                to: alice,
+                deadline: block.timestamp
+            })
+        );
+        vm.stopPrank();
+        assertEq(index.totalSupply(), 0);
+        assertEq(IERC20(B.USDT).balanceOf(alice), budget - spent + out);
+        assertGe(out, spent * 99 / 100, "a round trip through PancakeSwap loses under 1%");
+        assertLt(out, spent, "and gains nothing");
+        assertEq(IERC20(B.WBNB).balanceOf(address(zap)), 0, "every coin was sold");
+        assertEq(IERC20(B.USDT).balanceOf(B.UNIVERSAL_ROUTER), uniswapBefore, "Uniswap's router was never paid");
+    }
+
+    /// @dev CAKE, listed on 2026-11-27 for its market on PancakeSwap: an index of WBNB and CAKE is minted from USDT and
+    ///      burnt back through PancakeSwap's pools alone, CAKE through its V3 pool against USDT at 0.25%, which held about
+    ///      2.7M CAKE and $480k of USDT on 2026-11-27, its deepest on BNB Chain. The round trip loses under 1%.
+    function testFork_cakeTradesThroughPancakeSwap() public {
+        (WeightedIndexFactory factory, IndexZap zap,,) = _deploy();
+        address[] memory two = new address[](2);
+        (two[0], two[1]) = (B.WBNB, B.CAKE);
+        uint256[] memory weights = new uint256[](2);
+        (weights[0], weights[1]) = (5000, 5000);
+        _list(factory, two);
+        _freshPrices(factory, two);
+        factory.setApprovedCreator(address(this), true);
+        WeightedHub index = WeightedHub(
+            factory.createIndex("BNB and CAKE", "BCAKE", _onWeights(factory, two, weights, MAJORS_DOLLARS), _params())
+        );
+        bytes[2] memory routes = [
+            _local(1, abi.encodePacked(B.WBNB, uint24(0), B.USDT)),
+            _local(0, abi.encodePacked(B.CAKE, uint24(2500), B.USDT))
+        ];
+        IUniversalRouterSwaps.MintLeg[] memory mintLegs = new IUniversalRouterSwaps.MintLeg[](2);
+        IUniversalRouterSwaps.BurnLeg[] memory burnLegs = new IUniversalRouterSwaps.BurnLeg[](2);
+        for (uint256 i = 0; i < 2; ++i) {
+            mintLegs[i] = IUniversalRouterSwaps.MintLeg({
+                v3Path: "", v4Path: new PathKey[](0), localRoute: routes[i], maxAmountIn: 0
+            });
+            burnLegs[i] = IUniversalRouterSwaps.BurnLeg({
+                v3Path: "", v4Path: new PathKey[](0), localRoute: routes[i], minAmountOut: 0
+            });
+        }
+        uint256 shares = 10e18;
+        uint256 budget = 10_000e18;
+        deal(B.USDT, alice, budget);
+
+        vm.startPrank(alice);
+        IERC20(B.USDT).approve(address(zap), budget);
+        uint256 spent = zap.mintWithToken(
+            IIndexZap.MintParams({
+                index: address(index),
+                expectedNonce: 0,
+                tokenIn: B.USDT,
+                maxAmountIn: budget,
+                shares: shares,
+                legs: mintLegs,
+                to: alice,
+                deadline: block.timestamp,
+                referrer: address(0)
+            })
+        );
+        vm.stopPrank();
+        assertEq(index.balanceOf(alice), shares);
+        assertEq(IERC20(B.CAKE).balanceOf(address(index)), shares * index.recordedUnits()[1] / 1e18, "CAKE in kind");
+        assertEq(IERC20(B.CAKE).balanceOf(address(zap)), 0, "nothing stays in the zap");
+
+        vm.startPrank(alice);
+        index.approve(address(zap), shares);
+        uint256 out = zap.burnToToken(
+            IIndexZap.BurnParams({
+                index: address(index),
+                expectedNonce: 0,
+                shares: shares,
+                tokenOut: B.USDT,
+                minAmountOut: spent * 99 / 100,
+                legs: burnLegs,
+                to: alice,
+                deadline: block.timestamp
+            })
+        );
+        vm.stopPrank();
+        assertEq(index.totalSupply(), 0);
+        assertEq(IERC20(B.USDT).balanceOf(alice), budget - spent + out);
+        assertLt(out, spent, "a round trip gains nothing");
+        assertEq(IERC20(B.CAKE).balanceOf(address(zap)), 0, "every coin was sold");
+        assertEq(IERC20(B.CAKE).balanceOf(B.PANCAKE_UNIVERSAL_ROUTER), 0, "and none left in PancakeSwap's router");
     }
 
     /// @dev The zap takes and pays only BNB Chain's USDC and USDT (the owner's call of 2026-11-18, which withdrew its

@@ -3696,8 +3696,8 @@
     "test": "test/IndexZap.t.sol",
     "edits": [
       {
-        "old": "                || FACTORY.isIndex(to)\n        ) revert InvalidRecipient(to);",
-        "new": "                || to == index\n        ) revert InvalidRecipient(to);"
+        "old": "                || to == address(FACTORY) || FACTORY.isIndex(to)\n        ) revert InvalidRecipient(to);",
+        "new": "                || to == address(FACTORY) || to == index\n        ) revert InvalidRecipient(to);"
       }
     ]
   },
@@ -4425,6 +4425,318 @@
       {
         "old": "if (block !== L.number) {",
         "new": "if (block === null) {"
+      }
+    ]
+  },
+  {
+    "id": "LV1",
+    "what": "the constructor ties no DEX to its router: a router for none, or none for PancakeSwap, is taken",
+    "origin": "design/2026-11-26-chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "(local.dex == LocalDex.None) != (local.router == address(0)) || local.router == address(router)",
+        "new": "local.router == address(router)"
+      }
+    ]
+  },
+  {
+    "id": "LV2",
+    "what": "the constructor lets Uniswap's router be named again as the chain's DEX",
+    "origin": "design/2026-11-26-chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "(local.dex == LocalDex.None) != (local.router == address(0)) || local.router == address(router)",
+        "new": "(local.dex == LocalDex.None) != (local.router == address(0))"
+      }
+    ]
+  },
+  {
+    "id": "LV3",
+    "what": "the constructor takes Aero without its stable-pool factory",
+    "origin": "design/2026-11-26-chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "                || aero != (local.stableFactory != address(0))\n",
+        "new": "\n"
+      }
+    ]
+  },
+  {
+    "id": "LV4",
+    "what": "a leg naming two venues is taken",
+    "origin": "design/2026-11-26-chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "if (named != 1) revert BadRoute(i);",
+        "new": "if (named == 0) revert BadRoute(i);"
+      }
+    ]
+  },
+  {
+    "id": "LV5",
+    "what": "a deployment without a DEX of its own takes a local route",
+    "origin": "design/2026-11-26-chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "if (LOCAL_DEX == LocalDex.None || family > CONSTANT_FUNCTION) revert BadRoute(i);",
+        "new": "if (family > CONSTANT_FUNCTION) revert BadRoute(i);"
+      }
+    ]
+  },
+  {
+    "id": "LV6",
+    "what": "a local route of an unknown family is taken as constant-function pools",
+    "origin": "design/2026-11-26-chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "if (LOCAL_DEX == LocalDex.None || family > CONSTANT_FUNCTION) revert BadRoute(i);",
+        "new": "if (LOCAL_DEX == LocalDex.None) revert BadRoute(i);"
+      }
+    ]
+  },
+  {
+    "id": "LV7",
+    "what": "a constant-function hop's parameter is never checked",
+    "origin": "design/2026-11-26-chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "if (uint24(bytes3(path[at:at + PathLib.FEE_SIZE])) > most) revert BadRoute(i);",
+        "new": "if (uint24(bytes3(path[at:at + PathLib.FEE_SIZE])) > type(uint24).max) revert BadRoute(i);"
+      }
+    ]
+  },
+  {
+    "id": "LV8",
+    "what": "an Aero basic pool may not be stable",
+    "origin": "design/2026-11-26-chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "uint24 most = LOCAL_DEX == LocalDex.Aero ? 1 : 0;",
+        "new": "uint24 most = 0;"
+      }
+    ]
+  },
+  {
+    "id": "LV9",
+    "what": "a PancakeSwap V2 hop may carry a parameter of one",
+    "origin": "design/2026-11-26-chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "uint24 most = LOCAL_DEX == LocalDex.Aero ? 1 : 0;",
+        "new": "uint24 most = 1;"
+      }
+    ]
+  },
+  {
+    "id": "LV10",
+    "what": "an Aero basic hop's parameter picks the wrong factory",
+    "origin": "design/2026-11-26-chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "return IAeroPoolFactory(param == 0 ? AERO_VOLATILE_FACTORY : AERO_STABLE_FACTORY).getPool(a, b);",
+        "new": "return IAeroPoolFactory(param == 0 ? AERO_STABLE_FACTORY : AERO_VOLATILE_FACTORY).getPool(a, b);"
+      }
+    ]
+  },
+  {
+    "id": "LV11",
+    "what": "Aero's pools of a buy are named in the route's order, not forward from what is paid",
+    "origin": "design/2026-11-26-chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "pools[n - 1 - k] = _aeroPool(concentrated, path[at:at + PathLib.ADDR_SIZE + PathLib.HOP_SIZE]);",
+        "new": "pools[k] = _aeroPool(concentrated, path[at:at + PathLib.ADDR_SIZE + PathLib.HOP_SIZE]);"
+      }
+    ]
+  },
+  {
+    "id": "LV12",
+    "what": "a PancakeSwap V2 buy's tokens are named in the route's order, not forward",
+    "origin": "design/2026-11-26-chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "tokens[n - 1 - k] = address(bytes20(path[at:at + PathLib.ADDR_SIZE]));",
+        "new": "tokens[k] = address(bytes20(path[at:at + PathLib.ADDR_SIZE]));"
+      }
+    ]
+  },
+  {
+    "id": "LV13",
+    "what": "a PancakeSwap V2 sale hop's pair is named backwards",
+    "origin": "design/2026-11-26-chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "(pair[0], pair[1]) = (hopPath.firstToken(), hopPath.lastToken());",
+        "new": "(pair[0], pair[1]) = (hopPath.lastToken(), hopPath.firstToken());"
+      }
+    ]
+  },
+  {
+    "id": "LV14",
+    "what": "a local leg pre-funds and runs on Uniswap's router",
+    "origin": "design/2026-11-26-chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "return _isLocal(venue) ? LOCAL_ROUTER : address(ROUTER);",
+        "new": "return address(ROUTER);"
+      }
+    ]
+  },
+  {
+    "id": "LV15",
+    "what": "an Aero leg is sent as a Universal Router call, without the Metarouter's deadline",
+    "origin": "design/2026-11-26-chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "} else if (LOCAL_DEX == LocalDex.Aero) {",
+        "new": "} else if (false) {"
+      }
+    ]
+  },
+  {
+    "id": "LV16",
+    "what": "the zap pays the chain's DEX router as a recipient",
+    "origin": "design/2026-11-26-chain-venues.md",
+    "file": "src/IndexZap.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "to == address(this) || to == address(ROUTER) || to == POOL_MANAGER || to == LOCAL_ROUTER",
+        "new": "to == address(this) || to == address(ROUTER) || to == POOL_MANAGER"
+      }
+    ]
+  },
+  {
+    "id": "LV17",
+    "what": "the builder pays the chain's DEX router as a recipient",
+    "origin": "design/2026-11-26-chain-venues.md",
+    "file": "src/BasketBuilder.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "to == address(this) || to == address(ROUTER) || to == POOL_MANAGER || to == LOCAL_ROUTER",
+        "new": "to == address(this) || to == address(ROUTER) || to == POOL_MANAGER"
+      }
+    ]
+  },
+  {
+    "id": "LV18",
+    "what": "the pass-through leg may name a local route",
+    "origin": "design/2026-11-26-chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "return v3Path.length != 0 || v4Path.length != 0 || localRoute.length != 0;",
+        "new": "return v3Path.length != 0 || v4Path.length != 0;"
+      }
+    ]
+  },
+  {
+    "id": "LV19",
+    "what": "an Aero sale spends millionths of the router's balance, not the hop's amount",
+    "origin": "design/2026-11-26-chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "amountIn: IAeroMetarouter.BalanceSpend({mode: IAeroMetarouter.SpendMode.Amount, value: given}),",
+        "new": "amountIn: IAeroMetarouter.BalanceSpend({mode: IAeroMetarouter.SpendMode.Pips, value: given}),"
+      }
+    ]
+  },
+  {
+    "id": "LV20",
+    "what": "a PancakeSwap concentrated buy is sent as a V2 swap",
+    "origin": "design/2026-11-26-chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "                    abi.encodePacked(Cmd.V3_SWAP_EXACT_OUT, Cmd.SWEEP),\n                    abi.encode(address(this), amountOut, cap, path, false)",
+        "new": "                    abi.encodePacked(Cmd.V2_SWAP_EXACT_OUT, Cmd.SWEEP),\n                    abi.encode(address(this), amountOut, cap, path, false)"
+      }
+    ]
+  },
+  {
+    "id": "LV21",
+    "what": "BNB Chain's deployment names no DEX of its own",
+    "origin": "design/2026-11-26-chain-venues.md",
+    "file": "script/DeployChecks.sol",
+    "test": "test/DeployChecks.t.sol",
+    "edits": [
+      {
+        "old": "            local.dex = IUniversalRouterSwaps.LocalDex.PancakeSwap;\n",
+        "new": "\n"
+      }
+    ]
+  },
+  {
+    "id": "LV22",
+    "what": "a deployment whose builder names another DEX than its zap passes the check",
+    "origin": "design/2026-11-26-chain-venues.md",
+    "file": "script/DeployWeighted.s.sol",
+    "test": "test/Scripts.t.sol",
+    "edits": [
+      {
+        "old": "            if (builders[i] != zaps[i]) {",
+        "new": "            if (false) {"
+      }
+    ]
+  },
+  {
+    "id": "LV23",
+    "what": "a pinned chain's deployment that left its DEX out passes the check",
+    "origin": "design/2026-11-26-chain-venues.md",
+    "file": "script/DeployWeighted.s.sol",
+    "test": "test/Scripts.t.sol",
+    "edits": [
+      {
+        "old": "            if (isPinnedChain() && zaps[i] != book[i]) {",
+        "new": "            if (false) {"
+      }
+    ]
+  },
+  {
+    "id": "LV24",
+    "what": "the chain's DEX may hold a role",
+    "origin": "design/2026-11-26-chain-venues.md",
+    "file": "script/DeployChecks.sol",
+    "test": "test/Scripts.t.sol",
+    "edits": [
+      {
+        "old": "            if (dex[i] != address(0)) list[at++] = dex[i];",
+        "new": "            if (false) list[at++] = dex[i];"
       }
     ]
   }

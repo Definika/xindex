@@ -262,8 +262,12 @@ which returned the zap to its earlier Uniswap-only build. The zap types its call
   basket builder's `buy` and `sell` take the same two (the owner's call of 2026-11-18). No entry point is payable: the
   ether entry points of 2026-10-29 (`mintWithEth`, `burnToEth`, `burnToEthWithPermit`) and the zap's `WETH` are gone
   (`audit/2026-11-18-zap-ether-retirement.md`). The pass-through leg is then a stablecoin the index holds itself.
-- **One venue per leg.** A `MintLeg` or `BurnLeg` carries exactly one non-empty route, a packed `v3Path` or a
-  `PathKey[] v4Path`, or `BadRoute(i)`; both empty is valid only for the pass-through leg. A V4 route must be hookless (`hooks` zero and
+- **One venue per leg.** A `MintLeg` or `BurnLeg` carries exactly one non-empty route, a packed `v3Path`, a
+  `PathKey[] v4Path` or a `localRoute` through the chain's own DEX (PancakeSwap's Infinity Universal Router on BNB
+  Chain, Aero's Metarouter on Base, none on Ethereum; `design/2026-11-26-chain-venues.md`), or `BadRoute(i)`; all
+  empty is valid only for the pass-through leg. The chain's DEX is fixed per deployment and its router is no valid
+  recipient; its legs keep every rule below, pre-funded, swept in the same call, measured as balance changes, sold one
+  hop at a time. A V4 route must be hookless (`hooks` zero and
   `hookData` empty), which also rules out the dynamic-fee flag. `address(0)` is native ether and may appear only as an
   intermediate; the zap has no `receive()`, so no swap can send it ether.
 - **Every command is the zap's own.** Each swap is one `execute(commands, inputs)` built here, and nothing a caller
@@ -814,8 +818,8 @@ math holds nothing and reads nothing. No price enters either.
   the keeper stock allowance only within the restock allowance the executor's owner sets per coin, so restocking never
   raises what a stolen keeper key can deliver (RS-1), and the treasury holds at most the owner's figure of USDC off the
   float (RS-2). It was built for the eight EVM-homed coins with a market, XRP, ADA, LTC, DOT and BNB on BNB Chain, AVAX,
-  OP and AERO, and serves AVAX and AERO by default: the first five left Ethereum's list on 2026-11-13 and OP on
-  2026-11-21; ATOM has
+  OP and AERO, and serves AVAX alone by default: the first five left Ethereum's list on 2026-11-13, OP on
+  2026-11-21 and AERO on 2026-11-26; ATOM has
   none, and JUP, PYTH, SUI, APT and ALGO wait for their chains' adapters (`keeper/README.md`,
   `audit/2026-10-25-restock-review.md`). None of it is a protocol contract or role: the hub sees an executor that
   delivers.
@@ -874,8 +878,9 @@ own deployment, which holds those coins in kind, and stood at 85, nine of them W
 the copies of JUP, PYTH, SUI, APT and ALGO left it: no Ethereum pool trades them, so a rebalance could buy them only
 from stock bridged in from Solana, Sui, Aptos or Algorand, and the restock that would bridge it has never run
 (`design/2026-11-18-bridged-coins-in-a-rebalance.md`). OP's copy left on 2026-11-21 (the owner's call): the restock
-found no route to buy OP on Optimism that day. Three Wormhole copies stay: SOL's, which a Uniswap pool trades, and
-AVAX's and AERO's, which the restock serves from their EVM home chains. The fifteen were:
+found no route to buy OP on Optimism that day, and AERO's on 2026-11-26 (the owner's call): it is a copy of
+Aerodrome's AERO, which Aero replaced. Two Wormhole copies stay: SOL's, which a Uniswap pool trades, and AVAX's, which
+the restock serves from its EVM home chain. The fifteen were:
 SOL, listed first, 12 added on 2026-10-10, and BNB and SUI, whose copies the count of that day missed, added on
 2026-10-18; a 13th of 2026-10-10, DOGE's, left on 2026-10-14 on the owner's call, since Pyth, which then priced the
 rebalance, prices DOGE and not the copy. SAND and RLB left on 2026-10-18 after the source reading, and on 2026-10-19 BTT
@@ -1141,7 +1146,8 @@ and one L2 deployment if cheap minting for small buyers matters after launch.
   an anvil fork, where a fill of 93 legs cost 7.26M gas, Pyth's parse 2.34M of it; the keeper bot with its executor
   (`keeper/`); and on 2026-10-13 the deletion of the BNB Chain deployment, the v4 demo, the review PoCs and the records
   of retired designs, all recoverable from git at `f83dcab`. On 2026-10-14 the owner removed THORChain and the zap's
-  PancakeSwap legs: users come with USDC or USDT, and the zap swaps through Uniswap alone.
+  PancakeSwap legs: users come with USDC or USDT, and the zap swaps through Uniswap alone. On 2026-11-26 the owner
+  brought each chain's own DEX back beside Uniswap: PancakeSwap on BNB Chain, Aero on Base.
 - **The oracle-free rebalance** (2026-11-10): the owner's call to cut the oracle and keep the rebalance. Until then v5's
   settlement was priced by Pyth. The hub fixed the second its prices belonged to, an executor brought a signed update
   for it, the targets came from those prices, and the auction ran on a multiplier μ that fell from 1.02 to 0.98. From
