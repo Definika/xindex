@@ -32,7 +32,7 @@ contract DeployChecksTest is Test {
     /// @dev Nor against BNB Chain's state, which its own router names (RX-23): under an id that is no pinned chain's
     ///      the book stays BNB Chain's. Under an override to Ethereum's own id the id decides, as it must on the real
     ///      chain 1: the run stays pinned, resolves Ethereum's book, and stops at Ethereum's USDC address, which has
-    ///      no code on BNB Chain (read on 2026-11-18).
+    ///      no code on BNB Chain.
     function test_RX23_aChainIdOverrideCannotUnpinBnbChain() public {
         vm.chainId(137);
         vm.etch(checks.BNB_UNIVERSAL_ROUTER(), hex"00");
@@ -53,7 +53,7 @@ contract DeployChecksTest is Test {
 
     /// @dev On chain 1 nothing anyone deploys names BNB Chain. Its router is a CREATE2 deployment from a factory
     ///      anyone may call, so anyone can put it at its address on Ethereum, as someone did on Base (read on
-    ///      2026-11-13); the first rule of that day asked for that code before the chain id, and a replay would have
+    ///      chain); a rule that asked for that code before the chain id, and a replay would have
     ///      handed every deployment on Ethereum BNB Chain's book, stopping it at that book's first address with no code
     ///      on Ethereum.
     function test_bnbChainsRouterReplayedOnEthereumNamesNothing() public {
@@ -102,7 +102,7 @@ contract DeployChecksTest is Test {
     }
 
     /// @dev Ethereum's router address has code on BNB Chain too: a replay of Ethereum's deployment, wired to
-    ///      Ethereum's PoolManager address (read on 2026-11-13). The checks before 2026-11-13 read that code as
+    ///      Ethereum's PoolManager address. Checks that read that code before the chain id took it as
     ///      "this is Ethereum" and resolved Ethereum's book on BNB Chain. BNB Chain is told by its chain id, and under
     ///      any id that is not a pinned chain's by its own router, asked before Ethereum's, so the replay names
     ///      nothing.
@@ -128,7 +128,7 @@ contract DeployChecksTest is Test {
     }
 
     /// @dev Base is pinned to its own address book by its chain id, 8453, and by nothing else: BNB Chain's router and
-    ///      Ethereum's both have code on Base, replays that settle against nothing there (read on 2026-11-21), and
+    ///      Ethereum's both have code on Base, replays that settle against nothing there, and
     ///      before Base had a book the first of them handed a deployment on Base BNB Chain's.
     function test_baseIsPinnedByItsChainIdWhateverRoutersStandThere() public {
         assertEq(checks.BASE_UNIVERSAL_ROUTER(), BaseAddresses.UNIVERSAL_ROUTER);
@@ -165,7 +165,7 @@ contract DeployChecksTest is Test {
         assertEq(checks.pinnedPyth(), BaseAddresses.PYTH);
     }
 
-    /// @dev Base's router address has code on Ethereum and on BNB Chain too (read on 2026-11-21), so no router's code
+    /// @dev Base's router address has code on Ethereum and on BNB Chain too, so no router's code
     ///      names Base: under any id but 8453 the same state is not Base. On Ethereum's and BNB Chain's own ids
     ///      their ids decide, and under any other the book is the one the routers there name, never Base's. A run
     ///      against Base's state under another id is therefore still pinned, to BNB Chain's book, whose USDC address
@@ -196,7 +196,7 @@ contract DeployChecksTest is Test {
 
     /// @dev Each chain's own DEX beside Uniswap comes from its address book alone: none off the pinned chains and on
     ///      Ethereum, PancakeSwap's router on BNB Chain, Aero's Metarouter and three factories on Base; and every
-    ///      address it names must have code (the owner's call of 2026-11-26).
+    ///      address it names must have code.
     function test_eachPinnedChainNamesItsOwnDex() public {
         IUniversalRouterSwaps.LocalVenue memory venue = checks.pinnedLocalVenue();
         assertEq(uint8(venue.dex), uint8(IUniversalRouterSwaps.LocalDex.None));

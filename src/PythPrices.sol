@@ -10,6 +10,7 @@ import {IPythReader} from "./interfaces/IPythReader.sol";
 import {IWeightedIndexFactory} from "./interfaces/IWeightedIndexFactory.sol";
 import {IXindexErrors} from "./interfaces/IXindexErrors.sol";
 import {IMultiplierToken} from "./interfaces/IMultiplierToken.sol";
+import {ISyntheticSharesOracle} from "./interfaces/ISyntheticSharesOracle.sol";
 
 /// @title PythPrices
 /// @notice Values a rebalance's legs at Pyth's prices, for the check that can only refuse a fill. See {IPythPrices}.
@@ -18,8 +19,11 @@ import {IMultiplierToken} from "./interfaces/IMultiplierToken.sol";
 ///      - A value is one raw unit's worth in dollars times 1e36: Pyth's price, moved by its confidence against the
 ///        executor, times ten to its exponent plus 36, times whole feed assets per raw unit of the token.
 ///      - A token's decimals are the ones its listing recorded (`decimalsOf`), never read from the token. A vault's
-///        rate and its asset's decimals, and a stock token's multiplier, are read from the token at the fill: they
-///        are what makes one unit worth more than one asset, and they move.
+///        rate and its asset's decimals, and a stock token's multiplier, are read from the token at the fill, and an
+///        Ondo token's sValue from Ondo's oracle (`SHARES_ORACLE`): they are what makes one unit worth more than one
+///        asset, and they move. An sValue is used only once settled (`SValueUnavailable`): Ondo's split or other
+///        corporate action is scheduled ahead as a pause, and its sValue lands when Ondo's operator lifts it by hand,
+///        so a leg is refused from the moment one is scheduled until its sValue has stood for `MIN_SVALUE_AGE`.
 ///      - A value that comes to nothing is refused like a price that is not positive (`UnusablePrice`): a multiplier
 ///        or a vault rate of zero, or a price too small for the scale, values no leg at zero, where one that leaves
 ///        would have counted as free.
@@ -33,6 +37,8 @@ contract PythPrices is IPythPrices {
     uint256 public constant MAX_CREATION_PRICE_AGE = 60;
     /// @inheritdoc IPythPrices
     uint256 public constant VALUE_SCALE = 1e36;
+    /// @inheritdoc IPythPrices
+    uint256 public constant MIN_SVALUE_AGE = 20 minutes;
     /// @dev The decimal digits of VALUE_SCALE.
     int256 private constant SCALE_DIGITS = 36;
     /// @dev The most digits a value's price may carry: an exponent of up to 18 on top of the scale's 36.
@@ -47,11 +53,20 @@ contract PythPrices is IPythPrices {
     address public immutable PYTH;
     /// @inheritdoc IPythPrices
     address public immutable FACTORY;
+    /// @inheritdoc IPythPrices
+    address public immutable SHARES_ORACLE;
 
-    constructor(address pyth) {
+    // A zero shares oracle is allowed on purpose: a chain without Ondo's oracle, where a `SharesOracle` feed values
+    // nothing.
+    // forge-lint: disable-next-item(missing-zero-check)
+    /// @param sharesOracle Ondo's `SyntheticSharesOracle` on this chain, or zero where Ondo has none.
+    constructor(address pyth, address sharesOracle) {
         if (pyth == address(0)) revert IXindexErrors.ZeroAddress();
         PYTH = pyth;
         FACTORY = msg.sender;
+        // Zero is allowed on purpose, as above.
+        // aderyn-fp-next-line(state-no-address-check)
+        SHARES_ORACLE = sharesOracle;
     }
 
     /// @inheritdoc IPythPrices
@@ -136,7 +151,24 @@ contract PythPrices is IPythPrices {
             uint256 assetOne = DECIMAL_BASE ** IERC20Metadata(IERC4626(token).asset()).decimals();
             return (IERC4626(token).convertToAssets(one), assetOne * one);
         }
-        // Multiplier: one raw unit stands for `multiplier / WAD` raw shares; the feed prices a whole share.
-        return (IMultiplierToken(token).multiplier(), WAD * one);
+        // One raw unit stands for `multiplier / WAD` raw shares, or `sValue / WAD`; the feed prices a whole share.
+        if (kind == FeedKind.Multiplier) return (IMultiplierToken(token).multiplier(), WAD * one);
+        return (_settledSValue(token), WAD * one);
+    }
+
+    /// @dev The sValue Ondo's oracle holds for `token`, if it is settled: held (not zero), with no corporate action
+    ///      scheduled or under way (no pause start), and unchanged for `MIN_SVALUE_AGE`. Any other is refused, so the
+    ///      fill or creation that needs it waits, as for a stale price.
+    function _settledSValue(address token) private view returns (uint256) {
+        address oracle = SHARES_ORACLE;
+        if (oracle == address(0)) revert SValueUnavailable(token);
+        // The three fields left out are a scheduled action's sValue, which lands only when Ondo lifts its pause, and
+        // the bounds of a routine update: no value reads them.
+        // forge-lint: disable-next-line(unused-return)
+        (uint128 sValue,, uint256 lastUpdate, uint256 pauseStart,,) = ISyntheticSharesOracle(oracle).assetData(token);
+        if (sValue == 0 || pauseStart != 0 || lastUpdate + MIN_SVALUE_AGE > block.timestamp) {
+            revert SValueUnavailable(token);
+        }
+        return sValue;
     }
 }

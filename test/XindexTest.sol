@@ -19,7 +19,7 @@ abstract contract XindexTest is Test {
     /// @dev Deploys a weighted factory owned by `owner`, with `guardian` (zero for none). This contract, which
     ///      `_createIndex` creates from, is approved to create.
     function _deployFactory(address guardian) internal {
-        factory = new WeightedIndexFactory(owner, guardian, address(0), address(new WeightedMath()));
+        factory = new WeightedIndexFactory(owner, guardian, address(0), address(new WeightedMath()), address(0));
         _approveCreator(address(this));
     }
 

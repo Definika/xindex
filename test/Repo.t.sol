@@ -13,14 +13,14 @@ import {LocalVenues} from "./LocalVenues.sol";
 ///         compiler (v1 I10), the pinned CI toolchain and required fork RPC (I11), the dependency lock against
 ///         `.gitmodules` (L08 and FR04) and the documented known limitations (I09); from the whole-repo audit, the CI
 ///         gates (XA-10, XA-64), the ignored chain-1 broadcasts (XA-43), the committed ABIs (XA-44), the single copy
-///         of the agent instructions (XA-46) and the verification key (XA-58); from the logic review of 2026-09-18,
-///         the test linking mode that lets checks after an expected constructor revert run (LR-01); from the security
-///         audit of 2026-09-23, the ignored Sepolia-fork broadcasts (CR-I40). CI checks the submodule commits
+///         of the agent instructions (XA-46) and the verification key (XA-58); from the first logic review,
+///         the test linking mode that lets checks after an expected constructor revert run (LR-01); from the first security
+///         audit, the ignored Sepolia-fork broadcasts (CR-I40). CI checks the submodule commits
 ///         themselves, which needs git; these tests check everything a local run can.
 contract RepoTest is Test {
     /// @dev keccak256 of the files `test_A712_theCiConfigIsPinnedWhole` pins whole: CI's workflow and the two Foundry
     ///      configs it runs. A change to one fails that test, which prints the new hash, until it is pinned here.
-    bytes32 private constant WORKFLOW_HASH = 0x3c1adf478d5063085cd32f2f6cf194681058b675f60671c3376d9733e8dc9d5a;
+    bytes32 private constant WORKFLOW_HASH = 0xc22104f4a647eb9f85fdd3f8f0e252a8ed9745b07a46000ce9c42f14448c24f7;
     bytes32 private constant FOUNDRY_TOML_HASH = 0xed56be1c9acc47165fe8a9303665b35391357ee7d85ef998f8c0c74761a0c3c4;
     bytes32 private constant KEEPER_FOUNDRY_TOML_HASH =
         0x5426d5180cca7c4ac15d7fb182272a805a3ce19a143d6c6f8c158f61765d7592;
@@ -356,8 +356,8 @@ contract RepoTest is Test {
     /// @dev XA-44: the ABIs the web app decodes with are committed, and CI regenerates them and fails on a diff: the zap,
     ///      the basket builder, `MintRequests`, and the weighted factory and index. v4's market-cap factory and hub are
     ///      deleted, and their ABIs with them; so are Stage B's hybrid factory, hybrid index and vault
-    ///      (`audit/2026-10-07-stage-b-retirement.md`), and the guardian relay, which went with the price update its
-    ///      starts carried (`audit/2026-11-10-oracle-retirement.md`). A7-12: the step is pinned whole, so neither a
+    ///      (`audits/retired/stage-b.md`), and the guardian relay, which went with the price update its
+    ///      starts carried (`audits/retired/oracle.md`). A7-12: the step is pinned whole, so neither a
     ///      contract left out nor a diff that stops failing passes.
     function test_XA44_A712_theAbisAreCommittedAndChecked() public view {
         string[6] memory contracts =
@@ -402,7 +402,7 @@ contract RepoTest is Test {
     }
 
     /// @dev XA-46: the agent instructions have one copy. CLAUDE.md holds the sections itself and imports no other
-    ///      file: an imported file is a second copy to drift, as AGENTS.md was until 2026-11-10.
+    ///      file: an imported file is a second copy to drift, as AGENTS.md was.
     function test_XA46_theAgentInstructionsAreOneFile() public view {
         string memory claude = _read("CLAUDE.md");
         assertTrue(_contains(claude, "\n## Design rules that must not be broken\n"), "CLAUDE.md holds the rules");
@@ -485,8 +485,8 @@ contract RepoTest is Test {
     }
 
     /// @dev No committed file names a path on its author's machine: a home folder, a temporary folder, or the folder an
-    ///      agent names after a home folder and keeps its scratchpad in. Three audit records showed the author's user
-    ///      name so until 2026-10-25. CI greps every committed text file and fails on a match, and on a grep that could
+    ///      agent names after a home folder and keeps its scratchpad in. Three audit records once showed the author's user
+    ///      name so. CI greps every committed text file and fails on a match, and on a grep that could
     ///      not run, which would otherwise pass as a clean tree. The step is pinned whole, keys and script: a pin on a
     ///      few of its lines let an `if: false`, a `continue-on-error`, a commented-out `exit 1` and a dropped
     ///      `status=0` through (a match then leaves the status empty, which neither test catches). The brackets keep
@@ -691,8 +691,8 @@ contract RepoTest is Test {
 
     /// @dev No file in `src/` and no shipped ABI in `abi/` names a Chainlink feed, a pool's price or its oracle, and the
     ///      v3 price contracts are gone. Every file of both folders is read, Stage B's included, so a new file is covered
-    ///      without being listed; the price reader's own files alone are left out since 2026-11-22, when Pyth's check
-    ///      on a fill came in (`_isPriceReader`, `audit/2026-11-22-pyth-check-retirement.md`), and the scan holds them
+    ///      without being listed; the price reader's own files alone are left out, when Pyth's check
+    ///      on a fill came in (`_isPriceReader`, `audits/retired/pyth-check.md`), and the scan holds them
     ///      to Pyth alone (`test_onlyThePriceReaderReadsPyth`). A7-13: the words name the common ways to read a price
     ///      (`_priceWords`), not five of them, and `test_A713_theScanFindsEveryPriceWord` shows the scan finds each.
     function test_A713_noContractReadsAPrice() public view {
@@ -806,11 +806,11 @@ contract RepoTest is Test {
         return false;
     }
 
-    /// @dev Since 2026-11-22 a rebalance fill is checked against Pyth's prices, and one contract reads them:
+    /// @dev A rebalance fill is checked against Pyth's prices, and one contract reads them:
     ///      `PythPrices`. Pyth's reads (its stored price, its parse, its pushes, whether it knows a feed) appear in
-    ///      its files alone: since 2026-11-23 the factory does not ask whether a feed exists. The vendored Pyth interfaces stay
+    ///      its files alone: the factory does not ask whether a feed exists. The vendored Pyth interfaces stay
     ///      gone: `IPythReader` is a declaration of our own. A new file is covered without being listed. V5-I4's test,
-    ///      which allowed Pyth nowhere, is retired (`audit/2026-11-22-pyth-check-retirement.md`).
+    ///      which allowed Pyth nowhere, is retired (`audits/retired/pyth-check.md`).
     function test_onlyThePriceReaderReadsPyth() public view {
         string[6] memory reads = [
             "getPriceUnsafe",

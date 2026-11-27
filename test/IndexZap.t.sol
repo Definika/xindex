@@ -940,7 +940,7 @@ contract IndexZapTest is XindexTest {
 
     /// @dev RY-1. A token payout sent to its own token's contract, or a mint's shares to its `tokenIn`'s, are kept
     ///      there. Each recipient reverts before anything moves. The ether half of RY-1, WETH as a recipient, went with
-    ///      the zap's ether entry points on 2026-11-18 (`audit/2026-11-18-zap-ether-retirement.md`).
+    ///      the zap's ether entry points (`audits/retired/zap-ether.md`).
     function test_RY1_theCallsOwnTokenIsNotAValidRecipient() public {
         _mintFor(alice, 2e18, 400e6);
         vm.startPrank(alice);
@@ -1316,7 +1316,7 @@ contract IndexZapTest is XindexTest {
         _assertZapEmpty();
     }
 
-    /// @dev The zap takes and pays its USDC and USDT alone (the owner's call of 2026-11-18): any other `tokenIn` or
+    /// @dev The zap takes and pays its USDC and USDT alone: any other `tokenIn` or
     ///      `tokenOut`, zero, a component of the index or any token, reverts before anything moves.
     function test_aCurrencyOtherThanTheTwoStablecoinsReverts() public {
         _mintFor(alice, 1e18, 200e6);
@@ -1473,7 +1473,7 @@ contract IndexZapTest is XindexTest {
     }
 
     // ---------------------------------------------------------------------
-    // CR: the security audit of 2026-09-23
+    // CR: the first security audit
     // ---------------------------------------------------------------------
 
     /// @dev CR-L02. A burn hop measured what the router sold as `inBefore - balanceAfter`, a checked subtraction inside
@@ -1895,7 +1895,7 @@ contract IndexZapTest is XindexTest {
     }
 
     // ---------------------------------------------------------------------
-    // Red team of 2026-09-24, mutation gaps
+    // The first red team (RT), mutation gaps
     // ---------------------------------------------------------------------
 
     /// @dev RT-10. A V3 path is a first token followed by whole hops of a fee and a token: 20 + 23k bytes, k at least
@@ -2055,7 +2055,7 @@ contract IndexZapTest is XindexTest {
     }
 
     // ---------------------------------------------------------------------
-    // RW: the red team of 2026-11-14
+    // RW: the red team of the oracle-free mechanism
     // ---------------------------------------------------------------------
 
     /// @dev An index of `blk`, whose issuer can freeze an account, beside USDC's smallest holding, one token of it

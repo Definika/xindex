@@ -641,7 +641,7 @@ contract MintRequestsTest is XindexTest {
     }
 
     // ---------------------------------------------------------------------
-    // the escrows' total, and a request bound to its basket (the audit of 2026-11-21)
+    // the escrows' total, and a request bound to its basket (the consolidated audit, CA)
     // ---------------------------------------------------------------------
 
     /// @dev CA-H2: every escrow of a token sits in one balance, and nothing compared that balance with what the open

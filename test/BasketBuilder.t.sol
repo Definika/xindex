@@ -477,7 +477,7 @@ contract BasketBuilderTest is XindexTest {
         p.tokenIn = address(0);
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotAStable.selector, address(0)));
         builder.buy(p);
-        // Only the builder's USDC and USDT pay for a buy (the owner's call of 2026-11-18).
+        // Only the builder's USDC and USDT pay for a buy.
         p.tokenIn = address(weth);
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotAStable.selector, address(weth)));
         builder.buy(p);
@@ -976,7 +976,7 @@ contract BasketBuilderTest is XindexTest {
         p.tokenOut = address(0);
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotAStable.selector, address(0)));
         builder.sell(p);
-        // Only the builder's USDC and USDT are a sale's proceeds (the owner's call of 2026-11-18).
+        // Only the builder's USDC and USDT are a sale's proceeds.
         p.tokenOut = address(wbtc);
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotAStable.selector, address(wbtc)));
         builder.sell(p);
@@ -1161,7 +1161,7 @@ contract BasketBuilderTest is XindexTest {
     // ---------------------------------------------------------------------
 
     // ---------------------------------------------------------------------
-    // The escrows' total, the token as a recipient, a deposit of nothing (the audit of 2026-11-21)
+    // The escrows' total, the token as a recipient, a deposit of nothing (the consolidated audit, CA)
     // ---------------------------------------------------------------------
 
     /// @dev CA-H2: every user's escrow of a token sits in one balance, and nothing compared that balance with the

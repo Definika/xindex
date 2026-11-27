@@ -62,13 +62,13 @@ contract BaseGuardianSafe {
 contract BaseAddressesForkTest is Test, IRebalanceExecutor {
     using SafeERC20 for IERC20;
 
-    /// @dev Runtime code hashes read on Base on 2026-11-21 at block 60,490,874. The router has no proxy and its
+    /// @dev Runtime code hashes read on Base at block 60,490,874. The router has no proxy and its
     ///      immutables are part of its code, so the hash is the build and its wiring.
     bytes32 constant UNIVERSAL_ROUTER_CODEHASH = 0x27713951fb0660a1422b710122022d90723d883dc7b72949be79cb2957d234e0;
     bytes32 constant POOL_MANAGER_CODEHASH = 0x83b2af6e9f3158defc2811cbcb0db71ecf8b2ba2abea39c39e370ac5c6f43eb6;
     bytes32 constant UNISWAP_V3_FACTORY_CODEHASH = 0x95707a4ac71f20181a63ef7d180e3c625be5d20fc8f6f980befa966bad568132;
-    /// @dev Aero's Metarouter and its three factories, the chain's own DEX beside Uniswap since 2026-11-26: none a
-    ///      proxy, read on 2026-11-26; the Metarouter's matches its verified source (Sourcify, exact match).
+    /// @dev Aero's Metarouter and its three factories, the chain's own DEX beside Uniswap: none a
+    ///      proxy, read; the Metarouter's matches its verified source (Sourcify, exact match).
     bytes32 constant AERO_METAROUTER_CODEHASH = 0x73b6a400a151c2609fdfdb73dc282e8273c84943feb37662176e2b7ade2a70d9;
     bytes32 constant AERO_CL_FACTORY_CODEHASH = 0x6c09090837ace0aefe6bfa24a3bc772d13a9775b7e3109c9fece534a0ce053a6;
     bytes32 constant AERO_VOLATILE_FACTORY_CODEHASH =
@@ -79,7 +79,7 @@ contract BaseAddressesForkTest is Test, IRebalanceExecutor {
     bytes32 constant ETHEREUM_ROUTER_CODEHASH = 0x6a5f46971b50c6e1b7eef97902311444e479d734e4f80ad88367783cf373fe7f;
     bytes32 constant BNB_ROUTER_CODEHASH = 0x4899c516cf2f0b82251ab88630a9b326d1a2668855c553f9f5a0ea2de993e63b;
     /// @dev Block the fork pins to; BASE_FORK_BLOCK overrides it for a non-archive RPC that only serves recent state.
-    ///      The suite passed whole here on 2026-11-22.
+    ///      The suite passed whole here.
     uint256 constant FORK_BLOCK = 60_529_140;
 
     uint24 constant F500 = 500;
@@ -150,7 +150,7 @@ contract BaseAddressesForkTest is Test, IRebalanceExecutor {
 
     /// @dev Each of the thirteen copies names, on chain, the coin of Ethereum's list it is a copy of and Base's
     ///      standard bridge as the one contract that mints and burns it. The other half of the proof, the backing the
-    ///      bridge holds on Ethereum, is read there (`design/2026-11-21-base-deployment.md`). The three coins that
+    ///      bridge holds on Ethereum, is read there (`docs/design/base.md`). The three coins that
     ///      are no copy name no bridge of Base's.
     function testFork_everyCopyNamesItsEthereumCoinAndBasesBridge() public view {
         (address[13] memory copies, address[13] memory remotes) = B.bridged();
@@ -205,7 +205,7 @@ contract BaseAddressesForkTest is Test, IRebalanceExecutor {
     }
 
     /// @dev CR-I35 on Base: the router answers the PoolManager of the address book, and all three are the code read
-    ///      on 2026-11-21.
+    ///      on chain.
     function testFork_CRI35_theRouterIsThePinnedBuild() public view {
         assertEq(IBaseRouterImmutables(B.UNIVERSAL_ROUTER).poolManager(), B.POOL_MANAGER);
         assertEq(B.UNIVERSAL_ROUTER.codehash, UNIVERSAL_ROUTER_CODEHASH, "Uniswap's router on Base");
@@ -341,7 +341,7 @@ contract BaseAddressesForkTest is Test, IRebalanceExecutor {
         assertEq(new ConfigureWeighted().resolveList("base").length, B.COUNT);
         address[] memory list = _evmList();
         WeightedIndexFactory factory =
-            new WeightedIndexFactory(address(this), address(0), address(0), address(new WeightedMath()));
+            new WeightedIndexFactory(address(this), address(0), address(0), address(new WeightedMath()), address(0));
         _list(factory, list);
         for (uint256 i = 0; i < list.length; ++i) {
             assertTrue(factory.isWhitelisted(list[i]));
@@ -763,7 +763,7 @@ contract BaseAddressesForkTest is Test, IRebalanceExecutor {
         assertEq(IERC20(B.USDC).balanceOf(B.UNIVERSAL_ROUTER), uniswapBefore, "Uniswap's router was never paid");
     }
 
-    /// @dev HK-22 on Aero's real Metarouter (audit/2026-11-27-attack-replay-ii.md): a route names tokens and a
+    /// @dev HK-22 on Aero's real Metarouter (audits/internal/attack-replay-ii.md): a route names tokens and a
     ///      parameter, and the engine asks Aero's pinned factories for each pool. A tick spacing Aero has no pool at,
     ///      or a stable pair it never made (cbBTC's against USDC; WETH has one), names address zero, which the
     ///      Metarouter refuses before anything moves.
@@ -836,7 +836,7 @@ contract BaseAddressesForkTest is Test, IRebalanceExecutor {
     // ---------------------------------------------------------------------
 
     /// @dev The publish time of the batch Pyth's contract on Base last stored cbXRP's coin's price in, at the fork's
-    ///      block: 1,795,197,594 at the pin, read on 2026-11-22, when cbDOGE's, cbLTC's and cbADA's were stored with it.
+    ///      block: 1,795,197,594 at the pin, read, when cbDOGE's, cbLTC's and cbADA's were stored with it.
     ///      Read from the fork, so a run near the head checks the batch stored there: the fill below runs ten seconds
     ///      after it.
     function _coinbaseBatch() internal view returns (uint256) {

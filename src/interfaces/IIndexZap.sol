@@ -16,8 +16,8 @@ import {IUniversalRouterSwaps} from "./IUniversalRouterSwaps.sol";
 ///        whose component is already the token being paid or received; it carries none.
 ///
 ///      Currencies
-///      - A mint pays and a burn is paid in the zap's `USDC` or `USDT`, and nothing else (the owner's call of
-///        2026-11-18, which withdrew the ether entry points of 2026-10-29). No entry point takes ether.
+///      - A mint pays and a burn is paid in the zap's `USDC` or `USDT`, and nothing else. No entry point
+///        takes ether.
 ///
 ///      Permits
 ///      - `mintWithTokenPermit` and `burnToTokenWithPermit` take an EIP-2612 signature for the whole amount the

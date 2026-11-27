@@ -11,13 +11,15 @@ import {IPythPrices} from "xindex/src/interfaces/IPythPrices.sol";
 import {IRebalanceExecutor} from "xindex/src/interfaces/IRebalanceExecutor.sol";
 import {PathLib} from "xindex/src/libraries/PathLib.sol";
 import {IV3SwapRouter} from "./interfaces/IV3SwapRouter.sol";
+import {IAeroSwapRouter} from "./interfaces/IAeroSwapRouter.sol";
 import {ITokenBridge} from "./interfaces/ITokenBridge.sol";
 import {IPyth} from "./interfaces/IPyth.sol";
 
 /// @title KeeperExecutor
 /// @notice The keeper bot's executor for `WeightedHub` auctions and `MintRequests` requests. It sells what an index
-///         sends out into USDC and buys what the index needs with USDC, through Uniswap V3 along the routes the bot
-///         passes with each fill, and it serves a coin with no route from its own inventory: it delivers that coin
+///         sends out into USDC and buys what the index needs with USDC, through Uniswap V3 or the chain's own DEX
+///         (PancakeSwap's V3 pools on BNB Chain, Aero's concentrated pools on Base) along the routes the bot passes with
+///         each fill, and it serves a coin with no route from its own inventory: it delivers that coin
 ///         from stock and keeps that coin when the index sells it. A mint request is filled the same way, the basket
 ///         bought and issued to this contract and the shares delivered for the escrowed stablecoin; a redeem request
 ///         by paying the stablecoin, redeeming the escrowed shares here and selling the basket. Several requests on
@@ -48,8 +50,30 @@ import {IPyth} from "./interfaces/IPyth.sol";
 ///      carry exactly that fee, the Pyth contract is the one the index's own factory reads, and the executor never
 ///      spends ether of its own.
 contract KeeperExecutor is IRebalanceExecutor {
+    /// @notice Which router the chain's own DEX is reached through, beside Uniswap's.
+    /// - None: no other venue; every route is Uniswap's.
+    /// - SwapRouter02: a router with Uniswap's SwapRouter02 calls and paths, as PancakeSwap's SmartRouter on BNB Chain.
+    /// - Aero: Aero's concentrated-liquidity SwapRouter on Base, whose calls carry a deadline and whose paths name a
+    ///   pool's tick spacing where Uniswap's name its fee.
+    enum LocalKind {
+        None,
+        SwapRouter02,
+        Aero
+    }
+
     /// @notice Uniswap's SwapRouter02.
     IV3SwapRouter public immutable ROUTER;
+    /// @notice The chain's own DEX router, or zero where there is none. A route that starts with the one byte
+    ///         `LOCAL_ROUTE` swaps through it along the path after that byte; every other route is Uniswap's.
+    address public immutable LOCAL_ROUTER;
+    /// @notice How `LOCAL_ROUTER` is called.
+    LocalKind public immutable LOCAL_KIND;
+    /// @notice The byte a route through the chain's own DEX starts with. A path is 20 bytes and 23 more a hop, so a
+    ///         route of one byte more cannot be read as a path of its own.
+    bytes1 public constant LOCAL_ROUTE = 0x01;
+    /// @dev A path's length, less 20, is a whole number of 23-byte hops; a local route's is one byte longer.
+    uint256 private constant HOP = 23;
+    uint256 private constant LOCAL_REMAINDER = 21;
     /// @notice The float's currency, and the end of every route.
     address public immutable USDC;
     /// @notice The factory whose indexes this executor fills.
@@ -236,8 +260,11 @@ contract KeeperExecutor is IRebalanceExecutor {
     error WrongSide(uint256 id);
     /// @notice The routes do not number one per component.
     error LengthMismatch();
-    /// @notice `token`'s route is not a path from `token` to USDC, or names USDC itself.
+    /// @notice `token`'s route is not a path from `token` to USDC, or names USDC itself, or names the chain's own DEX
+    ///         where the executor has none.
     error BadRoute(address token);
+    /// @notice The chain's own DEX was given as `router` of kind `kind`: a router with no kind, or a kind with none.
+    error BadLocalRouter(address router, LocalKind kind);
     /// @notice The index needs more of `token` than the executor may deliver from stock (what it holds, capped by the
     ///         owner's stock allowance), and `token` has no route to buy the rest.
     error NoRoute(address token);
@@ -289,7 +316,9 @@ contract KeeperExecutor is IRebalanceExecutor {
         IMintRequests requests,
         ITokenBridge tokenBridge,
         address owner,
-        address keeper_
+        address keeper_,
+        address localRouter,
+        LocalKind localKind
     ) {
         if (
             address(router) == address(0) || usdc == address(0) || address(factory) == address(0)
@@ -297,7 +326,12 @@ contract KeeperExecutor is IRebalanceExecutor {
                 || keeper_ == address(0)
         ) revert ZeroAddress();
         if (requests.FACTORY() != address(factory)) revert RequestsMismatch(address(requests));
+        if ((localRouter == address(0)) != (localKind == LocalKind.None)) {
+            revert BadLocalRouter(localRouter, localKind);
+        }
         ROUTER = router;
+        LOCAL_ROUTER = localRouter;
+        LOCAL_KIND = localKind;
         USDC = usdc;
         FACTORY = factory;
         REQUESTS = requests;
@@ -864,14 +898,7 @@ contract KeeperExecutor is IRebalanceExecutor {
             uint256 out = amounts[i];
             // A zero amountIn would make the router swap its own balance instead.
             if (out == 0 || routes[i].length == 0) continue;
-            SafeERC20.forceApprove(IERC20(tokens[i]), address(ROUTER), out);
-            // What a swap returns is not needed: a fill measures the float as a whole against its floor.
-            // forge-lint: disable-next-item(unused-return)
-            ROUTER.exactInput(
-                IV3SwapRouter.ExactInputParams({
-                    path: routes[i], recipient: address(this), amountIn: out, amountOutMinimum: _limit(minOut, i, 0)
-                })
-            );
+            _swapIn(routes[i], tokens[i], out, _limit(minOut, i, 0));
         }
     }
 
@@ -900,15 +927,7 @@ contract KeeperExecutor is IRebalanceExecutor {
             if (fromStock < need) {
                 // USDC has no route, so a float too short for a USDC component also ends here.
                 if (routes[i].length == 0) revert NoRoute(token);
-                // forge-lint: disable-next-item(unused-return)
-                ROUTER.exactOutput(
-                    IV3SwapRouter.ExactOutputParams({
-                        path: routes[i],
-                        recipient: address(this),
-                        amountOut: need - fromStock,
-                        amountInMaximum: _limit(maxIn, i, IERC20(USDC).balanceOf(address(this)))
-                    })
-                );
+                _swapOut(routes[i], need - fromStock, _limit(maxIn, i, IERC20(USDC).balanceOf(address(this))));
             }
         }
     }
@@ -917,38 +936,118 @@ contract KeeperExecutor is IRebalanceExecutor {
     ///      already.
     function _sellStable(address stable, uint256 amount, bytes calldata route, uint256 minOut) private {
         if (stable == USDC || amount == 0) return;
-        SafeERC20.forceApprove(IERC20(stable), address(ROUTER), amount);
-        // forge-lint: disable-next-item(unused-return)
-        ROUTER.exactInput(
-            IV3SwapRouter.ExactInputParams({
-                path: route, recipient: address(this), amountIn: amount, amountOutMinimum: minOut
-            })
-        );
+        _swapIn(route, stable, amount, minOut);
     }
 
     /// @dev Buys `amount` of `stable` with USDC along `route`, read backwards, for at most `maxIn` (zero for the
     ///      whole float); nothing to do when it is USDC already.
     function _buyStable(address stable, uint256 amount, bytes calldata route, uint256 maxIn) private {
         if (stable == USDC) return;
-        uint256 float = IERC20(USDC).balanceOf(address(this));
-        // forge-lint: disable-next-item(unused-return)
-        ROUTER.exactOutput(
-            IV3SwapRouter.ExactOutputParams({
-                path: route, recipient: address(this), amountOut: amount, amountInMaximum: maxIn != 0 ? maxIn : float
-            })
-        );
+        _swapOut(route, amount, maxIn != 0 ? maxIn : IERC20(USDC).balanceOf(address(this)));
+    }
+
+    /// @dev Sells exactly `amountIn` of `tokenIn`, the route's first token, for at least `minOut` of USDC, through the
+    ///      venue the route names, approved for exactly the sale, which spends all of it.
+    function _swapIn(bytes memory route, address tokenIn, uint256 amountIn, uint256 minOut) private {
+        (bool local, bytes memory path) = _venueOf(route);
+        address router = local ? LOCAL_ROUTER : address(ROUTER);
+        SafeERC20.forceApprove(IERC20(tokenIn), router, amountIn);
+        // What a swap returns is not needed: a fill measures the float as a whole against its floor.
+        if (local && LOCAL_KIND == LocalKind.Aero) {
+            // forge-lint: disable-next-item(unused-return)
+            IAeroSwapRouter(router)
+                .exactInput(
+                    IAeroSwapRouter.ExactInputParams({
+                        path: path,
+                        recipient: address(this),
+                        deadline: block.timestamp,
+                        amountIn: amountIn,
+                        amountOutMinimum: minOut
+                    })
+                );
+        } else {
+            // forge-lint: disable-next-item(unused-return)
+            IV3SwapRouter(router)
+                .exactInput(
+                    IV3SwapRouter.ExactInputParams({
+                        path: path, recipient: address(this), amountIn: amountIn, amountOutMinimum: minOut
+                    })
+                );
+        }
+    }
+
+    /// @dev Buys exactly `amountOut` of the route's first token with at most `maxIn` of USDC, the route's last, through
+    ///      the venue the route names. Uniswap's router holds the float's standing approval; the local router is
+    ///      approved for the purchase's bound and for nothing after it.
+    function _swapOut(bytes memory route, uint256 amountOut, uint256 maxIn) private {
+        (bool local, bytes memory path) = _venueOf(route);
+        if (!local) {
+            // forge-lint: disable-next-item(unused-return)
+            ROUTER.exactOutput(
+                IV3SwapRouter.ExactOutputParams({
+                    path: path, recipient: address(this), amountOut: amountOut, amountInMaximum: maxIn
+                })
+            );
+            return;
+        }
+        address router = LOCAL_ROUTER;
+        SafeERC20.forceApprove(IERC20(USDC), router, maxIn);
+        if (LOCAL_KIND == LocalKind.Aero) {
+            // forge-lint: disable-next-item(unused-return)
+            IAeroSwapRouter(router)
+                .exactOutput(
+                    IAeroSwapRouter.ExactOutputParams({
+                        path: path,
+                        recipient: address(this),
+                        deadline: block.timestamp,
+                        amountOut: amountOut,
+                        amountInMaximum: maxIn
+                    })
+                );
+        } else {
+            // forge-lint: disable-next-item(unused-return)
+            IV3SwapRouter(router)
+                .exactOutput(
+                    IV3SwapRouter.ExactOutputParams({
+                        path: path, recipient: address(this), amountOut: amountOut, amountInMaximum: maxIn
+                    })
+                );
+        }
+        SafeERC20.forceApprove(IERC20(USDC), router, 0);
+    }
+
+    /// @dev Whether `route` names the chain's own DEX, and the path it swaps along: the route less its first byte for
+    ///      a local route, the route itself for Uniswap's. The routes were checked when the fill began ({_checkRoutes}).
+    function _venueOf(bytes memory route) private pure returns (bool local, bytes memory path) {
+        local = _isLocal(route);
+        if (!local) return (local, route);
+        uint256 n = route.length - 1;
+        path = new bytes(n);
+        for (uint256 i = 0; i < n; ++i) {
+            path[i] = route[i + 1];
+        }
+    }
+
+    /// @dev A route is local when it is one byte longer than a path could be and that byte is `LOCAL_ROUTE`.
+    function _isLocal(bytes memory route) private pure returns (bool) {
+        return route.length % HOP == LOCAL_REMAINDER && route[0] == LOCAL_ROUTE;
+    }
+
+    /// @dev Whether `route`, a path from `from` to USDC or a local route along one, is well formed and, if local,
+    ///      names a DEX this executor has.
+    function _routeIsGood(bytes calldata route, address from) private view returns (bool) {
+        bytes calldata path = route;
+        if (_isLocal(route)) {
+            if (LOCAL_KIND == LocalKind.None) return false;
+            path = route[1:];
+        }
+        return PathLib.isValidShape(path) && PathLib.firstToken(path) == from && PathLib.lastToken(path) == USDC;
     }
 
     /// @dev A stablecoin other than USDC needs a well-formed path from it to USDC; USDC takes none.
     function _checkStableRoute(address stable, bytes calldata route) private view {
         bool needed = stable != USDC;
-        if (
-            needed != (route.length != 0)
-                || (needed
-                    && (!PathLib.isValidShape(route)
-                        || PathLib.firstToken(route) != stable
-                        || PathLib.lastToken(route) != USDC))
-        ) revert BadRoute(stable);
+        if (needed != (route.length != 0) || (needed && !_routeIsGood(route, stable))) revert BadRoute(stable);
     }
 
     /// @dev One route per component, each empty or a well-formed path from its component to USDC; USDC takes none.
@@ -958,10 +1057,7 @@ contract KeeperExecutor is IRebalanceExecutor {
         for (uint256 i = 0; i < n; ++i) {
             bytes calldata route = routes[i];
             if (route.length == 0) continue;
-            if (
-                tokens[i] == USDC || !PathLib.isValidShape(route) || PathLib.firstToken(route) != tokens[i]
-                    || PathLib.lastToken(route) != USDC
-            ) revert BadRoute(tokens[i]);
+            if (tokens[i] == USDC || !_routeIsGood(route, tokens[i])) revert BadRoute(tokens[i]);
         }
     }
 

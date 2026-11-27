@@ -155,6 +155,7 @@ const factory = await deploy(deployer, json(`${ROOT}out/WeightedIndexFactory.sol
   deployer,
   "0x0000000000000000000000000000000000000000",
   math,
+  "0x0000000000000000000000000000000000000000",
 ]);
 const requests = await deploy(deployer, json(`${ROOT}out/MintRequests.sol/MintRequests.json`), [factory, USDC, "0xdAC17F958D2ee523a2206206994597C13D831ec7"]);
 const executor = await deploy(deployer, json(`${KEEPER_DIR}out/KeeperExecutor.sol/KeeperExecutor.json`), [
@@ -165,6 +166,8 @@ const executor = await deploy(deployer, json(`${KEEPER_DIR}out/KeeperExecutor.so
   BRIDGE,
   execOwner,
   privateKeyToAccount(key("keeper")).address,
+  "0x0000000000000000000000000000000000000000",
+  0,
 ]);
 await send(execOwner, executor, executorAbi, "setTreasury", [treasury.address]);
 await send(execOwner, executor, executorAbi, "setTreasuryUsdcAllowance", [100_000n * 10n ** 6n]);

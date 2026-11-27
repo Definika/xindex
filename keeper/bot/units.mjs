@@ -1,6 +1,6 @@
-// The units a fill names. Since 2026-11-10 no contract reads a price: `executeRebalance(newUnits, data)` settles at
+// The units a fill names. No contract reads a price to settle a rebalance: `executeRebalance(newUnits, data)` settles at
 // the units its caller names, and `WeightedMath` accepts them when every leg is inside its unit caps and a weighted
-// gain in units clears the auction's bar (design/2026-11-10-oracle-free-rebalance.md). This file is the keeper's side
+// gain in units clears the auction's bar (docs/design/rebalance.md). This file is the keeper's side
 // of that rule, pure and dependency-free:
 //   - the hub's arithmetic, word for word (`barAt`, `gainOf`), so the bot knows what the index will accept before it
 //     asks; `test/unit/units.test.mjs` replays the contracts' own vectors (test/vectors/settlement.json) through it;
@@ -152,11 +152,11 @@ export function legValuesOf(units, newUnits, leaving, arriving) {
 ///
 /// What is taken is linear in the units and the gain is a sum of concave scores, so the best fill is where every
 /// moved leg's score has the same slope per dollar: `L'(x_i) = price_i · units_i / (λ · weight_i)`, with `λ` the
-/// smallest that clears the bar. Until 2026-11-21 the legs were named by the logarithm's slope, `1 / (1 + x)`, which
-/// is `λ · weight / price` units: a fill the hub accepts, but not the best one, because `L` lies under the logarithm
-/// and further under it the more a leg grows. With two legs moving freely the old rule took an eighth less, forty
-/// minutes into the auction of an index one of whose three coins had doubled and another halved, so the keeper
-/// waited for a lower bar than it needed to (CA-M7).
+/// smallest that clears the bar. Naming the legs by the logarithm's slope instead, `1 / (1 + x)`, which
+/// is `λ · weight / price` units, gives a fill the hub accepts, but not the best one, because `L` lies under the logarithm
+/// and further under it the more a leg grows. With two legs moving freely that rule takes an eighth less, forty
+/// minutes into the auction of an index one of whose three coins had doubled and another halved, so a keeper using it
+/// waits for a lower bar than it needs to (CA-M7).
 ///
 /// `prices[i]` is dollars per raw unit of leg `i`, or null for a leg the keeper cannot value, which it leaves alone,
 /// as it does a kept one. `costBps` is what trading a leg is taken to cost: a leg is grown only past its target at the

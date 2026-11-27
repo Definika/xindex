@@ -14,7 +14,7 @@
 /// Permit2, the same on every chain.
 export const PERMIT2 = "0x000000000022d473030f116ddee9f6b43ac78ba3";
 /// UniswapX's V2 Dutch order reactor on Ethereum, the one reactor the service signs for: the Trading API's DUTCH_V2
-/// orders settle there, Ondo's stocks among them (read on 2026-11-24: ten AAPLon and NVDAon fills in 9,000 blocks, and
+/// orders settle there, Ondo's stocks among them (read on chain: ten AAPLon and NVDAon fills in 9,000 blocks, and
 /// none through the V3 reactor). Its `permit2()` is PERMIT2, which restock.mjs checks before it serves a local coin.
 export const REACTOR = "0x00000011f84b9aa48e5f8aa8b9897600006289be";
 /// The routing the Trading API names that reactor's orders by.

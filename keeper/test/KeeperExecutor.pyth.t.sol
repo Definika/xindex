@@ -40,7 +40,7 @@ contract KeeperExecutorPythTest is WeightedTest {
     function setUp() public {
         vm.warp(1_800_000_000);
         pyth = new MockUpdatablePyth();
-        factory = new WeightedIndexFactory(owner, guardian, address(pyth), address(new WeightedMath()));
+        factory = new WeightedIndexFactory(owner, guardian, address(pyth), address(new WeightedMath()), address(0));
         _approveCreator(creator);
         eth = new MockERC20("Ether", "ETH", 18);
         btc = new MockERC20("Bitcoin", "BTC", 8);
@@ -79,7 +79,9 @@ contract KeeperExecutorPythTest is WeightedTest {
             IMintRequests(address(new MintRequests(address(factory), address(usdc), address(usdt)))),
             ITokenBridge(address(new MockTokenBridge())),
             execOwner,
-            keeper
+            keeper,
+            address(0),
+            KeeperExecutor.LocalKind.None
         );
         usdc.mint(address(executor), 10_000e6);
     }

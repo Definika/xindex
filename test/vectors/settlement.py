@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The exact model of an oracle-free settlement, and the vectors `test/WeightedMath.vectors.t.sol` replays.
 
-The model is written from the spec (`design/2026-11-10-oracle-free-rebalance.md`, section 4), in exact rationals, not
+The model is written from the spec (`docs/design/rebalance.md`, section 4), in exact rationals, not
 from `src/WeightedMath.sol`: it never chains a `mulDiv`, it rounds each quantity once, where the spec says to. The test
 compares the contract's answer with the model's, word for word, on every vector.
 
@@ -26,7 +26,7 @@ of that proposal must then also bring in, at those prices, at least `1 - toleran
 so a quote can only refuse a fill the rule above accepts, never accept one it refuses. `quote_floor` is that check and
 the `quotes` of the output are its vectors.
 
-Since 2026-11-22 every fill also meets Pyth's prices (`design/2026-11-22-pyth-check.md`): the same floor, at the
+Every fill also meets Pyth's prices (`docs/design/pyth-check.md`): the same floor, at the
 values `PythPrices` reads, one per raw unit, with a tolerance that rises from nothing at the auction's first second to
 MAX_ORACLE_TOLERANCE at its last, rounded down,
 

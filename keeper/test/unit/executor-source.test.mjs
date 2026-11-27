@@ -1,4 +1,4 @@
-// The executor's source, read as an attacker reads it (audit/2026-11-23-attack-replay.md): the constructs that the
+// The executor's source, read as an attacker reads it (audits/internal/attack-replay.md): the constructs that the
 // hacks of 2024 to 2026 went through are not in it, and the one mark that opens its callback is written in one
 // place, cleared in one and read in one.
 
@@ -16,7 +16,7 @@ test("HK-03, HK-04: the executor makes no call a caller can aim and has no code 
 });
 
 test("HK-03: the executor pulls a token from nobody but its caller, the treasury, in two places", () => {
-  // Every pull names its caller as payer: the treasury's repayment of USDC, and since 2026-11-24 its deposit of a coin
+  // Every pull names its caller as payer: the treasury's repayment of USDC, and its deposit of a coin
   // it bought (`depositStock`), each behind `_checkTreasury()`.
   assert.equal(count("ransferFrom("), 2);
   assert.equal(count("SafeERC20.safeTransferFrom(IERC20(USDC), msg.sender, address(this), amount)"), 1);

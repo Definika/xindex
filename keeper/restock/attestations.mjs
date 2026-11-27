@@ -77,7 +77,7 @@ export function cctpFields(message) {
 }
 
 /// The most of a transfer, in basis points, a standard CCTP transfer may pay Circle: standard transfers are free on
-/// every route the service uses (Iris's fee table, read on 2026-11-02), and Circle may switch a minimum fee on.
+/// every route the service uses (Iris's fee table), and Circle may switch a minimum fee on.
 export const MAX_CCTP_FEE_BPS = 10;
 
 /// The fee to allow a standard transfer of `amount` (raw USDC), from Iris's fee table `fees` for its route

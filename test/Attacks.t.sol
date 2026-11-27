@@ -94,7 +94,7 @@ contract BatchCreator {
     }
 }
 
-/// @notice The hacks of 2016 to 2026, replayed against this build (`audit/2026-11-23-attack-replay.md`, ids `HK-…`).
+/// @notice The hacks of 2016 to 2026, replayed against this build (`audits/internal/attack-replay.md`, ids `HK-…`).
 ///         Each test is one class of attack that took funds somewhere, aimed at the contract here that it would hit.
 ///         A class another suite already replays is named in the record with that suite's test, not repeated here.
 /// @dev The factory has its oracle, so both of a fill's checks are live, as on a mainnet.
@@ -133,7 +133,7 @@ contract AttacksTest is WeightedTest {
     function setUp() public {
         vm.warp(1_800_000_000);
         pyth = new MockPyth();
-        factory = new WeightedIndexFactory(owner, guardian, address(pyth), address(new WeightedMath()));
+        factory = new WeightedIndexFactory(owner, guardian, address(pyth), address(new WeightedMath()), address(0));
         prices = IPythPrices(factory.PRICES());
         _approveCreator(creator);
         eth = new MockERC20("Ether", "ETH", 18);

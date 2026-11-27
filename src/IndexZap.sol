@@ -33,7 +33,7 @@ import {UniversalRouterSwaps} from "./UniversalRouterSwaps.sol";
 ///      - What a burn hop did not sell goes to the recipient, with a ComponentReturned event. Unsold `tokenOut` is
 ///        paid out with the rest.
 ///      - The two stablecoins are the only currencies: `tokenIn` and `tokenOut` must be the zap's `USDC` or `USDT`,
-///        else `NotAStable` (the owner's call of 2026-11-18). No entry point is payable, and the zap has no
+///        else `NotAStable`. No entry point is payable, and the zap has no
 ///        `receive`, so a call can neither bring ether in nor pay it out.
 ///      - A permit is tried, never required. One someone already submitted is accepted, and the transfer it was
 ///        signed for is what enforces the approval.

@@ -9,8 +9,8 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 
 /// @notice The token lists V5_WHITELIST and CHECK name, for the listing script and the admission check alike.
 /// @dev Internal functions, so `ConfigureWeighted` and `CheckToken` each carry them and neither creates the other.
-///      Until 2026-11-22 `CheckToken` created a `ConfigureWeighted` to resolve its tokens. A `forge script` run
-///      against an OP Stack chain (Foundry 1.8.1, seen on Base and on Optimism that day) fails a state-changing call
+///      `CheckToken` once created a `ConfigureWeighted` to resolve its tokens. A `forge script` run
+///      against an OP Stack chain (Foundry 1.8.1, seen on Base and on Optimism) fails a state-changing call
 ///      or a creation by an account that holds no ether before it runs, where a run against Ethereum or BNB Chain
 ///      does not; the script contract holds none and a script may not fund itself, so every CHECK on Base reverted
 ///      before it read a token, `CHECK=base` among them. Broadcast calls, and calls from a funded account, run.

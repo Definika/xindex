@@ -45,7 +45,7 @@ contract WeightedIndexFactoryTest is WeightedTest {
         vm.expectEmit();
         emit IWeightedIndexFactory.GuardianSet(address(0), guardian);
         WeightedIndexFactory deployed =
-            new WeightedIndexFactory(owner, guardian, address(0), address(new WeightedMath()));
+            new WeightedIndexFactory(owner, guardian, address(0), address(new WeightedMath()), address(0));
         assertEq(deployed.guardian(), guardian);
     }
 
@@ -56,7 +56,7 @@ contract WeightedIndexFactoryTest is WeightedTest {
 
     function test_aZeroGuardianIsNone() public {
         WeightedIndexFactory unguarded =
-            new WeightedIndexFactory(owner, address(0), address(0), address(new WeightedMath()));
+            new WeightedIndexFactory(owner, address(0), address(0), address(new WeightedMath()), address(0));
         assertFalse(unguarded.isOwnerOrGuardian(address(0)));
         assertTrue(unguarded.isOwnerOrGuardian(owner));
     }
@@ -624,7 +624,7 @@ contract WeightedIndexFactoryTest is WeightedTest {
 
         // Without a guardian, nobody but the owner cancels a removal.
         WeightedIndexFactory unguarded =
-            new WeightedIndexFactory(owner, address(0), address(0), address(new WeightedMath()));
+            new WeightedIndexFactory(owner, address(0), address(0), address(new WeightedMath()), address(0));
         vm.prank(owner);
         unguarded.proposeGuardian(address(0));
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, address(0)));
@@ -803,7 +803,7 @@ contract WeightedIndexFactoryTest is WeightedTest {
         factory.createIndex{value: 0.01 ether}("Weighted2", "WGT", specs, _params());
     }
 
-    /// @dev Only an account the owner approved creates an index (the owner's call of 2026-11-10). Neither role is
+    /// @dev Only an account the owner approved creates an index. Neither role is
     ///      approved by being a role.
     function test_onlyAnApprovedCreatorCreatesAnIndex() public {
         _listAll();
@@ -1133,7 +1133,7 @@ contract WeightedIndexFactoryTest is WeightedTest {
         vm.stopPrank();
     }
 
-    /// @dev Creating an index is buying it (the owner's call of 2026-11-23): one call creates the index and issues its
+    /// @dev Creating an index is buying it: one call creates the index and issues its
     ///      first shares, the basket pulled from the creator by the index itself, at the address the creator approved
     ///      before it existed. The index is then an index like any other.
     function test_creationIsTheFirstBuy() public {

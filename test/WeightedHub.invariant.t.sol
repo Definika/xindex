@@ -868,7 +868,7 @@ contract WeightedHubInvariantTest is Test {
         vm.warp(1_800_000_000);
         address owner = makeAddr("owner");
         address guardian = makeAddr("guardian");
-        factory = new WeightedIndexFactory(owner, guardian, address(0), address(new WeightedMath()));
+        factory = new WeightedIndexFactory(owner, guardian, address(0), address(new WeightedMath()), address(0));
         // This contract creates both indexes, then hands each creator role to an account that was never approved.
         vm.prank(owner);
         factory.setApprovedCreator(address(this), true);

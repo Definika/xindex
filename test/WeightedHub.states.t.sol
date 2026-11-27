@@ -11,7 +11,7 @@ import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {WeightedTest} from "./WeightedTest.sol";
 import {MockWeightedExecutor} from "./mocks/MockWeightedExecutor.sol";
 
-/// @notice The rebalance state machine of `design/2026-10-29-rebalance-state-machine.md`: one test per state, taking
+/// @notice The rebalance state machine of `docs/design/rebalance-state-machine.md`: one test per state, taking
 ///         every action from it, then the clock's transitions and the invariants the matrix implies.
 /// @dev The default index (ETH 50%, BTC 30%, USD 20%, $100 a token) with 100 tokens issued. A fill doubles every
 ///      component it may move: a gift, which clears the bar at any second of the auction, so the clock alone decides

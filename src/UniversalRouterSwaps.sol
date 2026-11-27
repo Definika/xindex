@@ -21,7 +21,7 @@ import {PathKey, UniswapV4Types as V4, V4ExactInputParams, V4ExactOutputParams} 
 ///         exact-output swap. A burn sells each with an exact-input swap.
 /// @dev Design notes
 ///      - Venue: each leg names one: Uniswap V3, Uniswap V4, or the chain's own DEX, which the deployment fixes. Depth
-///        favours each for some components, so the app chooses per leg (`design/2026-11-26-chain-venues.md`). The
+///        favours each for some components, so the app chooses per leg (`docs/design/chain-venues.md`). The
 ///        rules below hold for every venue: the chain's DEX is reached through a router of the same kind,
 ///        PancakeSwap's Universal Router (a fork of Uniswap's) or Aero's Metarouter, which both spend their own
 ///        balance when the payer is not the user, and both return it in the same call.

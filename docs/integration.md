@@ -27,7 +27,11 @@ On a factory with an oracle, which every mainnet factory is, the creation revert
 valueShare)` unless each component's share of the index's value at Pyth's prices lies within
 `MAX_WEIGHT_DEVIATION`, 5%, of its weight, relative to the weight: an index starts on its weights. A component
 without a feed, or whose price is stale or unusable, reverts the creation (`NoPriceFeed`, `StalePrice`,
-`UnusablePrice`). Creating and issuing in one call costs about what the two cost apart, some 110,000 gas a component
+`UnusablePrice`), and so does an Ondo token whose sValue is unsettled or that Ondo's oracle on the chain does not hold
+(`SValueUnavailable`: on Ethereum, 336 of the 344 share-priced tokens when last read): the app reads
+`assetData(token)` on Ondo's
+`SyntheticSharesOracle` (`IPythPrices.SHARES_ORACLE()`) before it offers such an index, and values the token at its
+share's price times the sValue there. Creating and issuing in one call costs about what the two cost apart, some 110,000 gas a component
 on plain tokens, so it fits one transaction up to about 125 components; a wider index is created with
 `createIndex(name, symbol, components, params)`, under the same checks and with no shares, and issued afterwards.
 Paying in USDC or USDT is the app's to compose: swap into the creator's wallet, then the four steps above.
@@ -69,8 +73,8 @@ V4 Quoter for a V4 one), sets per-leg limits and the overall `maxAmountIn`, read
 someone already submitted is accepted, and USDT has none.
 
 **USDC and USDT only.** The zap's `tokenIn` and `tokenOut`, and the basket builder's, must be that deployment's
-`USDC()` or `USDT()`, else `NotAStable(token)` before anything moves (the owner's call of 2026-11-18). No entry point
-takes ether: the ether entry points of 2026-10-29 are gone, so an app that offers ether swaps it to a stablecoin
+`USDC()` or `USDT()`, else `NotAStable(token)` before anything moves. No entry point
+takes ether, so an app that offers ether swaps it to a stablecoin
 first, outside the zap. On BNB Chain the two are Binance-Peg USDC and USDT, 18 decimals each.
 
 **Burn to USDC/USDT.** The app quotes each leg in the exact-input direction, sets per-leg minimums and a
@@ -111,7 +115,7 @@ non-zero overall `minAmountOut`, passes `rebalanceNonce()`, and calls `burnToTok
      `MAX_PRICE_AGE` (`StalePrice`), so the executor posts Pyth's update to Pyth's contract in the same transaction, before it
      fills, and so chooses, of the prices Pyth signed in those seconds and newer than the stored one, which one its
      fill is checked against (HK-25); a component without a feed (`NoPriceFeed`), or with a price the reader cannot use (`UnusablePrice`),
-     stops only a fill that moves it. This check can only refuse: a fill the units refuse is refused whatever the
+     or an Ondo token whose sValue is unsettled (`SValueUnavailable`), stops only a fill that moves it. This check can only refuse: a fill the units refuse is refused whatever the
      prices say.
 
    The executor receives what the shrinking components release and, inside its `onXindexRebalance` callback, must
@@ -279,7 +283,7 @@ escrow as it was taken: the stablecoin of a mint request, the shares of a redeem
   All empty means "no swap", which is only valid for the pass-through leg, the one whose component already is the
   stable on a mint or `tokenOut` on a burn. Anything else is `BadRoute(i)`. There are no mixed-venue legs. Quote each
   venue and name the one that pays more: on Base Uniswap is the deeper for WETH and cbBTC, Aero for most other coins;
-  on BNB Chain PancakeSwap for nearly all (`design/2026-11-26-chain-venues.md`).
+  on BNB Chain PancakeSwap for nearly all (`docs/design/chain-venues.md`).
 - **Local routes.** One byte naming the pool family, `0` for concentrated liquidity (PancakeSwap V3, Aero CL) and `1`
   for constant-function pools (PancakeSwap V2, Aero's basic pools), then a path of the V3 shape below, in the same
   direction as a `v3Path`. The three bytes between tokens are PancakeSwap's fee tier (100, 500, 2,500 or 10,000), Aero's
@@ -314,8 +318,8 @@ escrow as it was taken: the stablecoin of a mint request, the shares of a redeem
   call whose simulated gas exceeds about 14M. The in-kind paths fit at `MAX_COMPONENTS`, 200 (about 8.9M for `issue`,
   7.5M for `redeem`, 10.2M for `redeemSkipping` with every component skipped, on mock tokens), and so does the basket
   builder: six `buy` calls of about 34 legs and one `mint` (`test_theWidestBasketFitsInSixBuysAndAMint`, on mock
-  pools, so the buys are a floor). Real tokens transfer dearer: an index of 170 of Ethereum's 171 listed coins issued
-  in kind for 10.4M and redeemed for 6.9M on a fork of 2026-11-21. Simulate an index's own `issue` before creating it:
+  pools, so the buys are a floor). Real tokens transfer dearer: on a fork of Ethereum, an index of 200 of its 414
+  listed coins issued in kind for 14.7M and redeemed for 9.6M. Simulate an index's own `issue` before creating it:
   one too wide to issue in a transaction with its real tokens can be created and never minted.
 - **Approvals.** USDC supports `permit`; USDT does not, and its `approve` reverts when it changes a non-zero allowance
   to another non-zero value: if `allowance(user, zap)` is not 0, send `approve(zap, 0)` first. The same holds for
@@ -383,8 +387,8 @@ escrow as it was taken: the stablecoin of a mint request, the shares of a redeem
   errors.
 - **Requests.** Suggest a limit from the app's own valuation and show the deadline; a fill pays exactly what the filler
   sends, so any surplus over the limit goes to the fastest filler. Read a request with `getRequest(id)` (`requester`,
-  `deadline`, `isMint`, `open`, `rebalanceNonce`, `index`, `stable`, `escrow`, `limit`; the nonce is new on
-  2026-11-14, RW-2, so a decoder of the old tuple must follow) and its hash with `requestHash(id)`,
+  `deadline`, `isMint`, `open`, `rebalanceNonce`, `index`, `stable`, `escrow`, `limit`; the nonce is RW-2's) and
+  its hash with `requestHash(id)`,
   and follow `MintRequested`, `RedeemRequested`,
   `RequestFilled(id, filler, delivered)`, `RequestCancelled` and `RequestRefunded`. `escrow` is what arrived, which is
   less than the amount asked when USDT charges a fee. Errors: `NotIndex`, `NotAStable`, `ZeroAmount`,

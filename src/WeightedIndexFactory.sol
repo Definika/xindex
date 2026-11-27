@@ -90,8 +90,8 @@ import {PythPrices} from "./PythPrices.sol";
 ///      - One balance, one address. A token whose balance is also reachable through a second address is never
 ///        listed: the basket builder keeps its ledger by address and refuses only the swaps that would count such a
 ///        balance twice, and an index naming both addresses would count one balance as backing two components.
-// The one payable entry point, `createIndex`, forwards all of msg.value to the platform recipient in the same call
-// (`test_theCreationFeeIsForwardedWhole`), so no ether stays here.
+// The two payable entry points, `createIndex` and `createAndIssue`, forward all of msg.value to the platform
+// recipient in the same call (`test_theCreationFeeIsForwardedWhole`), so no ether stays here.
 // aderyn-fp-next-line(contract-locks-ether)
 contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, ReentrancyGuard {
     uint256 public constant MIN_COMPONENTS = 2;
@@ -176,16 +176,20 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
     // forge-lint: disable-next-item(missing-zero-check)
     /// @param pyth Pyth's price contract on this chain, or zero for a factory whose fills no price checks: the deploy
     ///        script refuses zero, and any address but the chain's own, on every chain it pins.
-    constructor(address initialOwner, address initialGuardian, address pyth, address math) Ownable(initialOwner) {
+    /// @param sharesOracle Ondo's `SyntheticSharesOracle` on this chain, from which `PRICES` reads an Ondo token's
+    ///        sValue, or zero where Ondo has none: the deploy script takes the chain's own, on every chain it pins.
+    constructor(address initialOwner, address initialGuardian, address pyth, address math, address sharesOracle)
+        Ownable(initialOwner)
+    {
         // A zero guardian is allowed on purpose, as above.
         // aderyn-fp-next-line(state-no-address-check)
         guardian = initialGuardian;
         emit GuardianSet(address(0), initialGuardian);
         // The math is deployed on its own, before the factory: deployed here as well, the factory's init code passed
-        // EIP-3860's 49,152 bytes once weights could change (2026-11-23). It is stateless, and the deploy script and
+        // EIP-3860's 49,152 bytes once weights could change. It is stateless, and the deploy script and
         // `checkDeployment` pin its code as they pin the factory's.
         if (math.code.length == 0) revert NotAContract(math);
-        address prices = pyth == address(0) ? address(0) : address(new PythPrices(pyth));
+        address prices = pyth == address(0) ? address(0) : address(new PythPrices(pyth, sharesOracle));
         PRICES = prices;
         IMPLEMENTATION = address(new WeightedHub(math, prices));
     }
@@ -768,7 +772,7 @@ contract WeightedIndexFactory is IWeightedIndexFactory, Ownable2Step, Reentrancy
         address prices = PRICES;
         if (prices == address(0)) revert NoOracle();
         // Pyth's contract on a chain knows a feed only once someone has posted an update of it there, so the factory
-        // does not ask: on BNB Chain 343 of the 364 feeds had never been posted (2026-11-23), and a creation and a fill
+        // does not ask: on BNB Chain 343 of the 364 feeds had never been posted, and a creation and a fill
         // each post their own. A wrong id can only refuse, as a missing price does.
         if ((feed.kind == IPythPrices.FeedKind.None) != (feed.id == bytes32(0))) revert InvalidPriceFeed(feed.id);
         uint256 pending = _priceFeedEta[token];

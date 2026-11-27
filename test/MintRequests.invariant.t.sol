@@ -253,7 +253,8 @@ contract MintRequestsInvariantTest is Test {
     address owner = makeAddr("owner");
 
     function setUp() public {
-        factory = new WeightedIndexFactory(owner, makeAddr("guardian"), address(0), address(new WeightedMath()));
+        factory =
+            new WeightedIndexFactory(owner, makeAddr("guardian"), address(0), address(new WeightedMath()), address(0));
         address[] memory components = new address[](2);
         vm.startPrank(owner);
         factory.setApprovedCreator(address(this), true);

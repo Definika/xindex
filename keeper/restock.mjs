@@ -14,8 +14,8 @@
 //      (`restock/uniswapx.mjs`), sell and bring home what nobody needs, and move USDC where the buys wait for it;
 //   3. it runs the plan, each move recorded in the journal (JOURNAL_FILE) before it is broadcast.
 //
-// Its home chains are EVM chains: the signers of Solana, Sui, Aptos and Algorand went on 2026-11-25 with the coins they
-// served, which had left Ethereum's list (audit/2026-11-25-non-evm-restock-retirement.md).
+// Its home chains are EVM chains: the signers of Solana, Sui, Aptos and Algorand went with the coins they
+// served, which had left Ethereum's list (audits/retired/non-evm-restock.md).
 
 import { decodeFunctionResult, encodeFunctionData } from "viem";
 import { MAINNET } from "./bot/config.mjs";

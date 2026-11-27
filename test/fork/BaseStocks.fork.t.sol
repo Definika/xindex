@@ -47,7 +47,7 @@ contract NodeExecutor is IRebalanceExecutor {
 ///         Run: BASE_RPC_URL=... forge test --match-path 'test/fork/BaseStocks.fork.t.sol' -vvv
 contract BaseStocksForkTest is Test {
     /// @dev Block the fork pins to; BASE_FORK_BLOCK overrides it for a non-archive RPC that only serves recent state.
-    ///      The suite passed whole here on 2026-11-22.
+    ///      The suite passed whole here.
     uint256 constant FORK_BLOCK = 60_529_140;
     /// @dev The gas a simulated call may use. The widest, the factory's deployment, gets less than the 16,777,216 a
     ///      transaction on Base is held to; the simulated blocks keep Base's own limit, so each block's calls fit one.
@@ -273,7 +273,7 @@ contract BaseStocksForkTest is Test {
     }
 
     /// @dev A holder of each stock at the pinned block, in the list's order: pools and vaults that hold far more than
-    ///      the simulation moves. Read from each token's transfers on 2026-11-22.
+    ///      the simulation moves. Read from each token's transfers.
     function _holders() internal pure returns (address[STOCKS] memory) {
         return [
             0xF668e21993f0ACd7ab00BB1cFbAeD0df28A3C8EC, // NVDAc
@@ -311,7 +311,7 @@ contract BaseStocksForkTest is Test {
             assertEq(abi.decode(_read(stocks[i], abi.encodeCall(IERC20Metadata.decimals, ())), (uint8)), 8);
             assertGt(abi.decode(_read(stocks[i], abi.encodeCall(IERC20.totalSupply, ())), (uint256)), 0, symbols[i]);
             uint256 multiplier = abi.decode(_read(stocks[i], abi.encodeWithSignature("multiplier()")), (uint256));
-            // Not one share a token: on 2026-11-22 NVDAc stood at 1.0005 shares after its dividends, SNDKc at 8.
+            // Not one share a token: at the pin NVDAc stands at 1.0005 shares after its dividends, SNDKc at 8.
             assertGt(multiplier, 0, symbols[i]);
             assertEq(uint8(B.tierOf(stocks[i])), uint8(Listings.Tier.Custodial), "Custodial, as Coinbase's coins");
         }
@@ -355,7 +355,9 @@ contract BaseStocksForkTest is Test {
         _create(
             "deploy the factory",
             DEPLOYER,
-            abi.encodePacked(type(WeightedIndexFactory).creationCode, abi.encode(OWNER, address(0), pyth, math)),
+            abi.encodePacked(
+                type(WeightedIndexFactory).creationCode, abi.encode(OWNER, address(0), pyth, math, address(0))
+            ),
             DEPLOY_GAS
         );
         for (uint256 i = 0; i < LEGS; ++i) {

@@ -22,8 +22,15 @@ const BNB_ID = "0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c
 /// - `maxFeeGwei`, `priorityFeeGwei`: the defaults of MAX_FEE_GWEI and PRIORITY_FEE_GWEI there;
 /// - `ondoOracle`: Ondo's SyntheticSharesOracle, which holds each Ondo token's sValue, the shares one token is worth
 ///   (bot/svalues.mjs), or null where Ondo has none. Both are the addresses Ondo's documentation names, read on chain
-///   on 2026-11-25: verified source `SyntheticSharesOracle`, `minimumPauseDuration()` 1800 on each.
-/// Every address of BNB Chain's and Base's entries was read on chain on 2026-11-24: SwapRouter02 and QuoterV2 answer
+///   verified source `SyntheticSharesOracle`, `minimumPauseDuration()` 1800 on each.
+/// - `localDex`: the chain's own DEX beside Uniswap, which the executor reaches as `LOCAL_ROUTER` of kind `kind` (its
+///   `LocalKind`: 1 a router of SwapRouter02's calls, 2 Aero's), or null where there is none: its router, the factory
+///   its pools are found in (by fee, or by tick spacing on Aero), the quoter its routes are priced by (a QuoterV2 of
+///   Uniswap's calls, or Aero's Metaquoter, which takes the pools of a route), and the fees or spacings it keys its
+///   pools by, and `hubStep`, the one the hop from the wrapped gas coin to the float takes. Read from each one's verified
+///   source and on chain: each router answers `factory()` with
+///   its factory and `WETH9()` with the chain's wrapped gas coin (`test/KeeperExecutor.chains.fork.t.sol`).
+/// Every address of BNB Chain's and Base's entries was read on chain: SwapRouter02 and QuoterV2 answer
 /// `factory()` with the address book's Uniswap V3 factory and `WETH9()` with its wrapped gas coin, and the Token
 /// Bridge answers `chainId()` with Wormhole's id for the chain (4, 30); `test/unit/chains.test.mjs` pins the rest
 /// against `script/BnbChainAddresses.sol` and `script/BaseAddresses.sol`.
@@ -48,12 +55,13 @@ export const CHAINS = Object.freeze({
     l1FeeOracle: null,
     maxFeeGwei: "100",
     priorityFeeGwei: "2",
-    // Holds 10 of the list's 353 Ondo tokens on 2026-11-25 (SPYon, QQQon, STRCon and seven more); the rest stay
+    // Holds 10 of the list's 353 Ondo tokens (SPYon, QQQon, STRCon and seven more); the rest stay
     // share-priced here.
     ondoOracle: "0x9BC39DB6fbB44B91a48b8D5A6C208B82B1741bE6",
+    localDex: null,
   }),
   // The test deployment's market (docs/deployment.md, "Testnet (Sepolia)"): Uniswap V3 pools against tUSDC, the
-  // FaucetToken the deployment mints with. Read on chain on 2026-10-31: SwapRouter02 and QuoterV2 answer factory()
+  // FaucetToken the deployment mints with. Read on chain: SwapRouter02 and QuoterV2 answer factory()
   // with the V3 factory, SwapRouter02's WETH9() is WETH, and the Token Bridge's chainId() is Sepolia's Wormhole id,
   // 10002. Its hub is the build of 07aeae1, which rebalances at Pyth's prices, so until a deployment of the
   // oracle-free build replaces it the keeper serves it with FILL_AUCTIONS=0: requests only. The test tokens are priced
@@ -83,10 +91,12 @@ export const CHAINS = Object.freeze({
     maxFeeGwei: "100",
     priorityFeeGwei: "2",
     ondoOracle: null,
+    localDex: null,
   }),
-  // BNB Chain: a block every 450 ms (measured 2026-11-24: 200 blocks in 90 s), no base fee and a gas price of 0.05
-  // gwei, gas paid in BNB. Uniswap V3 is the keeper's venue as on Ethereum; it routes six of the twelve coins of 2026-11-13
-  // and the rest are served from stock. Both stablecoins have eighteen decimals. The Token Bridge is Wormhole's,
+  // BNB Chain: a block every 450 ms (measured: 200 blocks in 90 s), no base fee and a gas price of 0.05
+  // gwei, gas paid in BNB. Uniswap V3 is a venue of the keeper's as on Ethereum, routing six of the first twelve coins,
+  // and PancakeSwap's V3 pools are the other, each leg taking the better quote; what neither
+  // routes is served from stock. Both stablecoins have eighteen decimals. The Token Bridge is Wormhole's,
   // which the executor's constructor requires and nothing here uses: the restock serves Ethereum alone.
   56: Object.freeze({
     name: "BNB Chain",
@@ -107,10 +117,20 @@ export const CHAINS = Object.freeze({
     l1FeeOracle: null,
     maxFeeGwei: "1",
     priorityFeeGwei: "0.1",
-    // Holds 349 of the list's 353 Ondo tokens on 2026-11-25, ANTon among them; NTRAon, INSMon, TWSTon and CAIon not.
+    // Holds 349 of the list's 353 Ondo tokens, ANTon among them; NTRAon, INSMon, TWSTon and CAIon not.
     ondoOracle: "0xF4Fd8a1B412633e10527454137A29Db7Aa35F15e",
+    // PancakeSwap's SmartRouter (its V3 calls SwapRouter02's), V3 factory and QuoterV2 (Uniswap's QuoterV2 calls).
+    localDex: Object.freeze({
+      name: "PancakeSwap",
+      kind: 1,
+      router: "0x13f4EA83D0bd40E75C8222255bc855a974568Dd4",
+      factory: "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865",
+      quoter: "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997",
+      steps: Object.freeze([100, 500, 2500, 10000]),
+      hubStep: 100, // WBNB/USDC's deepest PancakeSwap pool, about $114k of USDC deep
+    }),
   }),
-  // Base: a block every 200 ms (measured 2026-11-24: 200 blocks in 40 s), gas paid in ETH, and the L1 data fee on top,
+  // Base: a block every 200 ms (measured: 200 blocks in 40 s), gas paid in ETH, and the L1 data fee on top,
   // which GasPriceOracle prices (OP Stack's predeploy at 0x42…0F).
   8453: Object.freeze({
     name: "Base",
@@ -132,6 +152,17 @@ export const CHAINS = Object.freeze({
     maxFeeGwei: "1",
     priorityFeeGwei: "0.01",
     ondoOracle: null,
+    // Aero's concentrated-liquidity SwapRouter, CL factory and Metaquoter (Dromos Labs' metadex-slipstream-public,
+    // deployment-addresses/cl-base.json): Aero's own contracts, whose pools the old Aerodrome's do not reach.
+    localDex: Object.freeze({
+      name: "Aero",
+      kind: 2,
+      router: "0x9Ee35Bf1bd69a03c6F0393582030fCe8Bb93D418",
+      factory: "0x9CB220581b91b0C83223012FE69688b92aD07a76",
+      quoter: "0x1dDfeC5058180C207F55BB77D95AcDd0d8227868",
+      steps: Object.freeze([1, 50, 100, 200, 2000]),
+      hubStep: 100, // WETH/USDC's deepest Aero pool, about $224k of USDC deep
+    }),
   }),
 });
 
@@ -176,7 +207,7 @@ export const MAX_CONF_BPS = 200n;
 export const SVALUE_SETTLE_SECONDS = 1200n;
 
 /// The 344 Ondo legs whose Pyth feed prices the share, while each token is worth sValue shares (script/PythIds.sol,
-/// CF-3). Since 2026-11-25 the bot values one at the share's price times the sValue Ondo's oracle on the chain holds
+/// CF-3). The bot values one at the share's price times the sValue Ondo's oracle on the chain holds
 /// for it, once settled (bot/svalues.mjs). One it reads no settled sValue for it never values at Pyth: it names no new
 /// units for it, delivers none from stock and counts any it keeps as nothing (RX-2). `test/unit/config.test.mjs` pins
 /// the list against PythIds.sol.

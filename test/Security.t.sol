@@ -108,7 +108,7 @@ interface IXindexCore is IWeightedIndexFactory, IWeightedHub {
 
 /// @notice One regression test per finding of the Xindex v1 security review and of the v2 rebalancing design review,
 ///         each asserting the fixed behaviour, plus the attacks that already failed before the fixes. Every index is a
-///         `WeightedHub` (v5); `audit/2026-10-06-v4-retirement.md` says which ids went with v4's market-cap hub.
+///         `WeightedHub` (v5); `audits/retired/v4.md` says which ids went with v4's market-cap hub.
 contract SecurityRegressionTest is XindexTest {
     MockUniversalRouter router;
     address poolManager;
@@ -678,7 +678,7 @@ contract SecurityRegressionTest is XindexTest {
     }
 
     // ---------------------------------------------------------------------
-    // v2 rebalancing (design review of 2026-09-16), re-targeted to the weighted auction. The ids whose v5 test lives
+    // v2 rebalancing (the v2 design review), re-targeted to the weighted auction. The ids whose v5 test lives
     // in the weighted hub's own suites, and those retired with the λ band, are listed in the v4 retirement record.
     // ---------------------------------------------------------------------
 
@@ -804,7 +804,7 @@ contract SecurityRegressionTest is XindexTest {
     }
 
     // ---------------------------------------------------------------------
-    // Whole-repo audit of 2026-09-16 (XA ids, audit/2026-09-16-whole-repo-audit.md)
+    // Whole-repo audit (XA ids, audits/internal/whole-repo-audit-xa.md)
     // ---------------------------------------------------------------------
 
     /// @dev XA-03, re-targeted: relisting always takes a fresh proposal and delay. A whitelisted token cannot take a

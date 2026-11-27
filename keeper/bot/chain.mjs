@@ -57,6 +57,16 @@ export const ABI = {
     "function quoteExactOutput(bytes path, uint256 amountOut) returns (uint256 amountIn, uint160[], uint32[], uint256)",
   ]),
   v3Factory: parseAbi(["function getPool(address, address, uint24) view returns (address)"]),
+  // Aero's concentrated-liquidity factory, pool and Metaquoter on Base: pools keyed by tick spacing, a slot0 one field
+  // shorter than Uniswap's, and quotes along a list of pools from the token paid (bot/routes.mjs).
+  aeroFactory: parseAbi(["function getPool(address, address, int24) view returns (address)"]),
+  aeroPool: parseAbi([
+    "function slot0() view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, bool unlocked)",
+  ]),
+  metaquoter: parseAbi([
+    "function quoteExactInput(address[] pools, address tokenIn, uint256 amountIn) returns (uint256 amountOut, uint160[], uint32[])",
+    "function quoteExactOutput(address[] pools, address tokenIn, uint256 amountOut) returns (uint256 amountIn, uint160[], uint32[])",
+  ]),
   // OP Stack's GasPriceOracle predeploy: what posting a transaction of `size` bytes to Ethereum may cost, at most.
   l1FeeOracle: parseAbi(["function getL1FeeUpperBound(uint256 size) view returns (uint256)"]),
   v3Pool: parseAbi([
@@ -233,11 +243,24 @@ export function createChain(cfg) {
     if (chainId !== cfg.chain.chainId) throw new Error(`chain ${chainId} is not ${cfg.chain.name}`);
     const at = await client.getBlockNumber();
     const ex = (fn) => read(cfg.executor, ABI.executor, fn, [], at);
-    const [keeper, router, usdc, factory, requests] =
-      await Promise.all([ex("keeper"), ex("ROUTER"), ex("USDC"), ex("FACTORY"), ex("REQUESTS")]);
+    const [keeper, router, usdc, factory, requests, localRouter, localKind] = await Promise.all([
+      ex("keeper"),
+      ex("ROUTER"),
+      ex("USDC"),
+      ex("FACTORY"),
+      ex("REQUESTS"),
+      ex("LOCAL_ROUTER"),
+      ex("LOCAL_KIND"),
+    ]);
     const same = (a, b) => a.toLowerCase() === b.toLowerCase();
     if (!same(keeper, account.address)) throw new Error(`the executor's keeper is ${keeper}, not this bot's ${account.address}`);
     if (!same(router, cfg.chain.swapRouter02)) throw new Error(`the executor routes through ${router}, not SwapRouter02`);
+    // The chain's own DEX the bot routes legs through is the one the executor reaches, of the same kind, or neither has one.
+    const dex = cfg.chain.localDex;
+    const wanted = dex ? { router: dex.router, kind: dex.kind } : { router: "0x0000000000000000000000000000000000000000", kind: 0 };
+    if (!same(localRouter, wanted.router) || Number(localKind) !== wanted.kind) {
+      throw new Error(`the executor's own DEX is ${localRouter} of kind ${localKind}, not ${wanted.router} of kind ${wanted.kind}`);
+    }
     if (!same(usdc, cfg.chain.usdc)) throw new Error(`the executor's float is ${usdc}, not ${cfg.chain.name}'s USDC`);
     if (!same(factory, cfg.factory)) throw new Error(`the executor fills ${factory}'s indexes, not FACTORY's`);
     const requestsFactory = await read(requests, ABI.requests, "FACTORY", [], at);

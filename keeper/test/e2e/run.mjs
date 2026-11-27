@@ -299,7 +299,8 @@ const factoryHash = await wallet.deployContract({
   account: deployer,
   abi: FACTORY.abi,
   bytecode: FACTORY.bytecode.object,
-  args: [owner, guardian, PYTH, math],
+  // Ondo's SyntheticSharesOracle on Ethereum, from which the reader takes an Ondo leg's sValue.
+  args: [owner, guardian, PYTH, math, "0x9BC39DB6fbB44B91a48b8D5A6C208B82B1741bE6"],
   chain,
 });
 const factory = (await receiptOf(factoryHash)).contractAddress;
@@ -400,7 +401,8 @@ const exHash = await wallet.deployContract({
   account: deployer,
   abi: EXECUTOR.abi,
   bytecode: EXECUTOR.bytecode.object,
-  args: [SWAP_ROUTER02, USDC, factory, requests, TOKEN_BRIDGE, execOwner, keeperAccount.address],
+  // No venue beside Uniswap on Ethereum: the chain's own DEX router is zero, of kind `None`.
+  args: [SWAP_ROUTER02, USDC, factory, requests, TOKEN_BRIDGE, execOwner, keeperAccount.address, zeroAddress, 0],
   chain,
 });
 const executor = (await receiptOf(exHash)).contractAddress;
@@ -457,8 +459,8 @@ const keeper = spawn(process.execPath, ["keeper.mjs"], {
     // A fork with a cold cache fetches every new slot from upstream: slower than any RPC the keeper meets live.
     RPC_TIMEOUT_MS: "120000",
     NEEDS_FILE,
-    // JUP's and APT's copies left the list, and the keeper's catalogue, on 2026-11-18, and Ondo's NVDAon on
-    // 2026-11-21; they stay this test's coins, priced as an operator prices a coin the catalogue does not hold.
+    // JUP's and APT's copies are off the list and the keeper's catalogue, and Ondo's NVDAon is priced at a feed
+    // of its own; they stay this test's coins, priced as an operator prices a coin the catalogue does not hold.
     PRICE_IDS: `${T.JUP.a}=${T.JUP.id},${T.APT.a}=${T.APT.id},${T.NVDAON.a}=${T.NVDAON.id}`,
   },
   stdio: ["ignore", "pipe", "pipe"],
@@ -623,12 +625,12 @@ for (const index of [LQ, MIX, SHR]) {
   // The hub valued the fill at Pyth's prices, read in the same transaction from the update the keeper posted.
   const update = s.call.functionName === "fill" ? s.call.args[0].pythUpdate : [];
   ok(update.length > 0, `${names[index]}'s fill carried Pyth's update (${update.length} of them)`);
-  // Pyth's fee is its contract's own: zero on Ethereum, BNB Chain and Base on 2026-11-24, whatever it is then.
+  // Pyth's fee is its contract's own: zero on Ethereum, BNB Chain and Base when read, whatever it is then.
   const fee = update.length ? await read(PYTH, pythAbi, "getUpdateFee", [update]) : -1n;
   ok(s.value === fee, `and paid exactly Pyth's fee for it (${s.value} wei of ${fee})`);
 }
 const lq = await settlement(LQ);
-// `fill(AuctionFill)` since the keeper posts Pyth's update with it (2026-11-23): one struct, its routes a field.
+// `fill(AuctionFill)`, since the keeper posts Pyth's update with it: one struct, its routes a field.
 const { routes } = lq.call.args[0];
 ok(
   routes.some((r, i) => lq.amountsIn[i] > 0n && (r.length - 2) / 2 === 66),

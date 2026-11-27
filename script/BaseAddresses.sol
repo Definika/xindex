@@ -4,16 +4,14 @@ pragma solidity 0.8.28;
 import {Listings} from "./Listings.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
 
-/// @notice The Base contracts the deploy and listing scripts use for the Base deployment (the owner's call of
-///         2026-11-21, `design/2026-11-21-base-deployment.md`): the tokens its indexes may hold, each with its trust
+/// @notice The Base contracts the deploy and listing scripts use for the Base deployment (`docs/design/base.md`): the tokens its indexes may hold, each with its trust
 ///         tier, the mint currencies and Uniswap's contracts there. This is the only copy: `DeployChecks`,
 ///         `ConfigureWeighted` and `CheckToken` read it on chain 8453, and `test/fork/BaseAddresses.fork.t.sol` checks
 ///         it on chain (tokens by symbol and decimals, each bridged copy by the Ethereum token and the bridge it
-///         names, the router, the PoolManager and the V3 factory by their runtime code). No coin carries a price
-///         feed: an index rebalances on units alone (`design/2026-11-10-oracle-free-rebalance.md`). Every address
-///         here was read on chain 8453 on 2026-11-21, at block 60,490,874, and Coinbase's coins and stocks on
-///         2026-11-22 (`design/2026-11-22-coinbase-on-base.md`).
-/// @dev The list is the owner's rules of those two days: the coins issued on Base itself, each coin of Ethereum's
+///         names, the router, the PoolManager and the V3 factory by their runtime code). Each token's Pyth feed
+///         is in `PriceFeeds`. Every address here was read on chain 8453, at block 60,490,874, and Coinbase's coins and
+///         stocks after it (`docs/design/coinbase-on-base.md`).
+/// @dev The list follows the owner's rules: the coins issued on Base itself, each coin of Ethereum's
 ///      list whose copy Base's own bridge mints, proven on chain, and every coin and stock Coinbase issues on Base. Proven means three readings: the copy's `remoteToken()`
 ///      is the coin's address in `MainnetAddresses`, its `bridge()` is Base's standard bridge ({STANDARD_BRIDGE}),
 ///      and on Ethereum the other half of that bridge ({L1_STANDARD_BRIDGE}) holds the copy's backing
@@ -21,11 +19,10 @@ import {MainnetAddresses} from "./MainnetAddresses.sol";
 ///      - Thirteen coins pass: UNI, AAVE, MORPHO, FET, CRV, VIRTUAL, PENDLE, PEPE, GRT, COMP, SNX, 1INCH and RSR.
 ///      - SHIB and EIGEN have a balance in the bridge on Ethereum and no copy was found for them: not listed.
 ///      - LINK on Base is Chainlink's own cross-chain token, not the bridge's copy: not listed.
-///      - No Ondo stock is listed: Ondo's list of 2026-11-22 is Ethereum's and BNB Chain's. Backed's wrapper factory
+///      - No Ondo stock is listed: Ondo's tokens are on Ethereum's and BNB Chain's lists. Backed's wrapper factory
 ///        has deployed four wrappers of its older tokens here (wbCOIN, wbMSTR, wbNVDA, wbTSLA), which no list holds:
 ///        no Pyth feed names their tokens.
-///      - The stocks a Base index holds are Coinbase's ten, and cbBTC, refused on 2026-11-21 as a custodian the lists
-///        did not have, is listed with the other Coinbase Wrapped coins (the owner's call of 2026-11-22).
+///      - The stocks a Base index holds are Coinbase's ten, and cbBTC is listed with the other Coinbase Wrapped coins.
 library BaseAddresses {
     /// @notice Base's chain id.
     uint256 internal constant CHAIN_ID = 8453;
@@ -47,12 +44,12 @@ library BaseAddresses {
     // ---------------------------------------------------------------------
     /// @dev "Wrapped Ether", symbol WETH, 18 decimals: the WETH9 predeploy every OP Stack chain has at this address.
     address internal constant WETH = 0x4200000000000000000000000000000000000006;
-    /// @dev "Aero", symbol AERO, 18 decimals: Aero's token since Aerodrome and Velodrome launched as Aero on 2026-10-21
-    ///      (the owner's call of 2026-11-26 to list it, `design/2026-11-26-chain-venues.md`). Read from its verified
+    /// @dev "Aero", symbol AERO, 18 decimals: the token of Aero, which Aerodrome and Velodrome launched as
+    ///      (`docs/design/chain-venues.md`). Read from its verified
     ///      source (Sourcify, exact match): Solady's ERC-20 with no owner, pause, blocklist or proxy; only its
     ///      immutable `MINTER` mints, and only the voting escrow and the two migration contracts burn, each its own
-    ///      balance. It replaced Aerodrome's AERO, `0x940181a94A35A4569E4529A3CDfB74e38FD98631`, listed here until
-    ///      2026-11-26, which Aero's migration converts one for one while its owner keeps it open; the Wormhole copy
+    ///      balance. It replaced Aerodrome's AERO, `0x940181a94A35A4569E4529A3CDfB74e38FD98631`, which Aero's migration
+    ///      converts one for one while its owner keeps it open; the Wormhole copy
     ///      on Ethereum's list is of that older token.
     address internal constant AERO = 0x3f5bF3EdAc59d650D8fDf9657a71F2f904A3a4Ee;
 
@@ -98,8 +95,7 @@ library BaseAddresses {
     address internal constant RSR = 0xaB36452DbAC151bE02b16Ca17d8919826072f64a;
 
     // ---------------------------------------------------------------------
-    // Coinbase Wrapped coins, `Custodial`: Coinbase holds the coin and mints the token (the owner's call of
-    // 2026-11-22, "add all coinbase wrapped tokens in base", which lifts the refusal of cbBTC of the day before).
+    // Coinbase Wrapped coins, `Custodial`: Coinbase holds the coin and mints the token.
     // Five are issued on Base, each a proxy Coinbase upgrades, with a blocklist and a pause. cbETH is Base's bridge's
     // copy of Ethereum's cbETH (`0xBe9895146f7AF43049ca1c1AE358B0541Ea49704`), Coinbase's staked ether, whose value
     // rises against ether while every balance stays as it was.
@@ -149,7 +145,7 @@ library BaseAddresses {
     // ---------------------------------------------------------------------
     // The mint currencies, never components: Circle's USDC, issued on Base, and the token that answers "Tether USD"
     // and USDT there, which is no copy of the standard bridge's (it names no bridge); who can mint it and replace
-    // its code was not read on 2026-11-21, and is to be read before a deployment. Six decimals each, as on Ethereum.
+    // its code was not read, and is to be read before a deployment. Six decimals each, as on Ethereum.
     // ---------------------------------------------------------------------
     address internal constant USDC = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913;
     address internal constant USDT = 0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2;
@@ -163,8 +159,8 @@ library BaseAddresses {
     address internal constant L1_STANDARD_BRIDGE = 0x3154Cf16ccdb4C6d922629664174b904d80F2C35;
 
     // ---------------------------------------------------------------------
-    // Uniswap on Base, and Aero, the chain's own DEX beside it for the zap and the builder (the owner's call of
-    // 2026-11-26, `design/2026-11-26-chain-venues.md`). `CheckToken` reads Uniswap's depth alone. `DeployChecks` tells
+    // Uniswap on Base, and Aero, the chain's own DEX beside it for the zap and the builder
+    // (`docs/design/chain-venues.md`). `CheckToken` reads Uniswap's depth alone. `DeployChecks` tells
     // chain 8453 by its chain id: Ethereum's and BNB Chain's router addresses both have code on Base, replays that
     // settle against nothing here.
     // ---------------------------------------------------------------------
@@ -175,7 +171,7 @@ library BaseAddresses {
     /// @dev Uniswap V3's factory on Base, where `CheckToken` looks up a token's Uniswap pools.
     address internal constant UNISWAP_V3_FACTORY = 0x33128a8fC17869897dcE68Ed026d694621f6FDfD;
     /// @dev Aero's Metarouter, through which the zap and the builder reach Aero's pools. Aerodrome and Velodrome
-    ///      launched as Aero on 2026-10-21, on new contracts; the old Aerodrome router reaches only the old pools. Read
+    ///      launched as Aero on new contracts; the old Aerodrome router reaches only the old pools. Read
     ///      from its verified source (Sourcify, exact match; deployed at block 52,856,301) and from Aero's deployment
     ///      record (Dromos Labs' `metadex-public`, `deployment-addresses/metarouter-base.json`).
     address internal constant AERO_METAROUTER = 0x0fEf9e88A7b76BCDBF451780C6774FE32965Ee98;
@@ -186,7 +182,7 @@ library BaseAddresses {
     /// @dev Aero's stable basic-pool factory (`metadex-public`, `pools-base.json`).
     address internal constant AERO_STABLE_FACTORY = 0x78589E876edcEbdce72ee3436ab3c9AD3a7cEF2D;
     /// @dev Pyth's price contract, a proxy, through which the factory's `PythPrices` reads the price a fill is checked
-    ///      against (the owner's call of 2026-11-22). A filler posts a fresh update to it in its own transaction. Read
+    ///      against. A filler posts a fresh update to it in its own transaction. Read
     ///      on chain that day: it answers `priceFeedExists` for ETH/USD, and `DeployChecks` resolves it as it does the
     ///      router.
     address internal constant PYTH = 0x8250f4aF4B972684F7b336503E2D6dFeDeB1487a;

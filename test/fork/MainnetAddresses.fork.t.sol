@@ -13,6 +13,8 @@ import {ForkAddresses as A} from "./ForkAddresses.sol";
 import {PriceFeeds} from "../../script/PriceFeeds.sol";
 import {IPythPrices} from "../../src/interfaces/IPythPrices.sol";
 import {IPythReader} from "../../src/interfaces/IPythReader.sol";
+import {ISyntheticSharesOracle} from "../../src/interfaces/ISyntheticSharesOracle.sol";
+import {OndoSValues} from "./OndoSValues.sol";
 
 interface IRouterImmutables {
     function poolManager() external view returns (address);
@@ -31,15 +33,15 @@ interface ITokenBridgeProbe {
 ///         code hashes, and every entry of the lists listed on a fresh factory with its token's own decimals. Skips
 ///         when MAINNET_RPC_URL is unset.
 contract MainnetAddressesForkTest is Test {
-    /// @dev Runtime code hash of Universal Router 2.0.0 at `MainnetAddresses.UNIVERSAL_ROUTER`, read on 2026-09-23. The
+    /// @dev Runtime code hash of Universal Router 2.0.0 at `MainnetAddresses.UNIVERSAL_ROUTER`, read. The
     ///      router has no proxy, and its immutables are part of its code, so the hash is the build and its wiring.
     bytes32 constant UNIVERSAL_ROUTER_CODEHASH = 0x6a5f46971b50c6e1b7eef97902311444e479d734e4f80ad88367783cf373fe7f;
-    /// @dev Runtime code hash of the V4 PoolManager at `MainnetAddresses.POOL_MANAGER`, read on 2026-09-23.
+    /// @dev Runtime code hash of the V4 PoolManager at `MainnetAddresses.POOL_MANAGER`, read.
     bytes32 constant POOL_MANAGER_CODEHASH = 0x785f1014552b7ce7d5fb7d0c970ca60edee94fd00425d7ca21609acac7ce1293;
-    /// @dev Runtime code hash of Uniswap V3's factory at `MainnetAddresses.UNISWAP_V3_FACTORY`, read on 2026-10-05.
+    /// @dev Runtime code hash of Uniswap V3's factory at `MainnetAddresses.UNISWAP_V3_FACTORY`, read.
     bytes32 constant UNISWAP_V3_FACTORY_CODEHASH = 0x4d7b8525cd5d14343fa67a732fba5b24cddba11620ca88392f4ec6c52f91fd69;
     /// @dev Runtime code hash of Wormhole's token bridge proxy at `MainnetAddresses.WORMHOLE_TOKEN_BRIDGE`, read on
-    ///      2026-10-10. The guardians' governance upgrades the implementation behind it, so only the proxy is pinned.
+    ///      chain. The guardians' governance upgrades the implementation behind it, so only the proxy is pinned.
     bytes32 constant WORMHOLE_BRIDGE_PROXY_CODEHASH =
         0x26aeb96c4320b04eeda9660276adf5920d056be2e1bee7f038255950e60d0a27;
 
@@ -516,7 +518,7 @@ contract MainnetAddressesForkTest is Test {
     ///      on-chain decimals.
     function _listOnAFreshFactory(address[] memory list) internal {
         WeightedIndexFactory factory =
-            new WeightedIndexFactory(address(this), address(0), address(0), address(new WeightedMath()));
+            new WeightedIndexFactory(address(this), address(0), address(0), address(new WeightedMath()), address(0));
         for (uint256 i = 0; i < list.length; ++i) {
             factory.proposeListing(list[i]);
         }
@@ -576,7 +578,7 @@ contract MainnetAddressesForkTest is Test {
         assertTrue(IPythReader(M.PYTH).priceFeedExists(feed.id), "Pyth's contract knows ETH/USD");
         IPythReader.Price memory p = IPythReader(M.PYTH).getPriceUnsafe(feed.id);
         WeightedIndexFactory factory =
-            new WeightedIndexFactory(address(this), address(0), M.PYTH, address(new WeightedMath()));
+            new WeightedIndexFactory(address(this), address(0), M.PYTH, address(new WeightedMath()), address(0));
         factory.proposeListing(M.WETH);
         factory.proposePriceFeed(M.WETH, feed);
         vm.warp(block.timestamp + factory.LISTING_DELAY());
@@ -591,5 +593,20 @@ contract MainnetAddressesForkTest is Test {
         vm.warp(p.publishTime + prices.MAX_PRICE_AGE() + 1);
         vm.expectRevert(abi.encodeWithSelector(IPythPrices.StalePrice.selector, M.WETH, p.publishTime));
         prices.valueOf(M.WETH, true);
+    }
+
+    /// @dev Ondo's oracle in the book is Ondo's verified build, a deployment from the book hands it to its reader, and
+    ///      that reader values each Ondo leg the oracle holds, settled, at its share's price times its sValue, and
+    ///      refuses every other by name. Ethereum's oracle holds 10 of the 353 Ondo
+    ///      tokens: the rest are refused until Ondo adds them.
+    function testFork_ondoLegsAreValuedAtTheirShareTimesOndosSValue() public {
+        assertEq(M.ONDO_SHARES_ORACLE.codehash, OndoSValues.CODEHASH, "Ondo's verified SyntheticSharesOracle");
+        (uint256 valued, uint256 refused) = OndoSValues.check(1, M.PYTH, M.ONDO_SHARES_ORACLE);
+        emit log_named_uint("Ondo legs valued at their sValue", valued);
+        emit log_named_uint("Ondo legs refused, their sValue unheld or unsettled", refused);
+        assertEq(valued + refused, 344, "every leg of kind SharesOracle");
+        assertGt(valued, 0, "the oracle holds some");
+        (uint128 sValue,,,,,) = ISyntheticSharesOracle(M.ONDO_SHARES_ORACLE).assetData(M.WETH);
+        assertEq(sValue, 0, "a coin is no asset of Ondo's: its getter answers zeros, never a revert");
     }
 }

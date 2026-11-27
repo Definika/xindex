@@ -115,7 +115,7 @@ test("RX-2: the share-priced ids are PythIds.sol's", async () => {
 });
 
 test("an Ondo token priced at a feed of its own is priced at Pyth's feed of that Ondo token, never a namesake's", async () => {
-  // On 2026-11-19 Ondo's AT&T (Ton) and Li Auto (LIon) were priced at Crypto.TON/USD and Crypto.LION/USD, Toncoin's and a
+  // An earlier listing priced Ondo's AT&T (Ton) and Li Auto (LIon) at Crypto.TON/USD and Crypto.LION/USD, Toncoin's and a
   // token called Loaded Lions: a symbol match, not the Ondo token. Pyth names its own Ondo feeds "... ONDO TOKENIZED".
   const { readFileSync } = await import("node:fs");
   const source = readFileSync(new URL("../../../script/PythIds.sol", import.meta.url), "utf8");

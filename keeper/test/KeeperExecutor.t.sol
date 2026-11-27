@@ -17,6 +17,7 @@ import {KeeperExecutor} from "../src/KeeperExecutor.sol";
 import {IV3SwapRouter} from "../src/interfaces/IV3SwapRouter.sol";
 import {ITokenBridge} from "../src/interfaces/ITokenBridge.sol";
 import {MockTokenBridge} from "./mocks/MockTokenBridge.sol";
+import {MockAeroSwapRouter} from "./mocks/MockAeroSwapRouter.sol";
 
 /// @dev The executor against the real hub and factory and a fixed-price router. ETH rises 20% after creation, so a
 ///      fair fill sells ETH and buys BTC and USD. No contract reads a price: the keeper names the units, here the ones
@@ -74,7 +75,9 @@ contract KeeperExecutorTest is WeightedTest {
             IMintRequests(address(requests)),
             ITokenBridge(address(bridge)),
             execOwner,
-            keeper
+            keeper,
+            address(0),
+            KeeperExecutor.LocalKind.None
         );
     }
 
@@ -467,7 +470,7 @@ contract KeeperExecutorTest is WeightedTest {
         IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](2);
         specs[0] = _spec(address(eth), 1, 1e18);
         specs[1] = _spec(address(btc), 9999, factory.MIN_RAW_UNITS());
-        // Since 2026-11-10 only an approved wallet creates an index, so the exploit also needs the keeper key to be
+        // Only an approved wallet creates an index, so the exploit also needs the keeper key to be
         // one; the executor's allowance must hold even then.
         _approveCreator(keeper);
         vm.prank(keeper);
@@ -705,6 +708,155 @@ contract KeeperExecutorTest is WeightedTest {
     }
 
     // ---------------------------------------------------------------------
+    // The chain's own DEX
+    // ---------------------------------------------------------------------
+
+    /// @dev A second SwapRouter02 at the first's prices, holding liquidity of its own: the chain's own DEX.
+    function _localDex() internal returns (MockSwapRouter local) {
+        local = new MockSwapRouter();
+        local.setPrice(address(eth), 2400e18);
+        local.setPrice(address(btc), 60_000e18);
+        local.setPrice(address(usd), 1e18);
+        local.setPrice(address(usdc), 1e18);
+        local.setPrice(address(usdt), 1e18);
+        eth.mint(address(local), 1000e18);
+        btc.mint(address(local), 100e8);
+        usd.mint(address(local), 1e12);
+        usdc.mint(address(local), 1e12);
+        usdt.mint(address(local), 1e12);
+    }
+
+    /// @dev An executor that reaches `localRouter`, of `kind`, beside Uniswap, with the setUp's float and allowance.
+    function _withLocalDex(address localRouter, KeeperExecutor.LocalKind kind) internal returns (KeeperExecutor ex) {
+        ex = _executorWith(localRouter, kind);
+        usdc.mint(address(ex), 10_000e6);
+        vm.prank(execOwner);
+        ex.setRequestUsdcAllowance(type(uint256).max);
+    }
+
+    /// @dev An executor that reaches `localRouter`, of `kind`, beside Uniswap, and nothing more.
+    function _executorWith(address localRouter, KeeperExecutor.LocalKind kind) internal returns (KeeperExecutor) {
+        return new KeeperExecutor(
+            IV3SwapRouter(address(router)),
+            address(usdc),
+            IWeightedIndexFactory(address(factory)),
+            IMintRequests(address(requests)),
+            ITokenBridge(address(bridge)),
+            execOwner,
+            keeper,
+            localRouter,
+            kind
+        );
+    }
+
+    /// @dev `route` through the chain's own DEX: the same path, one byte `LOCAL_ROUTE` in front.
+    function _local(bytes memory route) internal view returns (bytes memory) {
+        return bytes.concat(executor.LOCAL_ROUTE(), route);
+    }
+
+    /// @dev A route one byte longer than a path, that byte `LOCAL_ROUTE`, swaps along the path after it through the
+    ///      chain's own DEX, a router of SwapRouter02's calls such as PancakeSwap's SmartRouter: ETH sold there and USD
+    ///      bought there, BTC through Uniswap, all at the same quotes. The local router keeps no approval of the float's
+    ///      after its purchase, and none of the coin it was sold.
+    function test_aLocalRouteSwapsThroughTheChainsOwnDex() public {
+        MockSwapRouter local = _localDex();
+        KeeperExecutor ex = _withLocalDex(address(local), KeeperExecutor.LocalKind.SwapRouter02);
+        assertEq(ex.LOCAL_ROUTER(), address(local));
+        assertEq(uint8(ex.LOCAL_KIND()), uint8(KeeperExecutor.LocalKind.SwapRouter02));
+        _open(index.AUCTION_DURATION());
+        (uint256[] memory out, uint256[] memory in_) = _preview();
+        bytes[] memory routes = _routes();
+        (routes[0], routes[2]) = (_local(routes[0]), _local(routes[2]));
+        (uint256 localEth, uint256 localUsd, uint256 uniBtc) =
+            (eth.balanceOf(address(local)), usd.balanceOf(address(local)), btc.balanceOf(address(router)));
+
+        (int256 delta,) = _fill(ex, routes, in_, type(int256).min);
+
+        assertEq(delta, _expected(out, in_), "the same quotes, through two venues");
+        assertEq(eth.balanceOf(address(local)) - localEth, out[0], "ETH sold on the chain's own DEX");
+        assertEq(localUsd - usd.balanceOf(address(local)), in_[2], "USD bought there");
+        assertEq(uniBtc - btc.balanceOf(address(router)), in_[1], "BTC bought through Uniswap");
+        assertEq(usdc.allowance(address(ex), address(local)), 0, "no approval of the float outlives its purchase");
+        assertEq(eth.allowance(address(ex), address(local)), 0, "nor of a coin sold");
+        assertEq(index.rebalanceNonce(), 1);
+    }
+
+    /// @dev Aero's router takes a deadline in each call, which the executor sets to the block it runs in; a request's
+    ///      stablecoin is sold and bought through it as a component is.
+    function test_aeroIsCalledAtTheBlocksOwnDeadline() public {
+        MockAeroSwapRouter aero = new MockAeroSwapRouter(_localDex());
+        usdt.mint(address(aero), 1e12);
+        usdc.mint(address(aero), 1e12);
+        eth.mint(address(aero), 1000e18);
+        btc.mint(address(aero), 100e8);
+        usd.mint(address(aero), 1e12);
+        KeeperExecutor ex = _withLocalDex(address(aero), KeeperExecutor.LocalKind.Aero);
+        bytes[] memory routes = _routes();
+        for (uint256 i = 0; i < routes.length; ++i) {
+            routes[i] = _local(routes[i]);
+        }
+        bytes memory stableRoute = _local(_stableRoute(address(usdt)));
+
+        uint256 id = _requestMint(stranger, address(usdt), 250e6, 2e18);
+        uint256 cost = _basketCost(2e18);
+        vm.warp(block.timestamp + 1 hours);
+        vm.prank(keeper);
+        (int256 delta,) = ex.fillMint(_req(id, 2e18, routes, stableRoute, type(int256).min, block.timestamp));
+        assertEq(delta, _int(router.quoteOut(address(usdt), address(usdc), 250e6)) - _int(cost), "the basket on Aero");
+        assertEq(aero.lastDeadline(), block.timestamp, "each call's deadline is its own block");
+        assertEq(usdc.allowance(address(ex), address(aero)), 0, "no approval of the float outlives a purchase");
+
+        uint256 rid = _requestRedeem(alice, 1e18, address(usdt), 1e6);
+        vm.prank(keeper);
+        ex.fillRedeem(_req(rid, 2e6, routes, stableRoute, type(int256).min, block.timestamp));
+        assertEq(usdt.balanceOf(alice), 2e6, "USDT bought on Aero for the redeemer");
+        assertEq(usdc.allowance(address(ex), address(aero)), 0);
+    }
+
+    /// @dev A local route is refused where the executor has no DEX beside Uniswap, and anywhere when its first byte is
+    ///      not `LOCAL_ROUTE` or the path after it does not run from the component to USDC.
+    function test_aLocalRouteNeedsALocalDexAndAWellFormedPath() public {
+        _open(index.AUCTION_DURATION());
+        bytes memory err = abi.encodeWithSelector(KeeperExecutor.BadRoute.selector, address(eth));
+        bytes[] memory routes = _routes();
+        routes[0] = _local(routes[0]);
+        _expectFillReverts(err, keeper, address(index), routes, block.timestamp);
+
+        KeeperExecutor ex = _withLocalDex(address(_localDex()), KeeperExecutor.LocalKind.SwapRouter02);
+        routes[0] = bytes.concat(bytes1(0x02), _routes()[0]);
+        uint256[] memory units = _units();
+        vm.prank(keeper);
+        vm.expectRevert(err);
+        ex.fill(_auction(index, units, routes, new uint256[](0), ANY_SUPPLY, type(int256).min, block.timestamp));
+        routes[0] = _local(abi.encodePacked(address(eth), uint24(500), address(usd)));
+        vm.prank(keeper);
+        vm.expectRevert(err);
+        ex.fill(_auction(index, units, routes, new uint256[](0), ANY_SUPPLY, type(int256).min, block.timestamp));
+
+        uint256 id = _requestMint(stranger, address(usdt), 250e6, 2e18);
+        KeeperExecutor.RequestFill memory f =
+            _req(id, 2e18, _routes(), _local(_stableRoute(address(usdt))), type(int256).min, block.timestamp);
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.BadRoute.selector, address(usdt)));
+        executor.fillMint(f);
+    }
+
+    /// @dev The chain's own DEX is named with its kind, or neither is named.
+    function test_theLocalDexIsNamedWithItsKind() public {
+        address local = address(_localDex());
+        vm.expectRevert(
+            abi.encodeWithSelector(KeeperExecutor.BadLocalRouter.selector, local, KeeperExecutor.LocalKind.None)
+        );
+        _executorWith(local, KeeperExecutor.LocalKind.None);
+        vm.expectRevert(
+            abi.encodeWithSelector(KeeperExecutor.BadLocalRouter.selector, address(0), KeeperExecutor.LocalKind.Aero)
+        );
+        _executorWith(address(0), KeeperExecutor.LocalKind.Aero);
+        assertEq(executor.LOCAL_ROUTER(), address(0));
+        assertEq(uint8(executor.LOCAL_KIND()), uint8(KeeperExecutor.LocalKind.None));
+    }
+
+    // ---------------------------------------------------------------------
     // The owner
     // ---------------------------------------------------------------------
 
@@ -771,25 +923,34 @@ contract KeeperExecutorTest is WeightedTest {
         ITokenBridge b = ITokenBridge(address(bridge));
         address u = address(usdc);
         vm.expectRevert(KeeperExecutor.ZeroAddress.selector);
-        new KeeperExecutor(IV3SwapRouter(address(0)), u, f, q, b, execOwner, keeper);
+        new KeeperExecutor(
+            IV3SwapRouter(address(0)), u, f, q, b, execOwner, keeper, address(0), KeeperExecutor.LocalKind.None
+        );
         vm.expectRevert(KeeperExecutor.ZeroAddress.selector);
-        new KeeperExecutor(r, address(0), f, q, b, execOwner, keeper);
+        new KeeperExecutor(r, address(0), f, q, b, execOwner, keeper, address(0), KeeperExecutor.LocalKind.None);
         vm.expectRevert(KeeperExecutor.ZeroAddress.selector);
-        new KeeperExecutor(r, u, IWeightedIndexFactory(address(0)), q, b, execOwner, keeper);
+        new KeeperExecutor(
+            r, u, IWeightedIndexFactory(address(0)), q, b, execOwner, keeper, address(0), KeeperExecutor.LocalKind.None
+        );
         vm.expectRevert(KeeperExecutor.ZeroAddress.selector);
-        new KeeperExecutor(r, u, f, IMintRequests(address(0)), b, execOwner, keeper);
+        new KeeperExecutor(
+            r, u, f, IMintRequests(address(0)), b, execOwner, keeper, address(0), KeeperExecutor.LocalKind.None
+        );
         vm.expectRevert(KeeperExecutor.ZeroAddress.selector);
-        new KeeperExecutor(r, u, f, q, ITokenBridge(address(0)), execOwner, keeper);
+        new KeeperExecutor(
+            r, u, f, q, ITokenBridge(address(0)), execOwner, keeper, address(0), KeeperExecutor.LocalKind.None
+        );
         vm.expectRevert(KeeperExecutor.ZeroAddress.selector);
-        new KeeperExecutor(r, u, f, q, b, address(0), keeper);
+        new KeeperExecutor(r, u, f, q, b, address(0), keeper, address(0), KeeperExecutor.LocalKind.None);
         vm.expectRevert(KeeperExecutor.ZeroAddress.selector);
-        new KeeperExecutor(r, u, f, q, b, execOwner, address(0));
+        new KeeperExecutor(r, u, f, q, b, execOwner, address(0), address(0), KeeperExecutor.LocalKind.None);
     }
 
     /// @dev A request escrow for another factory's indexes would let the keeper fill requests the factory check never
     ///      saw; the executor refuses it at construction.
     function test_constructorRefusesRequestsOnAnotherFactory() public {
-        WeightedIndexFactory other = new WeightedIndexFactory(owner, guardian, address(0), address(new WeightedMath()));
+        WeightedIndexFactory other =
+            new WeightedIndexFactory(owner, guardian, address(0), address(new WeightedMath()), address(0));
         MintRequests elsewhere = new MintRequests(address(other), address(usdc), address(usdt));
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.RequestsMismatch.selector, address(elsewhere)));
         new KeeperExecutor(
@@ -799,7 +960,9 @@ contract KeeperExecutorTest is WeightedTest {
             IMintRequests(address(elsewhere)),
             ITokenBridge(address(bridge)),
             execOwner,
-            keeper
+            keeper,
+            address(0),
+            KeeperExecutor.LocalKind.None
         );
     }
 
@@ -1173,7 +1336,9 @@ contract KeeperExecutorTest is WeightedTest {
             IMintRequests(address(own)),
             ITokenBridge(address(bridge)),
             execOwner,
-            keeper
+            keeper,
+            address(0),
+            KeeperExecutor.LocalKind.None
         );
         vm.prank(execOwner);
         ex.setRequestUsdcAllowance(type(uint256).max);
@@ -2449,7 +2614,7 @@ contract KeeperExecutorTest is WeightedTest {
     }
 
     // ---------------------------------------------------------------------
-    // The audit of 2026-11-21
+    // The consolidated audit (CA)
     // ---------------------------------------------------------------------
 
     /// @dev CA-H1: a batch counted the shares its redeem requests escrowed as brought in before it filled them, and a

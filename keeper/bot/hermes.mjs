@@ -1,7 +1,7 @@
 // Pyth's Hermes, as the keeper uses it: the latest prices, with the signed update that carries them. Native fetch
 // only. No contract of the protocol reads a price: these are the keeper's own, to value its own trades.
 //
-// Since 2026-08-26 Hermes serves at https://pyth.dourolabs.app/hermes and needs `Authorization: Bearer <key>`; routes
+// Hermes serves at https://pyth.dourolabs.app/hermes and needs `Authorization: Bearer <key>`; routes
 // and response shapes are unchanged.
 
 import { verifiedPrices } from "./math.mjs";

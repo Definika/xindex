@@ -1318,7 +1318,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
         assertEq(keepMask, 1);
     }
 
-    /// @dev A pause of minting stops an issue and nothing else (the owner's call of 2026-11-23): while the guardian
+    /// @dev A pause of minting stops an issue and nothing else: while the guardian
     ///      holds it, a holder still redeems, skips a component and collects its claim, shares still transfer, the
     ///      fee still accrues, and a rebalance still starts and fills. Only an issue reads the pause.
     function test_aPauseStopsIssuesAndNoExitNorARebalance() public {
@@ -1364,7 +1364,7 @@ contract WeightedHubRebalanceTest is WeightedTest {
 
     /// @dev RW-3: a quote that refuses every trade worth making still passes a fill that takes nothing out, and such
     ///      a sliver, filled by the role that posted the quote, settled the proposal and restarted the index's whole
-    ///      interval, up to 91 days, for the owner and a new guardian too. Since 2026-11-23 either starts again a
+    ///      interval, up to 91 days, for the owner and a new guardian too. Either now starts again a
     ///      week later, so the hold outlasts a guardian's replacement by that week at most, as a keep mask's does.
     function test_RW3_aSliverUnderAQuoteHoldsTheRolesOffAWeekNotAQuarter() public {
         (WeightedHub quarterly, uint256 interval) = _xs3Index();

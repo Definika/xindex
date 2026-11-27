@@ -1,5 +1,5 @@
 // Each listed coin's Pyth price id, by token address: the keeper's own catalogue. No contract reads a price, a feed
-// or an id (since 2026-11-10); the keeper values its own trades at these, off chain. The entries are
+// or an id; the keeper values its own trades at these, off chain. The entries are
 // script/Listings.sol's coins, in its order, each at script/MainnetAddresses.sol's address and script/PythIds.sol's
 // id of the same name; `test/unit/price-ids.test.mjs` pins every one against those three files.
 

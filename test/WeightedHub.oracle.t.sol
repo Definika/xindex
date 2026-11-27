@@ -13,11 +13,11 @@ import {WeightedTest} from "./WeightedTest.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {MockPyth} from "./mocks/MockPyth.sol";
-import {MockVault, MockMultiplierToken} from "./mocks/MockPricedTokens.sol";
+import {MockVault, MockMultiplierToken, MockSharesOracle} from "./mocks/MockPricedTokens.sol";
 import {MockWeightedExecutor} from "./mocks/MockWeightedExecutor.sol";
 import {HoldingExecutor} from "./WeightedHub.rebalance.t.sol";
 
-/// @notice Pyth's check on a rebalance fill (the owner's call of 2026-11-22): a fill the units accept must also bring
+/// @notice Pyth's check on a rebalance fill: a fill the units accept must also bring
 ///         in, at Pyth's prices, at least what it takes less a tolerance that rises from nothing to 2% over the auction.
 ///         The check can only refuse: no price reaches an issue, a redeem or a claim, and a fill the units refuse is
 ///         refused whatever the prices say.
@@ -28,6 +28,7 @@ contract WeightedHubOracleTest is WeightedTest {
     bytes32 constant USD_FEED = keccak256("USD/USD");
 
     MockPyth pyth;
+    MockSharesOracle ondo;
     IPythPrices prices;
     WeightedMath math;
     WeightedHub index;
@@ -36,7 +37,8 @@ contract WeightedHubOracleTest is WeightedTest {
     function setUp() public {
         vm.warp(1_800_000_000);
         pyth = new MockPyth();
-        factory = new WeightedIndexFactory(owner, guardian, address(pyth), address(new WeightedMath()));
+        ondo = new MockSharesOracle();
+        factory = new WeightedIndexFactory(owner, guardian, address(pyth), address(new WeightedMath()), address(ondo));
         prices = IPythPrices(factory.PRICES());
         _approveCreator(creator);
         eth = new MockERC20("Ether", "ETH", 18);
@@ -309,7 +311,7 @@ contract WeightedHubOracleTest is WeightedTest {
         executor.execute(index, fair, "");
     }
 
-    /// @dev HK-25 (audit/2026-11-27-attack-replay-ii.md): the filler posts Pyth's update itself, so it picks the price
+    /// @dev HK-25 (audits/internal/attack-replay-ii.md): the filler posts Pyth's update itself, so it picks the price
     ///      it is checked against among those of the reader's window. A fill's window is fifteen seconds; a creation's,
     ///      which a person signs in a wallet, a minute. A price forty seconds old creates an index on its weights and
     ///      stops a fill; at sixty-one seconds it stops the creation too.
@@ -421,6 +423,132 @@ contract WeightedHubOracleTest is WeightedTest {
         prices.valueOf(address(stock), true);
         vm.expectRevert(abi.encodeWithSelector(IPythPrices.UnusablePrice.selector, address(stock)));
         prices.valueOf(address(stock), false);
+    }
+
+    // ---------------------------------------------------------------------
+    // Ondo's tokens: a share's price times the sValue
+    // ---------------------------------------------------------------------
+
+    /// @dev An Ondo token's feed prices one share of its stock, and one token stands for the sValue Ondo's oracle holds
+    ///      for it, read at each valuation: NFLXon, ten shares a token since its split, at a share of $58 is worth
+    ///      $580, both ways, and a dividend's raise of the sValue raises it with it.
+    function test_anOndoTokenIsValuedAtItsShareTimesItsSValue() public {
+        MockERC20 nflx = _ondoToken(10e18);
+        assertEq(prices.SHARES_ORACLE(), address(ondo));
+        assertEq(prices.valueOf(address(nflx), true), 580e18, "$580 a whole token, ten shares at $58");
+        assertEq(prices.valueOf(address(nflx), false), 580e18, "the sValue is exact: no lean either way");
+        ondo.set(address(nflx), 10.1e18, block.timestamp - 1 days, 0, 0);
+        assertEq(prices.valueOf(address(nflx), true), 585.8e18, "a raised sValue is read at the next valuation");
+    }
+
+    /// @dev Only a settled sValue values a leg, at a fill and at a creation alike: one the oracle holds, with no
+    ///      corporate action scheduled or under way, unchanged for twenty minutes. From the moment Ondo schedules a split
+    ///      until twenty minutes after its sValue lands, the leg is refused; at the twentieth minute it is valued again.
+    function test_onlyASettledSValueValuesAnOndoLeg() public {
+        MockERC20 nflx = _ondoToken(1e18);
+        bytes memory refused = abi.encodeWithSelector(IPythPrices.SValueUnavailable.selector, address(nflx));
+        assertEq(prices.MIN_SVALUE_AGE(), 20 minutes);
+
+        ondo.set(address(nflx), 0, 0, 0, 0);
+        vm.expectRevert(refused);
+        prices.valueOf(address(nflx), true); // the oracle does not hold it
+
+        ondo.set(address(nflx), 1e18, block.timestamp - 1 days, block.timestamp + 1 days, 10e18);
+        vm.expectRevert(refused);
+        prices.valueOf(address(nflx), false); // a split is scheduled, a day ahead
+
+        vm.warp(block.timestamp + 1 days + 1);
+        vm.expectRevert(refused);
+        prices.valueOf(address(nflx), true); // and under way
+
+        ondo.set(address(nflx), 10e18, block.timestamp, 0, 0); // Ondo lifts the pause: the sValue lands
+        vm.warp(block.timestamp + 20 minutes - 1);
+        vm.expectRevert(refused);
+        prices.valueOf(address(nflx), true);
+        vm.warp(block.timestamp + 1);
+        assertEq(prices.valueOf(address(nflx), true), 58e18 * 10, "settled at its twentieth minute");
+
+        address[] memory tokens = new address[](1);
+        tokens[0] = address(nflx);
+        IPythPrices.PriceFeed[] memory feeds = new IPythPrices.PriceFeed[](1);
+        feeds[0] = factory.priceFeedOf(address(nflx));
+        uint8[] memory decimals = new uint8[](1);
+        decimals[0] = 18;
+        ondo.set(address(nflx), 10e18, block.timestamp, 0, 0);
+        vm.expectRevert(refused);
+        prices.valuesWith(tokens, feeds, decimals, false); // a creation's check reads it the same way
+    }
+
+    /// @dev A reader without Ondo's oracle, as on a chain where Ondo has none, values no Ondo leg.
+    function test_aReaderWithoutOndosOracleValuesNoOndoLeg() public {
+        WeightedIndexFactory bare =
+            new WeightedIndexFactory(owner, guardian, address(pyth), address(new WeightedMath()), address(0));
+        IPythPrices reader = IPythPrices(bare.PRICES());
+        assertEq(reader.SHARES_ORACLE(), address(0));
+        MockERC20 nflx = new MockERC20("Netflix", "NFLXon", 18);
+        address[] memory tokens = new address[](1);
+        tokens[0] = address(nflx);
+        IPythPrices.PriceFeed[] memory feeds = new IPythPrices.PriceFeed[](1);
+        feeds[0] = IPythPrices.PriceFeed({id: keccak256("NFLX/USD"), kind: IPythPrices.FeedKind.SharesOracle});
+        pyth.setLivePrice(feeds[0].id, 58e8, 0, -8);
+        uint8[] memory decimals = new uint8[](1);
+        decimals[0] = 18;
+        ondo.set(address(nflx), 10e18, block.timestamp - 1 days, 0, 0);
+        vm.expectRevert(abi.encodeWithSelector(IPythPrices.SValueUnavailable.selector, address(nflx)));
+        reader.valuesWith(tokens, feeds, decimals, false);
+    }
+
+    /// @dev The finding this answers: priced at its share alone, an Ondo token ten shares strong looked worth a tenth,
+    ///      so an index on its true weights was refused as off them, and one off them by tenfold passed. At the share's
+    ///      price times the sValue, the true weights pass and the tenfold skew is refused.
+    function test_anOndoLegIsCreatedOnItsTrueWeight() public {
+        MockERC20 nflx = _ondoToken(10e18);
+        IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](2);
+        specs[0] = _spec(address(nflx), 5000, 0.1e18); // $58, a tenth of a token
+        specs[1] = _spec(address(usd), 5000, 58e6); // $58
+        assertEq(_create(specs).componentWeights()[0], 5000, "on its weights at the share's price times the sValue");
+
+        specs[0] = _spec(address(nflx), 5000, 1e18); // $580, what the share's price alone called $58
+        vm.prank(creator);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.OffWeights.selector, address(nflx), 5000, 9090));
+        factory.createIndex("Skewed", "SKW", specs, _params());
+    }
+
+    /// @dev Around a corporate action only a fill that moves the Ondo leg waits: one that keeps its units reads nothing
+    ///      of it and settles, as a leg without a feed stops only a fill that moves it.
+    function test_aCorporateActionStopsOnlyAFillThatMovesTheOndoLeg() public {
+        MockERC20 nflx = _ondoToken(10e18);
+        IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](3);
+        specs[0] = _spec(address(eth), 5000, 0.05e18); // $100
+        specs[1] = _spec(address(usd), 2500, 50e6); // $50
+        specs[2] = _spec(address(nflx), 2500, uint256(50e18) / 580); // $50 at ten $58 shares a token
+        index = _create(specs);
+        _issue(index, alice, SHARES);
+        ondo.set(address(nflx), 10e18, block.timestamp - 1 days, block.timestamp, 20e18); // a split, under way
+
+        _post(2500, BTC_PRICE, USD_PRICE);
+        _open(2 hours);
+        uint256[] memory market = new uint256[](3);
+        (market[0], market[1], market[2]) = (2500, USD_PRICE * 1e12, 580);
+        uint256[] memory moved = _onWeights(index, market);
+        vm.expectRevert(abi.encodeWithSelector(IPythPrices.SValueUnavailable.selector, address(nflx)));
+        executor.execute(index, moved, "");
+
+        uint256[] memory leftAlone = _onWeights(index, market, 4);
+        executor.execute(index, leftAlone, "");
+        assertEq(index.recordedUnits()[2], uint256(50e18) / 580, "the Ondo leg kept its units");
+    }
+
+    /// @dev Lists a new Ondo-like token of 18 decimals at a $58 share's feed of kind `SharesOracle`, its sValue
+    ///      `sValue` settled a day ago.
+    function _ondoToken(uint128 sValue) internal returns (MockERC20 token) {
+        token = new MockERC20("Netflix", "NFLXon", 18);
+        _list(address(token));
+        bytes32 feed = keccak256("NFLX/USD");
+        pyth.setLivePrice(feed, 58e8, 0, -8);
+        ondo.set(address(token), sValue, block.timestamp - 1 days, 0, 0);
+        _setFeed(address(token), feed, IPythPrices.FeedKind.SharesOracle);
+        ondo.set(address(token), sValue, block.timestamp - 1 days, 0, 0);
     }
 
     /// @dev Both refusals apply to a quoted proposal: the quote's, at the guardian's prices, and Pyth's.
@@ -622,7 +750,7 @@ contract WeightedHubOracleTest is WeightedTest {
     }
 
     // ---------------------------------------------------------------------
-    // Changing the weights (the owner's calls of 2026-11-23, `design/2026-11-23-changeable-weights.md`)
+    // Changing the weights (`docs/design/changeable-weights.md`)
     // ---------------------------------------------------------------------
 
     function _weights(uint256 a, uint256 b, uint256 c) internal pure returns (uint256[] memory w) {
@@ -763,7 +891,8 @@ contract WeightedHubOracleTest is WeightedTest {
     /// @dev On a factory without an oracle nothing bounds what a change of weights opens to its creator's own auction,
     ///      so no proposal is taken; and a factory needs a math with code.
     function test_aFactoryWithoutAnOracleTakesNoProposal() public {
-        WeightedIndexFactory bare = new WeightedIndexFactory(owner, guardian, address(0), address(new WeightedMath()));
+        WeightedIndexFactory bare =
+            new WeightedIndexFactory(owner, guardian, address(0), address(new WeightedMath()), address(0));
         vm.prank(owner);
         bare.setApprovedCreator(creator, true);
         address[3] memory tokens = [address(eth), address(btc), address(usd)];
@@ -784,6 +913,6 @@ contract WeightedHubOracleTest is WeightedTest {
         bare.proposeWeights(unpriced, _weights(4500, 3000, 2500));
 
         vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.NotAContract.selector, stranger));
-        new WeightedIndexFactory(owner, guardian, address(0), stranger);
+        new WeightedIndexFactory(owner, guardian, address(0), stranger, address(0));
     }
 }

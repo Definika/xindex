@@ -22,7 +22,7 @@ import {MockUniversalRouter} from "./mocks/MockUniversalRouter.sol";
 import {MockMetarouter} from "./mocks/MockAero.sol";
 import {LocalVenues} from "./LocalVenues.sol";
 
-/// @notice The chain's own DEX beside Uniswap (`design/2026-11-26-chain-venues.md`): PancakeSwap's V3 and V2 pools
+/// @notice The chain's own DEX beside Uniswap (`docs/design/chain-venues.md`): PancakeSwap's V3 and V2 pools
 ///         through its Universal Router, Aero's CL and basic pools through its Metarouter, each through the zap and
 ///         the basket builder, with the engine's rules on every one.
 contract ChainVenuesTest is XindexTest {
@@ -605,7 +605,7 @@ contract ChainVenuesTest is XindexTest {
     }
 
     // ---------------------------------------------------------------------
-    // attacks replayed on the chain's DEX (audit/2026-11-27-attack-replay-ii.md)
+    // attacks replayed on the chain's DEX (audits/internal/attack-replay-ii.md)
     // ---------------------------------------------------------------------
 
     /// @dev HK-21, SushiSwap's RouteProcessor2 (April 2023): whoever held an approval to the router was drained

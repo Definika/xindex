@@ -18,7 +18,7 @@ import {ISafeThreshold} from "./interfaces/ISafeThreshold.sol";
 import {IUniswapV3FactoryRead} from "./interfaces/IUniswapV3FactoryRead.sol";
 import {IUniswapV3PoolRead} from "./interfaces/IUniswapV3PoolRead.sol";
 
-/// @notice The admission check of `design/2026-10-05-wide-asset-support.md`, section 2.1: one report per token for the
+/// @notice The admission check of `docs/design/wide-asset-support.md`, section 2.1: one report per token for the
 ///         Safe's signers, run against an RPC before the token's listing is proposed. Read-only: it never broadcasts,
 ///         and what it simulates (a balance written into the token's storage, transfers between made-up accounts, a
 ///         day passing) is undone after each token.
@@ -38,7 +38,7 @@ import {IUniswapV3PoolRead} from "./interfaces/IUniswapV3PoolRead.sol";
 ///     `owner()` or `getOwner()`, the proxy's admin or the beacon's owner, and an enumerable `DEFAULT_ADMIN_ROLE`,
 ///     each classified as a key, an EIP-7702 delegated key, a Safe, a timelock or another contract. All recorded; the
 ///     WBT rule refuses a token that can both blacklist a holder and destroy its balance
-///     (design/2026-09-30-wbt-check.md). A blacklist with a burn from another account is left for review, because
+///     (docs/design/wbt-check.md). A blacklist with a burn from another account is left for review, because
 ///     OpenZeppelin's `burnFrom` spends the holder's allowance and only the source says whether this one does.
 ///   - Depth, on Ethereum and BNB Chain: each Uniswap V3 pool against the wrapped coin and the chain's stablecoin
 ///     (WETH and USDC on Ethereum, WBNB and USDT on BNB Chain) at the four standard fees, and each hookless V4 pool
@@ -659,7 +659,7 @@ contract CheckToken is Script {
                 || selector == 0x16c02129 // blacklists(address): a blacklist's view (PEPE)
                 || selector == 0xe5839836 // isFrozen(address): a freeze list's view (Paxos)
                 || selector == 0x4a393149 // onTransfer(address,address,uint256): MiniMe (LEO) asks its controller
-                || selector == 0xe5c7160b // blocklist(address): Gala (GALA), the source reading of 2026-10-18 (CF-4)
+                || selector == 0xe5c7160b // blocklist(address): Gala (GALA), from the source reading (CF-4)
                 || selector == 0x8e204c43 // isBlocklisted(address): a blocklist's view (GALA)
                 || selector == 0x052d9e7e // setWhitelistEnabled(bool): TokenSoft (wXRP), stops every holder not listed
                 || selector == 0x8ab1d681 // removeFromWhitelist(address): TokenSoft (wXRP)

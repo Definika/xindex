@@ -3,15 +3,15 @@
 [![CI](https://github.com/Definika/xindex/actions/workflows/test.yml/badge.svg)](https://github.com/Definika/xindex/actions/workflows/test.yml)
 [![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
 
-Xindex is a protocol for index tokens on Ethereum, on BNB Chain since 2026-11-13 and on Base since 2026-11-21: three
-deployments of the same contracts that share nothing, each holding its own chain's tokens
-([`design/2026-11-13-bnb-chain-deployment.md`](design/2026-11-13-bnb-chain-deployment.md),
-[`design/2026-11-21-base-deployment.md`](design/2026-11-21-base-deployment.md)). A wallet the factory's
+Xindex is a protocol for index tokens on Ethereum, BNB Chain and Base: three deployments of the same contracts that
+share nothing, each holding its own chain's tokens
+([`docs/design/bnb-chain.md`](docs/design/bnb-chain.md),
+[`docs/design/base.md`](docs/design/base.md)). A wallet the factory's
 owner approved creates an index of 2 to 200
 listed assets at weights it chooses, and anyone can mint, redeem and trade it. Each index is an ERC-20 fully backed in
 kind: minting deposits the basket and redeeming returns it. A permissionless auction brings an index back toward its
 weights. No mint, redeem or claim reads a price. A rebalance is judged on units first, and is then checked against
-Pyth's prices, a check that can only refuse a fill ([`design/2026-11-22-pyth-check.md`](design/2026-11-22-pyth-check.md)).
+Pyth's prices, a check that can only refuse a fill ([`docs/design/pyth-check.md`](docs/design/pyth-check.md)).
 
 ## How it works
 
@@ -29,10 +29,10 @@ Pyth's prices, a check that can only refuse a fill ([`design/2026-11-22-pyth-che
   frozen component, which can be claimed later.
 - **Trade with stablecoins.** `IndexZap` mints with USDC or USDT and burns to USDC or USDT in one transaction,
   through Uniswap's Universal Router (V3 and V4 pools) and, leg by leg, the chain's own DEX (PancakeSwap on BNB
-  Chain, Aero on Base, since 2026-11-26); a USDC permit spares the approval, so the mint is one
-  transaction, signed after the permit itself. The two stablecoins are the only currencies, on each chain its own
-  (the owner's call of 2026-11-18): no mint, burn, buy or sale takes ether. The one place ether enters is the
-  factory's creation fee, zero today, which an approved creator pays with `createIndex`.
+  Chain, Aero on Base); a USDC permit spares the approval, so the mint is one
+  transaction, signed after the permit itself. The two stablecoins are the only currencies, on each chain its own:
+  no mint, burn, buy or sale takes ether. The one place ether enters is the
+  factory's creation fee, zero until the owner sets one, which an approved creator pays when it creates an index.
   `BasketBuilder` does the same over several transactions for baskets too wide for one. `MintRequests` holds limit
   orders anyone can fill.
 - **Rebalance.** Once an index's interval (7 to 91 days) has passed, anyone can start a rebalance. After 2 hours of
@@ -117,12 +117,13 @@ runs on Base's own node); it follows the same audit.
 
 | Contract | Address |
 |---|---|
-| WeightedIndexFactory | [`0x787139b915753F0CfFfa14708D1e665dCf5AA0bA`](https://sepolia.etherscan.io/address/0x787139b915753F0CfFfa14708D1e665dCf5AA0bA) |
-| WeightedHub (implementation) | [`0x3ae717ffeE17D3FAd861447703F31011eB8DC609`](https://sepolia.etherscan.io/address/0x3ae717ffeE17D3FAd861447703F31011eB8DC609) |
-| IndexZap (redeployed alone on 2026-11-03 from `70ffa6f`, with the ether and permit-mint entry points, which this build has withdrawn but for the permits) | [`0xa0CD6C2DB622d28F350423119cAab2C331b759ff`](https://sepolia.etherscan.io/address/0xa0CD6C2DB622d28F350423119cAab2C331b759ff) |
-| BasketBuilder | [`0xa4AB1233D1Eb2ddcA77C27579A8cB41156452E13`](https://sepolia.etherscan.io/address/0xa4AB1233D1Eb2ddcA77C27579A8cB41156452E13) |
-| MintRequests | [`0x5b092e8A8ab29A12e2D91bE96C307759B2a12b81`](https://sepolia.etherscan.io/address/0x5b092e8A8ab29A12e2D91bE96C307759B2a12b81) |
+| WeightedIndexFactory | [`0x60b3CAA43781DE2385E3DFDb05FBfA0B9880549C`](https://sepolia.etherscan.io/address/0x60b3CAA43781DE2385E3DFDb05FBfA0B9880549C) |
+| WeightedHub (implementation) | [`0x00DAadC7e118298563d85405422827c65A7A3308`](https://sepolia.etherscan.io/address/0x00DAadC7e118298563d85405422827c65A7A3308) |
+| IndexZap | [`0xc915E58293f128F11Cb61A9a186aeC6f3AC390EA`](https://sepolia.etherscan.io/address/0xc915E58293f128F11Cb61A9a186aeC6f3AC390EA) |
+| BasketBuilder | [`0xcf422f4C9acCeF6284C416Fbe31926db909BA398`](https://sepolia.etherscan.io/address/0xcf422f4C9acCeF6284C416Fbe31926db909BA398) |
+| MintRequests | [`0x3A295af2E384FA7cdeF76651963357Bf050e994D`](https://sepolia.etherscan.io/address/0x3A295af2E384FA7cdeF76651963357Bf050e994D) |
 
+Sepolia runs the oracle-free build of `5b7635f`, which has no Pyth check; this branch's build is not deployed there.
 The test tokens, the owner and guardian, and how to use them are in [docs/deployment.md](docs/deployment.md).
 
 ## Getting started
@@ -147,9 +148,8 @@ test/                unit, fuzz, invariant and regression tests; test/fork/ runs
 script/              deployment, listing and token-check scripts, and the Sepolia test market
 abi/                 the ABIs apps decode with
 keeper/              the auction keeper: a bot, its executor contract and the restock service
-docs/                integration, deployment and development guides
-design/              design records
-audit/               review reports
+docs/                integration, deployment and development guides; docs/design/ holds the design records
+audits/              review reports, the records of what each redesign retired, and the external audit package
 ```
 
 ## Documentation
@@ -158,11 +158,11 @@ audit/               review reports
 - [Integration](docs/integration.md): how each flow works and what an app must get right.
 - [Known limitations](docs/known-limitations.md): what the contracts do not protect against.
 - [Assets](docs/assets.md): the listing policy, the asset list and the labels an app must show.
-- [Design decisions](docs/design.md), and what is not built yet.
+- [Design decisions](docs/decisions.md), and what is not built yet.
 - [Deployment](docs/deployment.md): deploying, operating, and the Sepolia test deployment.
 - [Development](docs/development.md): building, testing and CI.
 - [Keeper](keeper/README.md): running the auction keeper.
-- [Version history](docs/history.md).
+- [Changelog](CHANGELOG.md): the version history and every decision.
 
 ## Security
 

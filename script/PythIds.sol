@@ -1,31 +1,20 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.28;
 
-/// @notice The Pyth price id of each listed coin. No contract and no script reads it since 2026-11-10: an index
-///         rebalances through an auction on units alone (`design/2026-11-10-oracle-free-rebalance.md`), and a listing
-///         carries no feed. It stays as the keeper's price catalogue, which its own tests pin (`keeper/`): the keeper
-///         values its own trades at these feeds, off chain, at its own risk. Read from Pyth's Hermes
-///         catalogue (`/v2/price_feeds`) on 2026-10-05, each checked to name its coin by the feed's description, given
-///         beside it. WETH takes ETH/USD: it redeems one for one on chain, and ETH/USD is Pyth's deepest feed. WBTC takes
-///         WBTC/USD, not BTC/USD: it is custodial, so its own price is what catches a depeg. GRAM is left out until the
-///         owner confirms whether Pyth's "GRAM / US DOLLAR" or "TONCOIN / US DOLLAR" is the coin it bridges
-///         (design/2026-10-05-custom-weights.md, section 2). The owner's calls of 2026-10-06 keep GRAM out, its bridge
-///         closed, and drop OKB, being retired on Ethereum, and BGB and GT, which no Uniswap route trades, so no fill
-///         could rebalance them (design/2026-10-05-wide-asset-support.md, section 6). INJ, SHIB and PEPE joined on
-///         2026-10-10, from CoinGecko's top 100 of that day, SHIB and PEPE on the owner's call; Wormhole's SOL the same
-///         day, in place of BNB Chain's Binance-Peg SOL. Tether Gold and 17 Ondo stock tokens joined the same day, on
-///         the owner's call; a stock is priced at its Ondo token's own feed where Pyth has one, else at Pyth's 24/7
-///         price for the share, else at the US-hours feed, which publishes nothing while the market is closed. Pyth's
-///         catalogue, read on 2026-10-19, gives the "24/7" share feeds the same regular-hours schedule as the US-hours
-///         ones, so all twelve are treated as session-limited until Hermes' data says otherwise (RX-31). The
-///         hundred-coin list of 2026-10-10 (design/2026-10-10-one-index-wormhole-legs.md) adds 31 Ethereum-issued
-///         coins and 13 Wormhole copies, each at its coin's feed, read from Hermes that day; a Wormhole copy is priced
-///         as the coin it wraps, as SOL's is. DOGE's copy left on 2026-10-14, the owner's call (`MainnetAddresses`).
-///         Wormhole's copies of BNB, SUI and SEI, which the count of 2026-10-10 missed, joined on 2026-10-18, each at
-///         its coin's feed, read from Pyth's catalogue (Benchmarks' `/v1/price_feeds`) that day; SAND and RLB left the
-///         same day, the owner's call after the source reading (design/2026-10-18-token-source-reading.md). BTT and
-///         SEI's copy left on 2026-10-19, the owner's call on the red team's RX-28 and RX-32: the bridge behind each has
-///         closed or is closing, so the copy would be priced as a coin it no longer redeems for.
+/// @notice The Pyth price id of each listed Ethereum coin: the keeper's price catalogue, which its own tests pin
+///         (`keeper/`), and the ids `script/PriceFeeds.sol` gives the factory, which the check that can only refuse a
+///         fill reads (`docs/design/pyth-check.md`). No contract reads this file. The keeper values its own trades at
+///         these feeds, off chain, at its own risk. Read from Pyth's Hermes
+///         catalogue (`/v2/price_feeds`), each checked to name its coin by the feed's description, given beside it.
+///         WETH takes ETH/USD: it redeems one for one on chain, and ETH/USD is Pyth's deepest feed. WBTC takes WBTC/USD,
+///         not BTC/USD: it is custodial, so its own price is what catches a depeg. A Wormhole copy is priced as the coin
+///         it wraps, as SOL's is. An Ondo stock or ETF is priced at its Ondo token's own feed where Pyth has one, else at
+///         Pyth's 24/7 price for the share, else at the US-hours feed, which publishes nothing while the market is
+///         closed; Pyth's catalogue gives the "24/7" share feeds the same regular-hours schedule as the US-hours ones,
+///         so they are treated as session-limited until Hermes' data says otherwise (RX-31). A coin off the list has
+///         no entry: GRAM, OKB, BGB and GT (docs/design/wide-asset-support.md, section 6), DOGE's copy
+///         (`MainnetAddresses`), SAND and RLB (docs/design/token-source-reading.md), and the copies of BTT and SEI,
+///         whose bridges have closed or are closing (RX-28, RX-32).
 library PythIds {
     /// @dev ETHEREUM / US DOLLAR.
     bytes32 internal constant WETH = 0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace;
@@ -81,11 +70,11 @@ library PythIds {
     bytes32 internal constant CAKE = 0x2356af9529a1064d41e32d617e2ce1dca5733afa901daba9e2b68dee5d53ecf9;
     /// @dev LAYER ZERO / US DOLLAR.
     bytes32 internal constant ZRO = 0x3bd860bea28bf982fa06bcf358118064bb114086cc03993bd76197eaab0b8018;
-    /// @dev INJECTIVE / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev INJECTIVE / US DOLLAR, read from Hermes.
     bytes32 internal constant INJ = 0x7a5bc1d2b56ad029048cd63964b3ad2776eadf812edc1a43a31406cb54bff592;
-    /// @dev SHIBA INU / US DOLLAR, read from Hermes on 2026-10-10; exponent -10 on Pyth's Ethereum contract.
+    /// @dev SHIBA INU / US DOLLAR, read from Hermes; exponent -10 on Pyth's Ethereum contract.
     bytes32 internal constant SHIB = 0xf0d57deca57b3da2fe63a493f4c25925fdfd8edf834b20f93e1f84dbd1504d4a;
-    /// @dev PEPE / US DOLLAR, read from Hermes on 2026-10-10; exponent -10. Not "1000 PEPE / US DOLLAR" (KPEPE),
+    /// @dev PEPE / US DOLLAR, read from Hermes; exponent -10. Not "1000 PEPE / US DOLLAR" (KPEPE),
     ///      which prices a thousand tokens.
     bytes32 internal constant PEPE = 0xd69731a2e74ac1ce884fc3890f7ee324b6deb66147055249568869ed700882e4;
     /// @dev SOLANA / US DOLLAR, the coin's feed: nothing prices Wormhole's copy apart.
@@ -260,7 +249,7 @@ library PythIds {
     bytes32 internal constant PFEON = 0x0704ad7547b3dfee329266ee53276349d48e4587cb08264a2818288f356efd1d;
     /// @dev SALESFORCE INC / US DOLLAR (Equity.US.CRM/USD): US market hours only.
     bytes32 internal constant CRMON = 0xfeff234600320f4d6bb5a01d02570a9725c1e424977f2b823f7231e6857bdae8;
-    // Corrected 2026-11-22: the listing of 2026-11-19 took Crypto.TON/USD, Toncoin's, for this token's own feed.
+    // Not Crypto.TON/USD, Toncoin's, which an earlier listing took for this token's own feed.
     /// @dev AT&T INC / US DOLLAR (Equity.US.T/USD): US market hours only.
     bytes32 internal constant TON = 0x63e9f918ab91507c3574cca011da4dccda30cf54d46124d03b70279142ff81f3;
     /// @dev INTUITIVE SURGICAL INC / US DOLLAR (Equity.US.ISRG/USD): US market hours only.
@@ -574,8 +563,7 @@ library PythIds {
     bytes32 internal constant HIION = 0x659c675091db659251f2077293bf9e71aef2c978dd729c2be66cec0d41c1d671;
     /// @dev IONQ INC (Equity.US.IONQ/USD): US market hours only.
     bytes32 internal constant IONQON = 0x6af68a227de372e5d19183679911e468e06d85c013f56c376a78a4d942f8f269;
-    // Corrected 2026-11-22: the listing of 2026-11-19 took Crypto.LION/USD, a token called Loaded Lions, for this
-    // token's own feed.
+    // Not Crypto.LION/USD, a token called Loaded Lions, which an earlier listing took for this token's own feed.
     /// @dev LI AUTO INC SPONSORED ADS / US DOLLAR (Equity.US.LI/USD): US market hours only.
     bytes32 internal constant LION = 0xb10d624c07226d795e9211c9ac95baf43b4a4234ac89cd319e3c72b20de92f99;
     /// @dev ALBEMARLE CORPORATION / US DOLLAR (Equity.US.ALB/USD): US market hours only.
@@ -803,88 +791,88 @@ library PythIds {
     bytes32 internal constant STRCON = 0x27c7bbc9755d847f7fc63620c2edcc6a91d2c0c67a28c7999907b59c505b3c17;
     /// @dev PYTH PRICE IN USD FOR ANTHROPIC 24/7 (Equity.Index.ANT/USD): Pyth's 24/7 price for the share.
     bytes32 internal constant ANTON = 0x5da511a7c68b17a3bc94380cab4756bc83ab87f86307af10ea58467a64b6689d;
-    /// @dev FALCON FINANCE / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev FALCON FINANCE / US DOLLAR, read from Hermes.
     bytes32 internal constant FF = 0xf9597faf41a8d91fcc4dc95e9b4f408ea391cf17ec26955ae2055b6dbda5ec89;
-    /// @dev GNOSIS / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev GNOSIS / US DOLLAR, read from Hermes.
     bytes32 internal constant GNO = 0xc5f60d00d926ee369ded32a38a6bd5c1e0faa936f91b987a5d0dcf3c5d8afab0;
-    /// @dev OLYMPUS DAO / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev OLYMPUS DAO / US DOLLAR, read from Hermes.
     bytes32 internal constant OHM = 0x3a8c0214e4fb7f1dd7792ed4d5b2971372e52f088fcd9cc02309253cbdc4a70e;
-    /// @dev THE GRAPH / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev THE GRAPH / US DOLLAR, read from Hermes.
     bytes32 internal constant GRT = 0x4d1f8dae0d96236fb98e8f47471a366ec3b1732b47041781934ca3a9bb2f35e7;
-    /// @dev MAPLE FINANCE / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev MAPLE FINANCE / US DOLLAR, read from Hermes.
     bytes32 internal constant SYRUP = 0xed86e0c6321d790302e5d88751995ebc9079273e549005d68a83ba72e48ff1ce;
-    /// @dev ETHEREUM NAME SERVICE / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev ETHEREUM NAME SERVICE / US DOLLAR, read from Hermes.
     bytes32 internal constant ENS = 0xb98ab6023650bd2edc026b983fb7c2f8fa1020286f1ba6ecf3f4322cd83b72a6;
-    /// @dev JASMYCOIN / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev JASMYCOIN / US DOLLAR, read from Hermes.
     bytes32 internal constant JASMY = 0x2b386bdca7fda5cf3c3975f70318593bf144104cb00742592ecff60dd798972f;
-    /// @dev COMPOUND / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev COMPOUND / US DOLLAR, read from Hermes.
     bytes32 internal constant COMP = 0x4a8e42861cabc5ecb50996f92e7cfa2bce3fd0a2423b0c44c9b423fb2bd25478;
-    /// @dev EIGENLAYER / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev EIGENLAYER / US DOLLAR, read from Hermes.
     bytes32 internal constant EIGEN = 0xc65db025687356496e8653d0d6608eec64ce2d96e2e28c530e574f0e4f712380;
-    /// @dev AXIE INFINITY / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev AXIE INFINITY / US DOLLAR, read from Hermes.
     bytes32 internal constant AXS = 0xb7e3904c08ddd9c0c10c6d207d390fd19e87eb6aab96304f571ed94caebdefa0;
-    /// @dev BASIC ATTENTION / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev BASIC ATTENTION / US DOLLAR, read from Hermes.
     bytes32 internal constant BAT = 0x8e860fb74e60e5736b455d82f60b3728049c348e94961add5f961b02fdee2535;
-    /// @dev CONVEX FINANCE / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev CONVEX FINANCE / US DOLLAR, read from Hermes.
     bytes32 internal constant CVX = 0x6aac625e125ada0d2a6b98316493256ca733a5808cd34ccef79b0e28c64d1e76;
-    /// @dev DECENTRALAND / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev DECENTRALAND / US DOLLAR, read from Hermes.
     bytes32 internal constant MANA = 0x1dfffdcbc958d732750f53ff7f06d24bb01364b3f62abea511a390c74b8d16a5;
-    /// @dev IMMUTABLE / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev IMMUTABLE / US DOLLAR, read from Hermes.
     bytes32 internal constant IMX = 0x941320a8989414874de5aa2fc340a75d5ed91fdff1613dd55f83844d52ea63a2;
-    /// @dev FLUID / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev FLUID / US DOLLAR, read from Hermes.
     bytes32 internal constant FLUID = 0x47d462d8bac4c29b6ae1792029b9b92c8adea12ed22155bfc22f481287f1e349;
-    /// @dev CHILIZ / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev CHILIZ / US DOLLAR, read from Hermes.
     bytes32 internal constant CHZ = 0xe799f456b358a2534aa1b45141d454ac04b444ed23b1440b778549bb758f2b5c;
-    /// @dev ZKSYNC / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev ZKSYNC / US DOLLAR, read from Hermes.
     bytes32 internal constant ZK = 0xcc03dc09298fb447e0bf9afdb760d5b24340fd2167fd33d8967dd8f9a141a2e8;
-    /// @dev APECOIN / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev APECOIN / US DOLLAR, read from Hermes.
     bytes32 internal constant APE = 0x15add95022ae13563a11992e727c91bdb6b55bc183d9d747436c80a483d8c864;
-    /// @dev SENTIENT / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev SENTIENT / US DOLLAR, read from Hermes.
     bytes32 internal constant SENT = 0xc1c19f04619dbca4343d76f240b4d944551bbbb56883051e874a8d0533bce644;
-    /// @dev SYNTHETIX NETWORK / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev SYNTHETIX NETWORK / US DOLLAR, read from Hermes.
     bytes32 internal constant SNX = 0x39d020f60982ed892abbcd4a06a276a9f9b7bfbce003204c110b6e488f502da3;
-    /// @dev 1INCH / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev 1INCH / US DOLLAR, read from Hermes.
     bytes32 internal constant ONEINCH = 0x63f341689d98a12ef60a5cff1d7f85c70a9e17bf1575f0e7c0b2512d48b1c8b3;
-    /// @dev GOLEM / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev GOLEM / US DOLLAR, read from Hermes.
     bytes32 internal constant GLM = 0x01a09cbc99b1894271cfd90d6e5aab527cafa66b19d651b441b84e84f671de33;
-    /// @dev AETHIR / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev AETHIR / US DOLLAR, read from Hermes.
     bytes32 internal constant ATH = 0xf6b551a947e7990089e2d5149b1e44b369fcc6ad3627cb822362a2b19d24ad4a;
-    /// @dev HUMANITY / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev HUMANITY / US DOLLAR, read from Hermes.
     bytes32 internal constant H = 0x807df1ed343907c4d97790334338c5df6e360036b3c95f880450d078569b5481;
-    /// @dev PLUME NETWORK / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev PLUME NETWORK / US DOLLAR, read from Hermes.
     bytes32 internal constant PLUME = 0xded84d57dbf810bf86b97936f12e1f01b8d6d01c251a4d6eac592147988d475c;
-    /// @dev GALA GAMES / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev GALA GAMES / US DOLLAR, read from Hermes.
     bytes32 internal constant GALA = 0x0781209c28fda797616212b7f94d77af3a01f3e94a5d421760aef020cf2bcb51;
-    /// @dev WORMHOLE / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev WORMHOLE / US DOLLAR, read from Hermes.
     bytes32 internal constant W = 0xeff7446475e218517566ea99e72a4abec2e1bd8498b43b7d8331e29dcb059389;
-    /// @dev RESERVE RIGHTS / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev RESERVE RIGHTS / US DOLLAR, read from Hermes.
     bytes32 internal constant RSR = 0xfb7565b77267ba3f6ef770bed5d7f9b22b8542db676dbd9b934a2fcf945f4371;
-    /// @dev RIPPLE / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev RIPPLE / US DOLLAR, read from Hermes.
     bytes32 internal constant XRP = 0xec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8;
-    /// @dev CARDANO / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev CARDANO / US DOLLAR, read from Hermes.
     bytes32 internal constant ADA = 0x2a01deaec9e51a579277b34b122399984d0bbf57e2458a7e42fecd2829867a0d;
-    /// @dev LITECOIN / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev LITECOIN / US DOLLAR, read from Hermes.
     bytes32 internal constant LTC = 0x6e3f3fa8253588df9326580180233eb791e03b443a3ba7a1d892e73874e19a54;
-    /// @dev AVALANCHE / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev AVALANCHE / US DOLLAR, read from Hermes.
     bytes32 internal constant AVAX = 0x93da3352f9f1d105fdfe4971cfa80e9dd777bfc5d0f683ebb6e1294b92137bb7;
-    /// @dev POLKADOT / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev POLKADOT / US DOLLAR, read from Hermes.
     bytes32 internal constant DOT = 0xca3eed9b267293f6595901c734c7525ce8ef49adafe8284606ceb307afa2ca5b;
-    /// @dev JUPITER / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev JUPITER / US DOLLAR, read from Hermes.
     bytes32 internal constant JUP = 0x0a0408d619e9380abad35060f9192039ed5042fa6f82301d0e48bb52be830996;
-    /// @dev ALGORAND / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev ALGORAND / US DOLLAR, read from Hermes.
     bytes32 internal constant ALGO = 0xfa17ceaf30d19ba51112fdcc750cc83454776f47fb0112e4af07f15f4bb1ebc0;
-    /// @dev COSMOS / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev COSMOS / US DOLLAR, read from Hermes.
     bytes32 internal constant ATOM = 0xb00b60f88b03a6a625a8d1c048c3f66653edf217439983d037e7222c4e612819;
-    /// @dev AERODROME FINANCE / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev AERODROME FINANCE / US DOLLAR, read from Hermes.
     bytes32 internal constant AERO = 0x9db37f4d5654aad3e37e2e14ffd8d53265fb3026d1d8f91146539eebaa2ef45f;
-    /// @dev APTOS / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev APTOS / US DOLLAR, read from Hermes.
     bytes32 internal constant APT = 0x03ae4db29ed4ae33d323568895aa00337e658e348b37509f5372ae51f0af00d5;
-    /// @dev PYTH NETWORK / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev PYTH NETWORK / US DOLLAR, read from Hermes.
     bytes32 internal constant PYTH_TOKEN = 0x0bbf28e9a841a1cc788f6a361b17ca072d0ea3098a1e5df1c3922d06719579ff;
-    /// @dev OPTIMISM / US DOLLAR, read from Hermes on 2026-10-10.
+    /// @dev OPTIMISM / US DOLLAR, read from Hermes.
     bytes32 internal constant OP = 0x385f64d993f7b77d8182ed5003d97c60aa3361f3cecfe711544d2d59165e9bdf;
-    /// @dev BNB / US DOLLAR, read from Pyth's catalogue on 2026-10-18.
+    /// @dev BNB / US DOLLAR, read from Pyth's catalogue.
     bytes32 internal constant BNB = 0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f;
-    /// @dev SUI / US DOLLAR, read from Pyth's catalogue on 2026-10-18.
+    /// @dev SUI / US DOLLAR, read from Pyth's catalogue.
     bytes32 internal constant SUI = 0x23d7315113f5b1d3ba7a83604c44b94d79f4fd69af77f804fc7f920a6dc65744;
 }

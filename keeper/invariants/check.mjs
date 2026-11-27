@@ -56,7 +56,7 @@ export const required = (supply, units, scale) => (supply * units * scale) / BAC
 ///   eta, keepMask          pendingRebalance()
 ///   earliest, restartAllowedAt, proposalCount, rebalanceNonce
 /// The properties are the hub's invariant (CLAUDE.md, "Invariant") and the rebalance state machine's I1 to I4
-/// (design/2026-10-29-rebalance-state-machine.md, section 5).
+/// (docs/design/rebalance-state-machine.md, section 5).
 export function checkIndex(s) {
   const at = { index: lower(s.index) };
   const n = BigInt(s.tokens.length);

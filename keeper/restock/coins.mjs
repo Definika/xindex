@@ -3,7 +3,7 @@
 // script/PythIds.sol; the home-chain addresses are checked on their own chains before the service sends anything.
 
 /// Each home chain: its Wormhole chain id, its platform, its gas coin, the stablecoin its float is kept in, and its
-/// CCTP domain. Every one of them runs CCTP V2 (read on 2026-11-01; Circle retires V1 by 2026-12-01).
+/// CCTP domain. Every one of them runs CCTP V2, which Circle keeps as V1 retires.
 export const CHAINS = Object.freeze({
   avalanche: {
     wormhole: 6,
@@ -49,7 +49,7 @@ export const COINS = Object.freeze(
 /// itself, as the executor holds it, and `local` marks the coin: no home chain, no bridge, no sale; the treasury buys
 /// it and deposits it into the executor (`depositStock`), credited within the owner's restock allowance (RS-1).
 /// `test/unit/restock-coins.test.mjs` pins each against script/MainnetAddresses.sol and script/PythIds.sol; symbol and
-/// decimals were read on chain on 2026-11-24.
+/// decimals were read on chain.
 export const LOCAL_COINS = Object.freeze(
   [
     { symbol: "NVDAON", name: "NVDAON", copy: "0x2D1F7226Bd1F780AF6B9A49DCC0aE00E8Df4bDEE" },
@@ -84,11 +84,11 @@ export const PRICE_IDS = Object.freeze({
 });
 
 /// The coins served when `RESTOCK_COINS` is unset: those whose home market can take a restock within the loss bound.
-/// OP left Ethereum's list on 2026-11-21 (the owner's call): that day no route bought it on Optimism within
+/// OP is off Ethereum's list by the owner's decision: no route bought it on Optimism within
 /// ROUTE_MAX_LOSS_BPS, its deepest Uniswap v3 pool there holding about $35,000 of USDC. It stays in the table, as its
 /// address stays in `MainnetAddresses`, for a relisting, and `RESTOCK_COINS` can still name it. The copies of XRP, ADA,
-/// LTC, DOT, ATOM, BNB, JUP, PYTH, SUI, APT and ALGO, which left the list on 2026-11-13 and 2026-11-18, went from the
-/// table on 2026-11-25 (audit/2026-11-25-non-evm-restock-retirement.md). AERO's copy left on 2026-11-26 (the owner's
+/// LTC, DOT, ATOM, BNB, JUP, PYTH, SUI, APT and ALGO, which left the list, went from the
+/// table (audits/retired/non-evm-restock.md). AERO's copy left too (the owner's
 /// call): it is a copy of Aerodrome's AERO, which Aero replaced with a token of its own, so its home token's depth is
 /// leaving and its conversion is Aero's to end. It stays in the table, as OP does, and `RESTOCK_COINS` can name it.
 export const DEFAULT_COINS = Object.freeze(["AVAX"]);

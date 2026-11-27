@@ -14,20 +14,19 @@ library ForkAddresses {
     address internal constant UNI = MainnetAddresses.UNI;
     /// @dev tBTC is not on the Stage A whitelist; the zap fork tests still route through its pool.
     address internal constant TBTC = 0x18084fbA666a33d37592fA2633fD49a74DD93a88;
-    /// @dev WhiteBIT's WBT, kept off every list by the WBT rule (design/2026-09-30-wbt-check.md); the admission check's
+    /// @dev WhiteBIT's WBT, kept off every list by the WBT rule (docs/design/wbt-check.md); the admission check's
     ///      fork test proves the check refuses it.
     address internal constant WBT = 0x925206b8a707096Ed26ae47C84747fE0bb734F59;
-    /// @dev The two top-100 Ethereum coins the WBT rule keeps off the wide list (design/2026-10-05-token-admission-
-    ///      report.md): LEO, whose MiniMe controller destroys any balance and approves every transfer, and WLFI, whose
+    /// @dev The two top-100 Ethereum coins the WBT rule keeps off the wide list (docs/design/token-admission.md): LEO, whose MiniMe controller destroys any balance and approves every transfer, and WLFI, whose
     ///      owner blacklists and reallocates any holder's balance.
     address internal constant LEO = 0x2AF5D2aD76741191D15Dfe7bF6aC92d4Bd912Ca3;
     address internal constant WLFI = 0xdA5e1988097297dCdc1f90D4dFE7909e847CBeF6;
-    /// @dev The Sandbox's SAND, off the list since 2026-10-18 (the owner's call after the source reading): its admins
+    /// @dev The Sandbox's SAND, off the list (the owner's call after the source reading): its admins
     ///      appoint operators that move or burn any holder's balance. The check's fork test still proves it goes to
     ///      review (CF-4).
     address internal constant SAND = 0x3845badAde8e6dFF049820680d1F14bD3903a5d0;
     /// @dev TokenSoft's wrapped XRP, which the check called listable until its table named TokenSoft's whitelist and
-    ///      `revoke` (read 2026-10-26): a blacklist with a destroy, refused by the WBT rule.
+    ///      `revoke`: a blacklist with a destroy, refused by the WBT rule.
     address internal constant WXRP = 0x39fBBABf11738317a448031930706cd3e612e1B9;
 
     /// @dev Uniswap SwapRouter02. The zap swaps through the Universal Router; this is only the fork tests' own rebalance
@@ -41,7 +40,7 @@ library ForkAddresses {
     ///      and lets the RPC cache.
     uint256 internal constant FORK_BLOCK = 26033838;
     /// @dev Block the suites that read the whole list pin to (`MainnetAddresses.fork`, `CheckToken.fork`,
-    ///      `WeightedHub.fork`): 2026-11-21's, after Ondo had deployed every stock and ETF the list names (read on chain
-    ///      at block 26,450,299 on 2026-11-19); FORK_BLOCK predates many of them. FORK_BLOCK overrides it too.
+    ///      `WeightedHub.fork`): after Ondo had deployed every stock and ETF the list names (read on chain
+    ///      at block 26,450,299); FORK_BLOCK predates many of them. FORK_BLOCK overrides it too.
     uint256 internal constant LIST_FORK_BLOCK = 26_464_080;
 }

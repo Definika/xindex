@@ -20,8 +20,25 @@ export function usdToUsdcCeil(usd, decimals = 6) {
   return BigInt(Math.ceil(usd * 1e6)) * 10n ** BigInt(decimals - 6);
 }
 
-/// `IPythPrices.FeedKind.Token`: a feed that prices the token itself, the one kind the bot values a leg at.
+/// `IPythPrices.FeedKind.Token`: a feed that prices the token itself.
 export const TOKEN_FEED = 1;
+
+/// `IPythPrices.FeedKind.SharesOracle`: a feed that prices a share of the stock an Ondo token stands for sValue of,
+/// the factory's reader taking the sValue from Ondo's oracle. The bot values such a leg as it values every
+/// share-priced one, at the share's price times the sValue it reads itself, once settled (bot/svalues.mjs).
+export const SHARES_ORACLE_FEED = 4;
+
+/// The id the bot values a leg at, from the factory's feed for it (`{id, kind}`), lowercased, or null for a leg it
+/// leaves alone: a token's own price counts, and an Ondo share's only where `sharePricedIds` names the id, since only
+/// those does bot/svalues.mjs turn into the token's at its sValue. A vault's or a multiplier token's feed prices what
+/// the bot cannot turn into the token's value, so such a leg is left alone (RX-2).
+export function valuedFeedId(feed, sharePricedIds) {
+  const id = feed.id.toLowerCase();
+  const kind = Number(feed.kind);
+  if (kind === TOKEN_FEED) return id;
+  if (kind === SHARES_ORACLE_FEED && sharePricedIds.includes(id)) return id;
+  return null;
+}
 
 /// The float's raw units, `decimals` of them, in dollars.
 export const usdcUsd = (raw, decimals = 6) => Number(raw) / 10 ** decimals;
@@ -147,7 +164,7 @@ export const freshPrice = (p, now, freshSeconds, maxConfBps) =>
   BigInt(p.conf) * BPS <= BigInt(p.price) * BigInt(maxConfBps);
 
 /// The gas limit a start is sent with. A start is a plain call that reads no feed: it cost 94,000 gas on a
-/// hundred-coin index (2026-11-10), and is run with exactly this limit at its block before it is sent.
+/// hundred-coin index, and is run with exactly this limit at its block before it is sent.
 export const START_GAS_LIMIT = 250_000n;
 
 /// The most a settlement can pay its executor, in dollars: what it sends out less what it takes in, each leg at

@@ -179,7 +179,7 @@ jobs:
           print(f"100% coverage on all {rows} files")
           EOF
 
-  # Wake runs in a job of its own (CF-6, audit of 2026-10-13). Installing eth-wake with pipx resolves its dependencies
+  # Wake runs in a job of its own (CF-6). Installing eth-wake with pipx resolves its dependencies
   # from PyPI at run time, and the check job saves Foundry's RPC cache (~/.foundry/cache/rpc, foundry-toolchain's
   # default) for later runs, whose fork suites read cached chain state instead of fetching it. In one job, a
   # compromised dependency could have planted state those suites would trust; here it reaches no cache, no secret
@@ -217,7 +217,7 @@ jobs:
           fi
           wake detect all src
 
-  # The mutation gate (step 4 of the logic-hardening plan, 2026-10-31): every mutant of test/mutants/mutants.json is
+  # The mutation gate (step 4 of the logic-hardening plan): every mutant of test/mutants/mutants.json is
   # applied in turn and the suite it names must fail. It runs in a job of its own, with no secret and no shared cache,
   # since it rewrites src/ while it runs. A mutant whose code has changed fails as stale: update its edit with the code.
   mutants:

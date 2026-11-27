@@ -37,7 +37,7 @@ abstract contract WeightedTest is Test {
 
     function _deploy() internal {
         vm.warp(1_800_000_000);
-        factory = new WeightedIndexFactory(owner, guardian, address(0), address(new WeightedMath()));
+        factory = new WeightedIndexFactory(owner, guardian, address(0), address(new WeightedMath()), address(0));
         _approveCreator(creator);
         eth = new MockERC20("Ether", "ETH", 18);
         btc = new MockERC20("Bitcoin", "BTC", 8);

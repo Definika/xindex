@@ -31,7 +31,7 @@ export const sharePricedLegs = (ids, sharePricedIds = SHARE_PRICED_IDS) =>
   ids.map((id) => id !== null && id !== undefined && sharePricedIds.includes(id.toLowerCase()));
 
 /// `oracle` is the chain's SyntheticSharesOracle (`cfg.chain.ondoOracle`), or null where Ondo has none, and then no
-/// share-priced leg is valued, as before 2026-11-25.
+/// share-priced leg is valued.
 export function createSValues({ chain, oracle, abi = ONDO_ORACLE_ABI, settleSeconds = SVALUE_SETTLE_SECONDS, sharePricedIds = SHARE_PRICED_IDS, log = () => {} }) {
   let block = null; // the block the cache below is of
   let cache = new Map(); // lowercased token -> a promise of its sValue at `block`, or of null
@@ -93,7 +93,7 @@ export function createSValues({ chain, oracle, abi = ONDO_ORACLE_ABI, settleSeco
   /// share-priced leg with no settled sValue. A leg priced at its own feed keeps the feed's price; a share-priced leg
   /// with a settled sValue is priced at the share's times sValue (M.atRate) and is no longer share-priced; one without
   /// keeps the feed's price, the share's, and stays share-priced, which every caller treats as it did before
-  /// 2026-11-25: a leg the bot names no units for, delivers no stock of and counts none of as stock (RX-2).
+  /// any: a leg the bot names no units for, delivers no stock of and counts none of as stock (RX-2).
   async function legs(st, feeds, L) {
     const sv = await of(st, L);
     return feeds.map((p, i) => {

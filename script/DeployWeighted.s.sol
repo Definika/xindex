@@ -17,9 +17,9 @@ import {DeployChecks} from "./DeployChecks.sol";
 /// @notice Deploys Xindex: `WeightedIndexFactory`, which deploys the `WeightedHub` implementation every index is a
 ///         clone of, then a zap, a basket builder and MintRequests for that factory. Run once on Ethereum and once
 ///         on BNB Chain, each with that chain's owner Safe and guardian's Safe: two deployments that share nothing,
-///         each holding its chain's coins in kind (`design/2026-11-13-bnb-chain-deployment.md`). The owner, the
+///         each holding its chain's coins in kind (`docs/design/bnb-chain.md`). The owner, the
 ///         guardian and the market are checked by `DeployChecks`. No oracle is deployed, named or read: an index
-///         rebalances through an auction on units alone (`design/2026-11-10-oracle-free-rebalance.md`).
+///         rebalances through an auction on units alone (`docs/design/rebalance.md`).
 ///
 ///   OWNER=<safe address> GUARDIAN=<guardian address> forge script script/DeployWeighted.s.sol --rpc-url mainnet \
 ///     --account deployer --sender <deployer address> --broadcast --verify
@@ -49,16 +49,16 @@ contract DeployWeighted is DeployChecks {
     ///         mainnet broadcast is bound to (CF-5): `deploy` refuses to broadcast on a pinned chain from any other build (a
     ///         local edit, a lib/ checkout off foundry.lock, a FOUNDRY_* override), and `test_CF5_*` in
     ///         test/Scripts.t.sol fails until these equal the build, so only a reviewed, CI-green commit moves them.
-    bytes32 public constant FACTORY_INITCODE_HASH = 0xbefe3599e77acdc2f1b38727c1a260d83cec48f136b42480099bd2ff10058ea9;
+    bytes32 public constant FACTORY_INITCODE_HASH = 0x9a54a994ddbaddd3d1029aae9093d1b7b15c2de7054219954f6df1eea8ceb134;
     /// @notice keccak256 of `IndexZap`'s init code, as above.
-    bytes32 public constant ZAP_INITCODE_HASH = 0x6d07e0ce44108c62a6135fb3b08d1dc50694b92575e74303146d021a43f47966;
+    bytes32 public constant ZAP_INITCODE_HASH = 0x60f9c309573c60e3f6eda263ba8d3fe2c2597de837299bb6210295d18ffcbdeb;
     /// @notice keccak256 of `BasketBuilder`'s init code, as above.
-    bytes32 public constant BUILDER_INITCODE_HASH = 0x33f9a6bf792f320275cdd0a4ab2b018aa0d4e11545b3e6b8e2b547ec32d5ff2d;
-    /// @notice keccak256 of `WeightedMath`'s init code, as above: deployed on its own since 2026-11-23, before the
+    bytes32 public constant BUILDER_INITCODE_HASH = 0x9a8ce967c7c8c8cb1e491ebbef48035d4c1882507feaa2bf12de62abde00f753;
+    /// @notice keccak256 of `WeightedMath`'s init code, as above: deployed on its own, before the
     ///         factory, which the factory's init code no longer has room to embed (EIP-3860).
-    bytes32 public constant MATH_INITCODE_HASH = 0x549b47e8001ddecbf0c40c630a2d2f39439601a439ea0564efdcbc9b87f9a911;
+    bytes32 public constant MATH_INITCODE_HASH = 0xb48e9de439b7b1827eef243bb9efc852ba937d59a1ed93bcb82ba1352b66c932;
     /// @notice keccak256 of `MintRequests`' init code, as above.
-    bytes32 public constant REQUESTS_INITCODE_HASH = 0x41e888e2c8f02f0e76301ef6b8b614e6494aa70bac20f07590979ddc448047dc;
+    bytes32 public constant REQUESTS_INITCODE_HASH = 0x7d785e10a45709eb9ac85a6ffe06e18464bd0e5a5467d41ce10790aa8c800ce3;
 
     /// @dev How many contracts the release record covers: the factory, the zap, the builder, MintRequests and the math.
     uint256 private constant RELEASED = 5;
@@ -118,7 +118,7 @@ contract DeployWeighted is DeployChecks {
 
         vm.startBroadcast();
         // The math first: the factory takes it for the implementation it deploys.
-        factory = new WeightedIndexFactory(owner, guardian, pyth, address(new WeightedMath()));
+        factory = new WeightedIndexFactory(owner, guardian, pyth, address(new WeightedMath()), resolveSharesOracle());
         // The zap types its factory as `IIndexFactory`, and calls only `isIndex` on it, which this factory answers.
         zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(router), resolveLocalVenue(), usdc, usdt);
         builder = new BasketBuilder(
@@ -142,6 +142,7 @@ contract DeployWeighted is DeployChecks {
         console2.log("USDT:                    ", usdt);
         console2.log("Pyth:                    ", pyth);
         console2.log("PythPrices:              ", factory.PRICES());
+        console2.log("Ondo's sValue oracle:    ", resolveSharesOracle());
 
         bytes32[6] memory codehashes = checkDeployment(factory, zap, builder, requests);
         console2.log("WeightedIndexFactory hash:", vm.toString(codehashes[0]));
@@ -189,6 +190,10 @@ contract DeployWeighted is DeployChecks {
         if (isPinnedChain()) {
             address pyth = prices == address(0) ? address(0) : IPythPrices(prices).PYTH();
             if (pyth != pinnedPyth()) revert WrongWiring("PythPrices.PYTH", pinnedPyth(), pyth);
+            address sharesOracle = IPythPrices(prices).SHARES_ORACLE();
+            if (sharesOracle != pinnedSharesOracle()) {
+                revert WrongWiring("PythPrices.SHARES_ORACLE", pinnedSharesOracle(), sharesOracle);
+            }
         }
         // The three take and pay the same two stablecoins.
         _checkStables("IndexZap", zap.USDC(), zap.USDT(), requests);
@@ -204,7 +209,7 @@ contract DeployWeighted is DeployChecks {
     }
 
     /// @dev Reverts WrongWiring unless the zap and the builder name the same DEX beside Uniswap, and on a pinned chain
-    ///      the one its address book names (the owner's call of 2026-11-26). The addresses alone are compared: the
+    ///      the one its address book names. The addresses alone are compared: the
     ///      engine's constructor ties each DEX to the addresses it uses, so the same addresses are the same DEX.
     function _checkLocalVenue(IndexZap zap, BasketBuilder builder) private view {
         address[DEX_ADDRESSES] memory zaps =

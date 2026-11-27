@@ -21,6 +21,11 @@
         "name": "math",
         "type": "address",
         "internalType": "address"
+      },
+      {
+        "name": "sharesOracle",
+        "type": "address",
+        "internalType": "address"
       }
     ],
     "stateMutability": "nonpayable"

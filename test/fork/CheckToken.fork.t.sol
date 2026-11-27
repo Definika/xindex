@@ -70,10 +70,10 @@ contract CheckTokenForkTest is Test {
     }
 
     /// @dev The wide list is what passed the check, with two exceptions pinned so a change in what the check says
-    ///      about either shows. Tether Gold, which the check refuses under the WBT rule and the owner admitted on
-    ///      2026-10-10 regardless, is pinned as refused. GALA goes to review: the source reading of 2026-10-18 (CF-4)
+    ///      about either shows. Tether Gold, which the check refuses under the WBT rule and the owner admits
+    ///      regardless, is pinned as refused. GALA goes to review: the source reading (CF-4)
     ///      added its `blocklist`, which sits beside a `burnFrom` that spends an allowance
-    ///      (design/2026-10-18-token-source-reading.md), and the owner kept it.
+    ///      (docs/design/token-source-reading.md), and the owner kept it.
     ///      The list is checked a hundred tokens a test, since a check reads each token's code and pools at length and
     ///      410 of them in one test outrun a test's gas.
     function testFork_theWideTokensPassTheCheck_0to99() public {
@@ -105,9 +105,9 @@ contract CheckTokenForkTest is Test {
         }
     }
 
-    /// @dev CF-4: SAND goes to review with its admin named. The audit of 2026-10-13 added The Sandbox's
+    /// @dev CF-4: SAND goes to review with its admin named. The security audit (CF) added The Sandbox's
     ///      `setSuperOperator`, whose operators move and burn any holder's balance without an allowance, to the check's
-    ///      names; the source reading of 2026-10-18 added its second admin's `setExecutionOperator`, and the owner then
+    ///      names; the source reading added its second admin's `setExecutionOperator`, and the owner then
     ///      took SAND off the list.
     function testFork_CF4_sandGoesToReviewWithItsAdmin() public {
         CheckToken.Report memory r = _check(A.SAND);

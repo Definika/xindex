@@ -20,6 +20,8 @@ import {IXindexErrors} from "../../src/interfaces/IXindexErrors.sol";
 import {IWeightedHub} from "../../src/interfaces/IWeightedHub.sol";
 import {IPythPrices} from "../../src/interfaces/IPythPrices.sol";
 import {IPythReader} from "../../src/interfaces/IPythReader.sol";
+import {ISyntheticSharesOracle} from "../../src/interfaces/ISyntheticSharesOracle.sol";
+import {OndoSValues} from "./OndoSValues.sol";
 import {PriceFeeds} from "../../script/PriceFeeds.sol";
 import {PathKey} from "../../src/libraries/UniswapV4Types.sol";
 import {CheckToken} from "../../script/CheckToken.s.sol";
@@ -51,20 +53,19 @@ contract GuardianSafe {
 contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
     using SafeERC20 for IERC20;
 
-    /// @dev Runtime code hashes read on BNB Chain on 2026-10-07 at block 126,305,003 and again on 2026-11-13. The
+    /// @dev Runtime code hashes read on BNB Chain at block 126,305,003 and again at the pin. The
     ///      router has no proxy and its immutables are part of its code, so the hash is the build and its wiring; the
     ///      build is Ethereum's but for those immutables.
     bytes32 constant UNIVERSAL_ROUTER_CODEHASH = 0x4899c516cf2f0b82251ab88630a9b326d1a2668855c553f9f5a0ea2de993e63b;
     bytes32 constant POOL_MANAGER_CODEHASH = 0x48752321ee7abf0d2a17c30679df9a1ddd14dc75d28b26e2509b76396145a005;
     bytes32 constant UNISWAP_V3_FACTORY_CODEHASH = 0x34b1009d0f004e58da791225992645e2df7697ac71ac89dc5e80469c4ef7e322;
-    /// @dev PancakeSwap's Infinity Universal Router, the chain's own DEX beside Uniswap since 2026-11-26: no proxy, its
-    ///      immutables in its code, read on 2026-11-26 and matching its verified source (Sourcify, exact match).
+    /// @dev PancakeSwap's Infinity Universal Router, the chain's own DEX beside Uniswap: no proxy, its
+    ///      immutables in its code, read and matching its verified source (Sourcify, exact match).
     bytes32 constant PANCAKE_ROUTER_CODEHASH = 0x475a0fac42fef6f5939a066498de529e7b79906eccfbb147ace899c8d21a898b;
     /// @dev Ethereum's router, by its runtime code: `MainnetAddresses.fork.t.sol` pins the same hash on Ethereum.
     bytes32 constant ETHEREUM_ROUTER_CODEHASH = 0x6a5f46971b50c6e1b7eef97902311444e479d734e4f80ad88367783cf373fe7f;
     /// @dev Block the fork pins to; BNB_FORK_BLOCK overrides it for a non-archive RPC that only serves recent state.
-    ///      2026-11-25's, after every Ondo token the list names had been deployed, ANTon the last (first active at
-    ///      block 135,500,512); 134,768,771 of 2026-11-21 came before it, and 133,361,996 of 2026-11-13 before others.
+    ///      It follows every Ondo token the list names, ANTon the last (first active at block 135,500,512).
     uint256 constant FORK_BLOCK = 135_655_351;
 
     uint24 constant F500 = 500;
@@ -486,7 +487,7 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
 
     /// @dev Ethereum's router address has code on BNB Chain: Ethereum's own router, byte for byte, immutables
     ///      included, so it names Ethereum's PoolManager address and settles against no market here. The deploy
-    ///      checks read that address having code as "this is Ethereum" until 2026-11-13; they resolve BNB Chain's
+    ///      checks once read that address having code as "this is Ethereum"; they resolve BNB Chain's
     ///      book here, under BNB Chain's chain id and under an overridden one (RX-23).
     function testFork_ethereumsRouterAddressHereIsAReplayThatNamesNothing() public {
         assertEq(M.UNIVERSAL_ROUTER.codehash, ETHEREUM_ROUTER_CODEHASH, "Ethereum's router, replayed on BNB Chain");
@@ -624,7 +625,7 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
         address[] memory list = new ConfigureWeighted().resolveList("bnb");
         assertEq(list.length, B.COUNT);
         WeightedIndexFactory factory =
-            new WeightedIndexFactory(address(this), address(0), address(0), address(new WeightedMath()));
+            new WeightedIndexFactory(address(this), address(0), address(0), address(new WeightedMath()), address(0));
         _list(factory, list);
         for (uint256 i = 0; i < list.length; ++i) {
             assertTrue(factory.isWhitelisted(list[i]));
@@ -691,7 +692,7 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
     }
 
     /// @dev The three coins the list leaves out for their proxy: one externally owned key can replace the code of
-    ///      Binance-Peg DOGE, AVAX and FIL, the reason DOGE left Ethereum's list on 2026-10-14.
+    ///      Binance-Peg DOGE, AVAX and FIL, the reason DOGE is off Ethereum's list.
     function testFork_theLeftOutProxiesAnswerToOneKey() public {
         CheckToken checker = new CheckToken();
         address[3] memory proxies = [
@@ -1109,7 +1110,7 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
         assertEq(IERC20(B.USDT).balanceOf(B.UNIVERSAL_ROUTER), uniswapBefore, "Uniswap's router was never paid");
     }
 
-    /// @dev HK-22 on PancakeSwap's real router (audit/2026-11-27-attack-replay-ii.md): a route names tokens and a
+    /// @dev HK-22 on PancakeSwap's real router (audits/internal/attack-replay-ii.md): a route names tokens and a
     ///      fee tier, and the router derives the pool from its own deployer, so no caller can name a pool of its own.
     ///      A tier PancakeSwap never enabled, 0.3%, has no pool at the derived address, and the swap reverts before
     ///      anything moves.
@@ -1156,9 +1157,9 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
         assertEq(index.totalSupply(), 0);
     }
 
-    /// @dev CAKE, listed on 2026-11-27 for its market on PancakeSwap: an index of WBNB and CAKE is minted from USDT and
+    /// @dev CAKE, listed for its market on PancakeSwap: an index of WBNB and CAKE is minted from USDT and
     ///      burnt back through PancakeSwap's pools alone, CAKE through its V3 pool against USDT at 0.25%, which held about
-    ///      2.7M CAKE and $480k of USDT on 2026-11-27, its deepest on BNB Chain. The round trip loses under 1%.
+    ///      2.7M CAKE and $480k of USDT when it was read, its deepest on BNB Chain. The round trip loses under 1%.
     function testFork_cakeTradesThroughPancakeSwap() public {
         (WeightedIndexFactory factory, IndexZap zap,,) = _deploy();
         address[] memory two = new address[](2);
@@ -1231,8 +1232,7 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
         assertEq(IERC20(B.CAKE).balanceOf(B.PANCAKE_UNIVERSAL_ROUTER), 0, "and none left in PancakeSwap's router");
     }
 
-    /// @dev The zap takes and pays only BNB Chain's USDC and USDT (the owner's call of 2026-11-18, which withdrew its
-    ///      ether entry points): a mint paid in WBNB and a burn into it are refused before anything moves, and no entry
+    /// @dev The zap takes and pays only BNB Chain's USDC and USDT: a mint paid in WBNB and a burn into it are refused before anything moves, and no entry
     ///      point takes BNB.
     function testFork_theZapRefusesBnb() public {
         (IndexZap zap, WeightedHub index) = _threeCoinIndex();
@@ -1275,8 +1275,7 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
         assertEq(IERC20(B.WBNB).balanceOf(alice), 5 ether, "nothing moved");
     }
 
-    /// @dev The publish time of the batch Pyth's contract on BNB Chain last stored BNB's and ETH's prices in, read on
-    ///      2026-11-22.
+    /// @dev The publish time of the batch Pyth's contract on BNB Chain last stored BNB's and ETH's prices in, read at the pin.
     uint256 constant BNB_BATCH = 1_794_228_600;
 
     /// @dev A deployment from the book checks its fills against BNB Chain's Pyth: an index of WBNB and ETH, created 4%
@@ -1320,5 +1319,25 @@ contract BnbChainAddressesForkTest is Test, IRebalanceExecutor {
         deal(B.ETH, address(this), 1e24);
         index.executeRebalance(fair, "");
         assertEq(index.recordedUnits(), fair);
+    }
+
+    /// @dev Ondo's oracle in the book is Ondo's verified build, the same as Ethereum's; a deployment from the book hands
+    ///      it to its reader; and that reader values each Ondo leg the oracle holds, settled, at its share's price times
+    ///      its sValue, and refuses every other by name. NFLXon has stood for ten
+    ///      shares since its split, so at a share of $100 one token is worth $1,000 there.
+    function testFork_ondoLegsAreValuedAtTheirShareTimesOndosSValue() public {
+        assertEq(B.ONDO_SHARES_ORACLE.codehash, OndoSValues.CODEHASH, "Ondo's verified SyntheticSharesOracle");
+        (WeightedIndexFactory factory,,,) = _deploy();
+        assertEq(IPythPrices(factory.PRICES()).SHARES_ORACLE(), B.ONDO_SHARES_ORACLE, "the deployment reads the book's");
+        (uint256 valued, uint256 refused) = OndoSValues.check(B.CHAIN_ID, B.PYTH, B.ONDO_SHARES_ORACLE);
+        emit log_named_uint("Ondo legs valued at their sValue", valued);
+        emit log_named_uint("Ondo legs refused, their sValue unheld or unsettled", refused);
+        assertEq(valued + refused, 344, "every leg of kind SharesOracle");
+        assertGe(valued, 300, "the oracle holds nearly all of them");
+        (uint128 sValue,, uint256 lastUpdate, uint256 pauseStart,,) =
+            ISyntheticSharesOracle(B.ONDO_SHARES_ORACLE).assetData(B.NFLXON);
+        assertEq(sValue, 10e18, "NFLXon: ten shares a token");
+        assertEq(pauseStart, 0);
+        assertLt(lastUpdate, block.timestamp - 20 minutes, "settled, so valued at ten shares in the check above");
     }
 }

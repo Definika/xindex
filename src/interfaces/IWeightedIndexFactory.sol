@@ -474,7 +474,7 @@ interface IWeightedIndexFactory is IIndexFactory, IXindexErrors {
     function priceFeedOf(address token) external view returns (IPythPrices.PriceFeed memory);
 
     // ---------------------------------------------------------------------
-    // Changing an index's weights (the owner's calls of 2026-11-23, `design/2026-11-23-changeable-weights.md`)
+    // Changing an index's weights (`docs/design/changeable-weights.md`)
     // ---------------------------------------------------------------------
 
     /// @notice How long a proposed change of weights waits before anyone may apply it: 7 days, in which holders who

@@ -88,8 +88,9 @@ contract KeeperExecutorForkTest is Test {
         guardian = vm.createWallet("guardian");
         _installGuardian(guardian.addr);
 
-        WeightedIndexFactory factory =
-            new WeightedIndexFactory(execOwner, makeAddr("guardian role"), address(0), address(new WeightedMath()));
+        WeightedIndexFactory factory = new WeightedIndexFactory(
+            execOwner, makeAddr("guardian role"), address(0), address(new WeightedMath()), address(0)
+        );
         MintRequests requests = new MintRequests(address(factory), A.USDC, A.USDT);
         executor = new KeeperExecutor(
             IV3SwapRouter(F.SWAP_ROUTER_02),
@@ -98,7 +99,9 @@ contract KeeperExecutorForkTest is Test {
             IMintRequests(address(requests)),
             bridge,
             execOwner,
-            makeAddr("keeper")
+            makeAddr("keeper"),
+            address(0),
+            KeeperExecutor.LocalKind.None
         );
         vm.startPrank(execOwner);
         executor.setTreasury(treasury);

@@ -85,7 +85,8 @@ contract IndexZapForkTest is Test {
         }
 
         alice = _eoa(alice);
-        factory = new WeightedIndexFactory(address(this), address(0), address(0), address(new WeightedMath()));
+        factory =
+            new WeightedIndexFactory(address(this), address(0), address(0), address(new WeightedMath()), address(0));
         factory.setApprovedCreator(address(this), true);
         zap = new IndexZap(
             IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER), LocalVenues.none(), A.USDC, A.USDT
@@ -479,7 +480,7 @@ contract IndexZapForkTest is Test {
         assertGt(out, spent - spent / 50);
     }
 
-    /// @dev The zap takes and pays only USDC and USDT (the owner's call of 2026-11-18): a burn into WBTC, the index's
+    /// @dev The zap takes and pays only USDC and USDT: a burn into WBTC, the index's
     ///      own component, and a mint paid in WETH, another, are refused before anything moves.
     function testFork_aCurrencyOtherThanTheTwoStablecoinsIsRefused() public {
         _mint(A.USDC, 1e18, 100);

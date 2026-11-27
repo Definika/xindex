@@ -24,7 +24,7 @@
 
 import { renameSync, writeFileSync } from "node:fs";
 import { encodeFunctionData, getAddress } from "viem";
-import { FRESH_SECONDS, HUB_SLOTS, MAX_CONF_BPS, NO_QUOTE_PROPOSAL, TX_GAS_CAP, parseConfig } from "./bot/config.mjs";
+import { FRESH_SECONDS, HUB_SLOTS, MAX_CONF_BPS, NO_QUOTE_PROPOSAL, SHARE_PRICED_IDS, TX_GAS_CAP, parseConfig } from "./bot/config.mjs";
 import { MAX_REVERTED_FILLS, MAX_REVERTED_REQUEST_FILLS, revertedFills } from "./bot/backoff.mjs";
 import { ABI, createChain, revertReason } from "./bot/chain.mjs";
 import { createHermes, priceKey } from "./bot/hermes.mjs";
@@ -33,7 +33,7 @@ import { createNeeds } from "./bot/needs.mjs";
 import { createPythFor } from "./bot/pyth.mjs";
 import { TxTracker } from "./bot/nonce.mjs";
 import { createRequestFiller } from "./bot/requests.mjs";
-import { createRoutes, marketOf } from "./bot/routes.mjs";
+import { LOCAL_ROUTE, createRoutes, createVenues, localMarketOf, marketOf } from "./bot/routes.mjs";
 import { createSValues } from "./bot/svalues.mjs";
 import * as U from "./bot/units.mjs";
 
@@ -68,7 +68,12 @@ const land = (L) => M.landing(L.timestamp, cfg.chain);
 const passed = async (L) => (await chain.blockNumber()) - L.number >= LAND_BLOCKS;
 const chain = createChain(cfg);
 const hermes = createHermes({ url: cfg.hermesUrl, apiKey: cfg.pythApiKey });
-const routes = createRoutes(chain, cfg, ABI, marketOf(cfg.chain));
+// Uniswap's V3 and, where the chain has one, its own DEX: each leg takes the venue that quotes it best (bot/routes.mjs).
+const localMarket = localMarketOf(cfg.chain);
+const routes = createVenues([
+  { routes: createRoutes(chain, cfg, ABI, marketOf(cfg.chain)), tag: "" },
+  ...(localMarket ? [{ routes: createRoutes(chain, cfg, ABI, localMarket), tag: LOCAL_ROUTE }] : []),
+]);
 // Ondo's sValues, read from its oracle on this chain, at which a share-priced Ondo leg is valued (bot/svalues.mjs).
 const svalues = createSValues({ chain, oracle: cfg.chain.ondoOracle, log });
 const tip = M.gweiToWei(cfg.priorityFeeGwei);
@@ -112,8 +117,9 @@ function say(index, reason) {
 /// What never changes about `index`: its tokens, each one's decimals, read from the token, and the Pyth id the keeper
 /// values it at, null for a coin outside its catalogue, which it leaves alone. Where the chain's catalogue is the
 /// factory's (`feedsFromFactory`, BNB Chain and Base), a token's id is its feed there, the very one its hubs check a
-/// fill against, and only a token's own price (`FeedKind.Token`) counts: a vault's or a multiplier token's feed prices
-/// a share the bot cannot turn into the token's value, so such a leg is left alone, as a share-priced one is (RX-2).
+/// fill against, and only a token's own price (`FeedKind.Token`) or an Ondo share's (`FeedKind.SharesOracle`, which
+/// bot/svalues.mjs turns into the token's at its sValue) counts: a vault's or a multiplier token's feed prices a share
+/// the bot cannot turn into the token's value, so such a leg is left alone (RX-2).
 async function staticsOf(index, blockNumber) {
   if (!statics.has(index)) {
     const tokens = await chain.read(index, ABI.hub, "componentTokens", [], blockNumber);
@@ -129,7 +135,7 @@ async function staticsOf(index, blockNumber) {
         blockNumber,
       );
       if (read.some((r) => r.status !== "success")) throw new Error("a price feed read failed");
-      feeds = read.map((r) => (r.result.kind === M.TOKEN_FEED ? r.result.id.toLowerCase() : null));
+      feeds = read.map((r) => M.valuedFeedId(r.result, SHARE_PRICED_IDS));
     }
     const ids = tokens.map((t, i) => cfg.priceIds[t.toLowerCase()] ?? feeds[i]);
     // On a factory with an oracle, the reader a fill's legs are valued through and Pyth's contract behind it: both
@@ -163,7 +169,7 @@ async function withStatics(list, L, what, onUnread = () => {}) {
 }
 
 /// The weights of `index`, in basis points, read every time. Its creator may change them behind a notice
-/// (`proposeWeights`, since 2026-11-23): kept from the first read, a fill would be named against weights the index no
+/// (`proposeWeights`): kept from the first read, a fill would be named against weights the index no
 /// longer has, and the hub scores it at the ones it does, so the keeper would be absent from exactly the auction a
 /// change of weights opens.
 const weightsOf = (index, blockNumber) => chain.read(index, ABI.hub, "componentWeights", [], blockNumber);

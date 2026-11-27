@@ -96,7 +96,7 @@ contract FillThenCallBack {
 }
 
 /// @notice The hacks that took a bot's funds through its own callback, replayed against the keeper's executor
-///         (`audit/2026-11-23-attack-replay.md`, HK-01): Augustus V6 in March 2024, whose swap callback never asked
+///         (`audits/internal/attack-replay.md`, HK-01): Augustus V6 in March 2024, whose swap callback never asked
 ///         who was calling, the arbitrage bots baited through theirs, and SIR.trading in March 2025, whose check of
 ///         the caller read a transient slot that a later step of the same transaction had overwritten.
 contract KeeperExecutorAttacksTest is WeightedTest {
@@ -142,7 +142,9 @@ contract KeeperExecutorAttacksTest is WeightedTest {
             IMintRequests(address(requests)),
             ITokenBridge(address(bridge)),
             execOwner,
-            keeper_
+            keeper_,
+            address(0),
+            KeeperExecutor.LocalKind.None
         );
         usdc.mint(address(executor), 10_000e6);
         eth.mint(address(executor), STOCK);

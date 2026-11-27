@@ -32,7 +32,7 @@ const STANDARD_FINALITY = 2000;
 
 /// Each chain's Wormhole Token Bridge, CCTP domain, and, on a home chain, the Uniswap V3 fork its coins trade on, in
 /// the route search's terms (`bot/routes.mjs`): its float as "usdc", its wrapped gas coin as "weth". Every address was
-/// read on its chain on 2026-10-19: each bridge's chain id and its registered Ethereum peer, each quoter's and router's
+/// read on its chain: each bridge's chain id and its registered Ethereum peer, each quoter's and router's
 /// factory, each token's symbol and decimals, and each CCTP contract's domain and the USDC it mints.
 export const EVM_CHAINS = Object.freeze({
   ethereum: { viem: mainnet, wormhole: 2, tokenBridge: MAINNET.tokenBridge, cctpDomain: 0, usdc: MAINNET.usdc },

@@ -29,7 +29,7 @@ interface IXindexErrors {
     error Underbacked(address token, uint256 balance, uint256 required);
 
     /// @notice `token` is neither of the two stablecoins. USDC and USDT are the only currencies the zap, the basket
-    ///         builder and MintRequests take and pay (the owner's call of 2026-11-18).
+    ///         builder and MintRequests take and pay.
     error NotAStable(address token);
 
     // The swap errors the zap and the basket builder share, from the engine in `UniversalRouterSwaps` and around it.

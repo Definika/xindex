@@ -252,7 +252,7 @@ contract ScriptsTest is Test {
 
         MockSafe twoOfN = new MockSafe(2);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.OwnerThresholdTooLow.selector, address(twoOfN), 2));
-        deployer.checkOwner(address(twoOfN)); // two signatures no longer suffice (the owner's call on 2026-09-30)
+        deployer.checkOwner(address(twoOfN)); // two signatures no longer suffice
         assertEq(deployer.MIN_OWNER_THRESHOLD(), 3);
         deployer.checkOwner(address(new MockSafe(3))); // a real multisig, as the design's 3-of-5
     }
@@ -637,6 +637,17 @@ contract ScriptsTest is Test {
         deployer.checkDeployment(factory, zap, builder, requests);
         vm.expectRevert(abi.encodeWithSelector(DeployChecks.WrongWiring.selector, "PythPrices.PYTH", pinned, somePyth));
         deployer.checkDeployment(priced, pricedZap, pricedBuilder, pricedRequests);
+
+        // A reader of the chain's own Pyth that reads no sValue, or another oracle's, is refused there too.
+        address reader = priced.PRICES();
+        vm.mockCall(reader, abi.encodeWithSignature("PYTH()"), abi.encode(pinned));
+        address book = MainnetAddresses.ONDO_SHARES_ORACLE;
+        vm.expectRevert(
+            abi.encodeWithSelector(DeployChecks.WrongWiring.selector, "PythPrices.SHARES_ORACLE", book, address(0))
+        );
+        deployer.checkDeployment(priced, pricedZap, pricedBuilder, pricedRequests);
+        vm.mockCall(reader, abi.encodeWithSignature("SHARES_ORACLE()"), abi.encode(book));
+        deployer.checkDeployment(priced, pricedZap, pricedBuilder, pricedRequests);
     }
 
     /// @dev The zap and the builder of one deployment name the same DEX beside Uniswap: a builder naming another is
@@ -949,6 +960,19 @@ contract ScriptsTest is Test {
         assertEq(deployer.pinnedPyth(), BnbChainAddresses.PYTH);
     }
 
+    /// @dev Ondo's oracle is the book's on Ethereum and BNB Chain, none on Base, where Ondo has none, and none off the
+    ///      pinned chains: nothing in the environment names it.
+    function test_resolveSharesOracle_isTheBooksWhereOndoHasOne() public {
+        assertEq(deployer.resolveSharesOracle(), address(0), "off a pinned chain, none");
+        vm.chainId(1);
+        assertEq(deployer.resolveSharesOracle(), MainnetAddresses.ONDO_SHARES_ORACLE);
+        vm.chainId(BnbChainAddresses.CHAIN_ID);
+        assertEq(deployer.resolveSharesOracle(), BnbChainAddresses.ONDO_SHARES_ORACLE);
+        vm.chainId(BaseAddresses.CHAIN_ID);
+        assertEq(deployer.resolveSharesOracle(), address(0), "Base has none");
+        assertEq(deployer.pinnedSharesOracle(), address(0));
+    }
+
     /// @dev XA-38: the release record freezes what was deployed, and the check proves a deployment is one build.
     function test_XA38_checkDeploymentFreezesTheCodeHashes() public {
         address safeOwner = address(new MockSafe(3));
@@ -1172,7 +1196,7 @@ contract ScriptsTest is Test {
     function test_RT25_aSymbolInAnotherShapeIsAQuestionMarkNotARevert() public {
         ConfigureWeighted configure = new ConfigureWeighted();
         WeightedIndexFactory factory =
-            new WeightedIndexFactory(owner, guardian, address(0), address(new WeightedMath()));
+            new WeightedIndexFactory(owner, guardian, address(0), address(new WeightedMath()), address(0));
         bytes memory eighteen = abi.encode(uint256(18));
         bytes[7] memory answers = [
             abi.encode(bytes32("MKR")), // a bytes32 symbol, as MKR's
@@ -1202,7 +1226,7 @@ contract ScriptsTest is Test {
     function test_aTokensAnswerIsBoundedInSizeAndInGas() public {
         ConfigureWeighted configure = new ConfigureWeighted();
         WeightedIndexFactory factory =
-            new WeightedIndexFactory(owner, guardian, address(0), address(new WeightedMath()));
+            new WeightedIndexFactory(owner, guardian, address(0), address(new WeightedMath()), address(0));
         bytes memory long = new bytes(300);
         for (uint256 i = 0; i < long.length; ++i) {
             long[i] = "A";

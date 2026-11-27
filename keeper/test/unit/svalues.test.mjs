@@ -44,7 +44,7 @@ test("an sValue is usable only when held, with no corporate action scheduled, an
 
 test("a share's price at a rate is the token's: the price rounded down, the confidence up", () => {
   assert.deepEqual(M.atRate(price(5_800_000_000n, 3n), 10n * WAD), { price: 58_000_000_000n, conf: 30n, expo: -8, publishTime: NOW }, "NFLXon, ten shares");
-  const p = M.atRate(price(1_000n, 1n), 1_073_295_574_329_814_516n); // STRCon's sValue on 2026-11-25
+  const p = M.atRate(price(1_000n, 1n), 1_073_295_574_329_814_516n); // STRCon's sValue when read
   assert.equal(p.price, 1_073n, "rounded down");
   assert.equal(p.conf, 2n, "rounded up");
   assert.equal(M.atRate(price(1n), WAD / 2n), null, "a price that rounds to nothing is none");

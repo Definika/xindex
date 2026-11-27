@@ -5,7 +5,7 @@
 // No guardian or attester signs for a test, so each fork's Wormhole core gets one test key as its whole guardian set,
 // and each fork's CCTP message transmitter one test attester with a threshold of one; a fake Wormholescan signs what
 // each fork's core published, as the guardians would, and a fake Iris finalizes and attests each CCTP burn, as Circle
-// would (it fills the nonce, the finality and fee executed, and the expiry, as Iris does, read on 2026-10-19 against a
+// would (it fills the nonce, the finality and fee executed, and the expiry, as Iris does, read against a
 // real Base message). Hermes is faked too, at each coin's own pool price.
 //
 // Opt-in: needs an Ethereum archive RPC; the home chains are forked near their heads (BASE_RPC_URL, OPTIMISM_RPC_URL,
@@ -249,6 +249,7 @@ const factory = await deploy(eth, deployer, json(`${ROOT}out/WeightedIndexFactor
   deployer,
   "0x0000000000000000000000000000000000000000",
   math,
+  "0x0000000000000000000000000000000000000000",
 ]);
 const requests = await deploy(eth, deployer, json(`${ROOT}out/MintRequests.sol/MintRequests.json`), [factory, ETH_USDC, "0xdAC17F958D2ee523a2206206994597C13D831ec7"]);
 const executor = await deploy(eth, deployer, json(`${KEEPER_DIR}out/KeeperExecutor.sol/KeeperExecutor.json`), [
@@ -259,6 +260,8 @@ const executor = await deploy(eth, deployer, json(`${KEEPER_DIR}out/KeeperExecut
   ETH_BRIDGE,
   execOwner,
   privateKeyToAccount(key("keeper")).address,
+  "0x0000000000000000000000000000000000000000",
+  0,
 ]);
 await send(eth, execOwner, executor, executorAbi, "setTreasury", [treasury.address]);
 await send(eth, execOwner, executor, executorAbi, "setTreasuryUsdcAllowance", [100_000n * 10n ** 6n]);
@@ -346,7 +349,7 @@ serve(SCAN_PORT, async (url) => {
 /// Circle's attestation of the CCTP burn in transaction `transactionHash` on domain `domain`: the message as emitted,
 /// with the nonce, finality executed, fee executed and expiry Iris fills, signed by the test attester.
 serve(IRIS_PORT, async (url) => {
-  // The route's fee table, as Iris answered it on 2026-11-02 for every route the service uses: a standard transfer
+  // The route's fee table, as Iris answers it for every route the service uses: a standard transfer
   // is free (PD-12).
   if (/^\/v2\/burn\/USDC\/fees\/\d+\/\d+$/.test(url.pathname)) return [200, [{ finalityThreshold: 1000, minimumFee: 1 }, { finalityThreshold: 2000, minimumFee: 0 }]];
   const m = url.pathname.match(/^\/v2\/messages\/(\d+)$/);

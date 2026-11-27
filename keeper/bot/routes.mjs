@@ -29,6 +29,76 @@ export const marketOf = (chain) =>
 
 /// Ethereum's Uniswap V3.
 export const ETHEREUM_MARKET = marketOf(MAINNET);
+
+/// A chain's own DEX beside Uniswap, from its entry's `localDex`, or null where it has none: a market like Uniswap's
+/// over that DEX's factory, quoter and fees (PancakeSwap's V3 on BNB Chain) or tick spacings (Aero's concentrated pools
+/// on Base, `aero`, whose factory, pools and Metaquoter take other calls). Every route through it, direct or through the
+/// wrapped gas coin, is a path of its own pools; the hop from the gas coin to the float is the pool at `hubStep`.
+export function localMarketOf(chain) {
+  const dex = chain.localDex;
+  if (!dex) return null;
+  return Object.freeze({
+    ...marketOf(chain),
+    v3Factory: dex.factory,
+    quoterV2: dex.quoter,
+    directFees: dex.steps,
+    viaWethFees: dex.steps,
+    wethUsdcFee: dex.hubStep,
+    aero: dex.kind === AERO_KIND,
+  });
+}
+
+/// The executor's `LocalKind` for Aero's router (KeeperExecutor.sol).
+const AERO_KIND = 2;
+
+/// The byte a route through the chain's own DEX starts with: the executor's `LOCAL_ROUTE`.
+export const LOCAL_ROUTE = "01";
+
+/// The hops of a packed path, `[{a, step, b}]`, each step a fee or a tick spacing.
+export function hopsOf(route) {
+  const hex = route.slice(2);
+  const hops = [];
+  for (let i = 0; i + 86 <= hex.length; i += 46) {
+    hops.push({ a: `0x${hex.slice(i, i + 40)}`, step: parseInt(hex.slice(i + 40, i + 46), 16), b: `0x${hex.slice(i + 46, i + 86)}` });
+  }
+  return hops;
+}
+
+/// Routes over several venues, each searched by a {createRoutes} of its own: Uniswap's, and the chain's own DEX's, whose
+/// routes carry `tag`, the executor's LOCAL_ROUTE byte, in front of their path. A leg takes the route of the venue that
+/// quotes it best among those within ROUTE_MAX_LOSS_BPS, a sale the most and a purchase the least, the first venue on a
+/// tie; {quoteOf} answers the best quote any venue found, used or not, so a kept coin is valued at the most any of its
+/// pools pay (XS-5).
+export function createVenues(venues) {
+  const better = (side, a, b) => (side === "sell" ? a > b : a < b);
+  async function best(args) {
+    let pick = null;
+    let pickQuote = null;
+    for (const v of venues) {
+      const route = await v.routes.best(args);
+      if (route === null) continue;
+      const q = v.routes.quoteOf(args);
+      if (pick === null || better(args.side, q, pickQuote)) {
+        pick = v.tag ? `0x${v.tag}${route.slice(2)}` : route;
+        pickQuote = q;
+      }
+    }
+    return pick;
+  }
+  /// The best quote of any venue: null when no venue has a pool for the token, 0n when pools exist but none quoted.
+  function quoteOf(args) {
+    const quotes = venues.map((v) => v.routes.quoteOf(args));
+    const priced = quotes.filter((q) => q !== null && q > 0n);
+    if (priced.length) return priced.reduce((a, b) => (better(args.side, b, a) ? b : a));
+    return quotes.some((q) => q === 0n) ? 0n : null;
+  }
+  return {
+    best,
+    quoteOf,
+    forget: (keys) => venues.forEach((v) => v.routes.forget(keys)),
+    forgetKey: (key) => venues.forEach((v) => v.routes.forgetKey(key)),
+  };
+}
 /// How long a leg without a route keeps its quote: a quote that values a kept coin is from the block that uses it
 /// (XS-5, RX-13).
 export const REQUOTE_BLOCKS = 1n;
@@ -44,9 +114,12 @@ export const path = (...hops) =>
   `0x${hops.map((h, i) => (i % 2 ? h.toString(16).padStart(6, "0") : h.slice(2).toLowerCase())).join("")}`;
 
 /// `chain` needs `multicall(contracts, blockNumber)`, `call({to, abi, functionName, args}, blockNumber)` and
-/// `isRevert(error)`; `abi` is `{v3Factory, v3Pool, quoter}`; `market` names the pools and the quoter, and "USDC" below
-/// is its `usdc`, in `usdcDecimals`.
+/// `isRevert(error)`; `abi` is `{v3Factory, v3Pool, quoter}`, and on Aero `{aeroFactory, aeroPool, metaquoter}`; `market`
+/// names the pools and the quoter, and "USDC" below is its `usdc`, in `usdcDecimals`.
 export function createRoutes(chain, cfg, abi, market = ETHEREUM_MARKET) {
+  const factoryAbi = market.aero ? abi.aeroFactory : abi.v3Factory;
+  const poolAbi = market.aero ? abi.aeroPool : abi.v3Pool;
+  const poolOf = new Map(); // `${a}:${b}:${step}` -> the pool's address, for quoting along Aero's pools
   const routeRequote = ROUTE_REQUOTE_BLOCKS * (market.blockScale ?? 1n);
   const poolRefresh = POOL_REFRESH_BLOCKS * (market.blockScale ?? 1n);
   const candidatesOf = new Map(); // token -> {paths, block}: paths whose pools exist and are initialized, read at block
@@ -66,7 +139,7 @@ export function createRoutes(chain, cfg, abi, market = ETHEREUM_MARKET) {
       }
     }
     const pools = await chain.multicall(
-      options.map((o) => ({ address: market.v3Factory, abi: abi.v3Factory, functionName: "getPool", args: o.pool })),
+      options.map((o) => ({ address: market.v3Factory, abi: factoryAbi, functionName: "getPool", args: o.pool })),
       blockNumber,
     );
     // A pool read that failed is not known to be absent: nothing is cached, and the leg is not valued as poolless.
@@ -76,7 +149,7 @@ export function createRoutes(chain, cfg, abi, market = ETHEREUM_MARKET) {
     // would make a coin with no market count as worth nothing (RX-14). An initialized pool whose liquidity is gone still
     // counts, and quotes nothing, as a depegged copy's does (XS-5).
     const slots = existing.length
-      ? await chain.multicall(existing.map((o) => ({ address: o.address, abi: abi.v3Pool, functionName: "slot0" })), blockNumber)
+      ? await chain.multicall(existing.map((o) => ({ address: o.address, abi: poolAbi, functionName: "slot0" })), blockNumber)
       : [];
     if (slots.some((p) => p.status !== "success")) throw new Error(`could not read ${token}'s pools`);
     const found = existing.filter((_, k) => slots[k].result[0] !== 0n).map((o) => o.path);
@@ -88,13 +161,33 @@ export function createRoutes(chain, cfg, abi, market = ETHEREUM_MARKET) {
   /// failure (a timeout, a rate limit) throws, so it is never taken for an empty pool, nor cached.
   async function quote(side, route, amount, blockNumber) {
     const functionName = side === "sell" ? "quoteExactInput" : "quoteExactOutput";
+    const call = market.aero
+      ? { to: market.quoterV2, abi: abi.metaquoter, functionName, args: await poolsArgs(side, route, amount, blockNumber) }
+      : { to: market.quoterV2, abi: abi.quoter, functionName, args: [route, amount] };
     try {
-      const [usdc] = await chain.call({ to: market.quoterV2, abi: abi.quoter, functionName, args: [route, amount] }, blockNumber);
+      const [usdc] = await chain.call(call, blockNumber);
       return usdc;
     } catch (error) {
       if (chain.isRevert(error)) return null;
       throw error;
     }
+  }
+
+  /// Aero's Metaquoter takes a route as its pools, in order from the token paid, with that token: the component's for
+  /// a sale, the float's for a purchase, whose pools are the route's read backwards. Each hop's pool is read once.
+  async function poolsArgs(side, route, amount, blockNumber) {
+    const hops = hopsOf(route);
+    const unknown = hops.filter((h) => !poolOf.has(`${h.a}:${h.b}:${h.step}`));
+    if (unknown.length) {
+      const read = await chain.multicall(
+        unknown.map((h) => ({ address: market.v3Factory, abi: factoryAbi, functionName: "getPool", args: [h.a, h.b, h.step] })),
+        blockNumber,
+      );
+      if (read.some((r) => r.status !== "success")) throw new Error("could not read a route's pools");
+      unknown.forEach((h, k) => poolOf.set(`${h.a}:${h.b}:${h.step}`, read[k].result));
+    }
+    const pools = hops.map((h) => poolOf.get(`${h.a}:${h.b}:${h.step}`));
+    return side === "sell" ? [pools, hops[0].a, amount] : [pools.reverse(), hops[hops.length - 1].b, amount];
   }
 
   /// The route for selling (`side` "sell") or buying ("buy") `amount` of `token`, worth `fairUsd` at Pyth, in the

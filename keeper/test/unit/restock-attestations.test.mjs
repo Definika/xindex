@@ -134,7 +134,7 @@ function cctpMessage({ nonce = 0xabcn, expirationBlock = 0n, amount = 1_000_000n
 }
 
 test("PD-12: a burn allows the route's standard fee from Circle's table, rounded up, and refuses one over MAX_CCTP_FEE_BPS", async () => {
-  // Iris's table for Ethereum to Solana, read on 2026-11-02: fast 1 bp, standard 0.
+  // Iris's table for Ethereum to Solana: fast 1 bp, standard 0.
   const table = [{ finalityThreshold: 1000, minimumFee: 1 }, { finalityThreshold: 2000, minimumFee: 0 }];
   assert.equal(cctpMaxFee(1_000_000_000n, table), 0n, "standard transfers are free today");
   const priced = (fee) => [{ finalityThreshold: 2000, minimumFee: fee }];

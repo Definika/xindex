@@ -12,7 +12,7 @@
 // the redeem requests escrowed go to the mint requests, the executor's own stock of the index's shares covers what
 // they do not, as far as SHARE_STOCK_USD and the owner's stock allowance for that index go, and one basket is
 // bought or sold for the difference. A request too small to pay for a basket of its own is filled this way, since
-// the batch as a whole has to pay MIN_PROFIT_USD, not each request (design/2026-11-11-batch-fills.md).
+// the batch as a whole has to pay MIN_PROFIT_USD, not each request (docs/design/batch-fills.md).
 
 import { encodeAbiParameters, encodeFunctionData, keccak256 } from "viem";
 import { failedRequests, revertedRequestFills, shortRequests, skippedRequests } from "./backoff.mjs";
@@ -42,7 +42,7 @@ const same = (a, b) => a.toLowerCase() === b.toLowerCase();
 export function createRequestFiller({ chain, cfg, hermes, routes, svalues = createSValues({ chain, oracle: null }), requests, pyth, stableDecimals = null, staticsOf, log, needs }) {
   /// Each leg of `st` as the filler prices it at block L, from the trusted prices `latest`: `{price, shared}`, a
   /// share-priced Ondo leg at its share's price times Ondo's settled sValue, or else at its share's price and still
-  /// share-priced (bot/svalues.mjs). Without an oracle every share-priced leg stays one, as before 2026-11-25.
+  /// share-priced (bot/svalues.mjs). Without an oracle every share-priced leg stays one.
   const legsOf = (st, latest, L) => svalues.legs(st, st.ids.map((id) => (id ? latest.get(priceKey(id)) : undefined)), L);
   // Windows kept in Ethereum's blocks span the same time on a faster chain (M.blockScale).
   const scale = M.blockScale(cfg.chain);

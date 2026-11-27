@@ -292,3 +292,15 @@ test("RZ-15: a fill mined past its own deadline is late; one mined at it, or sen
   assert.equal(M.minedLate(deadline + 12n, null), false, "a start carries no deadline");
   assert.equal(M.minedLate(deadline + 12n, undefined), false);
 });
+
+test("valuedFeedId: a token's own feed counts, an Ondo share's only where the bot prices it at its sValue", () => {
+  const share = "0x" + "ab".repeat(32);
+  const other = "0x" + "cd".repeat(32);
+  const ids = [share];
+  assert.equal(M.valuedFeedId({ id: share.toUpperCase().replace("0X", "0x"), kind: 1 }, ids), share, "a token's own, lowercased");
+  assert.equal(M.valuedFeedId({ id: share, kind: 4n }, ids), share, "an Ondo share's named by the share-priced ids");
+  assert.equal(M.valuedFeedId({ id: other, kind: 4 }, ids), null, "a share's the bot would value without its sValue");
+  assert.equal(M.valuedFeedId({ id: share, kind: 2 }, ids), null, "a vault's");
+  assert.equal(M.valuedFeedId({ id: share, kind: 3 }, ids), null, "a multiplier token's");
+  assert.equal(M.valuedFeedId({ id: "0x" + "00".repeat(32), kind: 0 }, ids), null, "none");
+});

@@ -221,7 +221,9 @@ contract KeeperExecutorInvariantTest is Test {
             IMintRequests(address(new RequestsStub(factory))),
             ITokenBridge(address(bridge)),
             owner,
-            makeAddr("keeper")
+            makeAddr("keeper"),
+            address(0),
+            KeeperExecutor.LocalKind.None
         );
         vm.startPrank(owner);
         executor.setTreasury(treasury);

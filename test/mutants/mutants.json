@@ -2,7 +2,7 @@
   {
     "id": "M1",
     "what": "_permissionlessAt returns the expiry term alone, ignoring restartAllowedAt",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
@@ -15,7 +15,7 @@
   {
     "id": "M2",
     "what": "_permissionlessAt returns restartAllowedAt alone, ignoring the expiry",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
@@ -28,7 +28,7 @@
   {
     "id": "M3",
     "what": "a start is refused only while now < end, so the auction's last second lets one in",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
@@ -41,7 +41,7 @@
   {
     "id": "M4",
     "what": "a fill is refused from end on, instead of after it",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
@@ -54,7 +54,7 @@
   {
     "id": "M5",
     "what": "a fill is refused at eta, instead of before it",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
@@ -67,7 +67,7 @@
   {
     "id": "M6",
     "what": "a cancel always sets restartAllowedAt = now + REBALANCE_DELAY, an expiry's cancel included (VR-04 undone)",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
@@ -80,7 +80,7 @@
   {
     "id": "M7",
     "what": "a start checks the caller before the mask",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
@@ -93,7 +93,7 @@
   {
     "id": "M8",
     "what": "a cancel checks the caller before the proposal",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
@@ -106,7 +106,7 @@
   {
     "id": "M9",
     "what": "a fill does not write lastRebalance",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
@@ -119,7 +119,7 @@
   {
     "id": "M10",
     "what": "a fill does not clear the proposal",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
@@ -132,7 +132,7 @@
   {
     "id": "M12",
     "what": "canStartRebalance drops its interval check",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
@@ -145,7 +145,7 @@
   {
     "id": "M13",
     "what": "a stranger may pass a keep mask once nothing holds",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
@@ -158,7 +158,7 @@
   {
     "id": "M14",
     "what": "a masked fill does not record _maskedFill, so the index's own interval follows it",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
@@ -171,7 +171,7 @@
   {
     "id": "M15",
     "what": "currentBar reports 0 at the auction's last second",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
@@ -184,7 +184,7 @@
   {
     "id": "M16",
     "what": "canStartRebalance drops its initialized check",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
@@ -197,7 +197,7 @@
   {
     "id": "M17",
     "what": "a start at earliest is too soon",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
@@ -210,7 +210,7 @@
   {
     "id": "V1",
     "what": "the lower cap rounds down",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -223,7 +223,7 @@
   {
     "id": "V2",
     "what": "no turnover cap",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -236,7 +236,7 @@
   {
     "id": "V3",
     "what": "no growth cap",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -249,7 +249,7 @@
   {
     "id": "V4",
     "what": "a kept leg may move inside the caps",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -262,7 +262,7 @@
   {
     "id": "V5",
     "what": "a growing leg's change rounds up",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -275,7 +275,7 @@
   {
     "id": "V6",
     "what": "a shrinking leg's change rounds toward zero",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -288,7 +288,7 @@
   {
     "id": "V7",
     "what": "a leg's score rounds toward zero",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -301,7 +301,7 @@
   {
     "id": "V8",
     "what": "the gain rounds toward zero",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -314,7 +314,7 @@
   {
     "id": "V9",
     "what": "amountsOut round up",
-    "origin": "design/2026-10-29-settlement-vectors.md",
+    "origin": "docs/design/settlement-vectors.md",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -327,7 +327,7 @@
   {
     "id": "V10",
     "what": "amountsIn round down",
-    "origin": "design/2026-10-29-settlement-vectors.md",
+    "origin": "docs/design/settlement-vectors.md",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -340,7 +340,7 @@
   {
     "id": "V11",
     "what": "the score's fourth-order term at 7/30, above the logarithm's 1/4",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -353,7 +353,7 @@
   {
     "id": "V12",
     "what": "no check that the new units fit 96 bits",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -366,7 +366,7 @@
   {
     "id": "V13",
     "what": "the bar rounds down",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -379,7 +379,7 @@
   {
     "id": "V14",
     "what": "the bar starts at a quarter",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -392,7 +392,7 @@
   {
     "id": "V15",
     "what": "an index with less than one whole share settles",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -405,7 +405,7 @@
   {
     "id": "V16",
     "what": "a gain exactly on the bar is refused",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -418,7 +418,7 @@
   {
     "id": "V17",
     "what": "a list of another length is not refused",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -431,7 +431,7 @@
   {
     "id": "V21",
     "what": "the bar is answered past the auction's end",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -444,7 +444,7 @@
   {
     "id": "V22",
     "what": "a fill may triple a leg",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -457,7 +457,7 @@
   {
     "id": "V23",
     "what": "the bar's half-life is ten minutes",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -470,7 +470,7 @@
   {
     "id": "V24",
     "what": "the score's second-order term dropped",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -483,7 +483,7 @@
   {
     "id": "V18",
     "what": "the scale ignored in the amounts",
-    "origin": "design/2026-10-29-settlement-vectors.md",
+    "origin": "docs/design/settlement-vectors.md",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -496,7 +496,7 @@
   {
     "id": "V19",
     "what": "MAX_TURNOVER at 25%",
-    "origin": "design/2026-10-29-settlement-vectors.md",
+    "origin": "docs/design/settlement-vectors.md",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -535,7 +535,7 @@
   {
     "id": "H2",
     "what": "the fill's clock runs a second ahead, so a fill clears a second early",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
@@ -548,7 +548,7 @@
   {
     "id": "H3",
     "what": "the keep mask is not passed to the math, so a kept leg may move",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
@@ -561,7 +561,7 @@
   {
     "id": "H4",
     "what": "the fill checks the executor's units against the supply before the streaming fee accrues",
-    "origin": "audit/2026-10-16-security-audit.md, XS-2",
+    "origin": "audits/internal/security-audit-xs.md, XS-2",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.fees.t.sol",
     "edits": [
@@ -574,7 +574,7 @@
   {
     "id": "H7",
     "what": "the initializer's duplicate-token check removed",
-    "origin": "audit/2026-10-05-v5-review.md, the initializer's own checks",
+    "origin": "audits/internal/v5-review.md, the initializer's own checks",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.t.sol",
     "edits": [
@@ -587,7 +587,7 @@
   {
     "id": "H8",
     "what": "the factory's duplicate-token check removed",
-    "origin": "audit/2026-10-05-v5-review.md, the factory's own checks",
+    "origin": "audits/internal/v5-review.md, the factory's own checks",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedIndexFactory.t.sol",
     "edits": [
@@ -626,7 +626,7 @@
   {
     "id": "H11",
     "what": "the probe's balance re-read dropped (RB-2, RX-12)",
-    "origin": "audit/2026-10-28-rebalance-review.md",
+    "origin": "audits/internal/rebalance-review-rb.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
@@ -639,7 +639,7 @@
   {
     "id": "H12",
     "what": "no probe: a leg the fill buys need not be able to leave (RX-12)",
-    "origin": "audit/2026-10-18-red-team.md",
+    "origin": "audits/internal/red-team-rx.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
@@ -652,7 +652,7 @@
   {
     "id": "H13",
     "what": "issue does not check the backing before a deposit (RX-8)",
-    "origin": "audit/2026-10-18-red-team.md",
+    "origin": "audits/internal/red-team-rx.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.t.sol",
     "edits": [
@@ -665,7 +665,7 @@
   {
     "id": "H16",
     "what": "a gated index pays a referrer its gate refuses (AU-1)",
-    "origin": "audit/2026-10-31-review.md",
+    "origin": "audits/internal/review-au.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.fees.t.sol",
     "edits": [
@@ -678,7 +678,7 @@
   {
     "id": "H18",
     "what": "a redeem fill reads balances before paying the stablecoin (AU-3)",
-    "origin": "audit/2026-10-31-review.md",
+    "origin": "audits/internal/review-au.md",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.t.sol",
     "edits": [
@@ -692,7 +692,7 @@
   {
     "id": "P15",
     "what": "a round takes moves oldest first, a completing step before a signed move (PD-9)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "origin": "audits/internal/protocol-docs-review-pd.md",
     "file": "keeper/restock/journal.mjs",
     "test": "keeper/test/unit/restock-journal.test.mjs",
     "edits": [
@@ -706,7 +706,7 @@
   {
     "id": "P16",
     "what": "a Circle signature past its expiry is an error, never re-attested (PD-10)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "origin": "audits/internal/protocol-docs-review-pd.md",
     "file": "keeper/restock/advance.mjs",
     "test": "keeper/test/unit/restock-advance.test.mjs",
     "edits": [
@@ -720,7 +720,7 @@
   {
     "id": "P17",
     "what": "a VAA that no longer verifies is redeemed as stored (PD-10)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "origin": "audits/internal/protocol-docs-review-pd.md",
     "file": "keeper/restock/advance.mjs",
     "test": "keeper/test/unit/restock-advance.test.mjs",
     "edits": [
@@ -734,7 +734,7 @@
   {
     "id": "P18",
     "what": "a stored Circle signature is received without checking it is still valid (PD-10)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "origin": "audits/internal/protocol-docs-review-pd.md",
     "file": "keeper/restock/advance.mjs",
     "test": "keeper/test/unit/restock-advance.test.mjs",
     "edits": [
@@ -748,7 +748,7 @@
   {
     "id": "P20",
     "what": "a burn allows no fee whatever the route's standard rate (PD-12)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "origin": "audits/internal/protocol-docs-review-pd.md",
     "file": "keeper/restock/attestations.mjs",
     "test": "keeper/test/unit/restock-attestations.test.mjs",
     "edits": [
@@ -762,7 +762,7 @@
   {
     "id": "Y1",
     "what": "a request that cannot pay MIN_PROFIT_USD at its limit is simulated and asks the restock for stock (RY-8)",
-    "origin": "audit/2026-10-31-red-team.md",
+    "origin": "audits/internal/red-team-ry.md",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/requests.test.mjs",
     "edits": [
@@ -776,7 +776,7 @@
   {
     "id": "Y2",
     "what": "an auction's margin at its best price ignores what it takes in, so any auction asks for stock (RY-8)",
-    "origin": "audit/2026-10-31-red-team.md",
+    "origin": "audits/internal/red-team-ry.md",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/math.test.mjs",
     "edits": [
@@ -790,7 +790,7 @@
   {
     "id": "U1",
     "what": "the bot rounds a shrinking leg's change toward zero, so it counts a gain the hub does not",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 2: the keeper's port of the rule",
+    "origin": "docs/design/rebalance.md, section 2: the keeper's port of the rule",
     "file": "keeper/bot/units.mjs",
     "test": "keeper/test/unit/units.test.mjs",
     "edits": [
@@ -804,7 +804,7 @@
   {
     "id": "U2",
     "what": "the bot returns units it did not check against the bar",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 2: the keeper's port of the rule",
+    "origin": "docs/design/rebalance.md, section 2: the keeper's port of the rule",
     "file": "keeper/bot/units.mjs",
     "test": "keeper/test/unit/units.test.mjs",
     "edits": [
@@ -818,7 +818,7 @@
   {
     "id": "U3",
     "what": "the bot's lower cap rounds down, one unit under what the hub accepts",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 2: the keeper's port of the rule",
+    "origin": "docs/design/rebalance.md, section 2: the keeper's port of the rule",
     "file": "keeper/bot/units.mjs",
     "test": "keeper/test/unit/units.test.mjs",
     "edits": [
@@ -832,7 +832,7 @@
   {
     "id": "U4",
     "what": "the bot's score truncates toward zero, above the hub's for a shrinking leg",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 2: the keeper's port of the rule",
+    "origin": "docs/design/rebalance.md, section 2: the keeper's port of the rule",
     "file": "keeper/bot/units.mjs",
     "test": "keeper/test/unit/units.test.mjs",
     "edits": [
@@ -846,7 +846,7 @@
   {
     "id": "F1",
     "what": "createIndex without the approval check, so anyone creates an index",
-    "origin": "CLAUDE.md, Product decisions: only approved wallets create an index (2026-11-10)",
+    "origin": "CLAUDE.md, Product decisions: only approved wallets create",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedIndexFactory.t.sol",
     "edits": [
@@ -859,7 +859,7 @@
   {
     "id": "F2",
     "what": "setApprovedCreator without onlyOwner, so anyone approves a creator",
-    "origin": "CLAUDE.md, Product decisions: only approved wallets create an index (2026-11-10)",
+    "origin": "CLAUDE.md, Product decisions: only approved wallets create",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedIndexFactory.t.sol",
     "edits": [
@@ -872,7 +872,7 @@
   {
     "id": "Q1",
     "what": "a fill is never checked against its proposal's quote",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 10: the quote posted with a start",
+    "origin": "docs/design/rebalance.md, section 10: the quote posted with a start",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.quote.t.sol",
     "edits": [
@@ -885,7 +885,7 @@
   {
     "id": "Q2",
     "what": "a quote outlives its proposal and binds a later start that posted none",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 10: the quote posted with a start",
+    "origin": "docs/design/rebalance.md, section 10: the quote posted with a start",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.quote.t.sol",
     "edits": [
@@ -898,7 +898,7 @@
   {
     "id": "Q3",
     "what": "anyone posts a quote with a start, not only the owner or guardian",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 10: the quote posted with a start",
+    "origin": "docs/design/rebalance.md, section 10: the quote posted with a start",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.quote.t.sol",
     "edits": [
@@ -911,7 +911,7 @@
   {
     "id": "Q4",
     "what": "a moving component is quoted at zero, so selling it asks nothing back",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 10: the quote posted with a start",
+    "origin": "docs/design/rebalance.md, section 10: the quote posted with a start",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.quote.t.sol",
     "edits": [
@@ -924,7 +924,7 @@
   {
     "id": "Q5",
     "what": "a tolerance of 100% is accepted, a quote that asks nothing",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 10: the quote posted with a start",
+    "origin": "docs/design/rebalance.md, section 10: the quote posted with a start",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.quote.t.sol",
     "edits": [
@@ -937,7 +937,7 @@
   {
     "id": "Q6",
     "what": "the value floor, the quote's and Pyth's, rounds down, one unit in the executor's favour",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 10: the quote posted with a start",
+    "origin": "docs/design/rebalance.md, section 10: the quote posted with a start",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -950,7 +950,7 @@
   {
     "id": "Q7",
     "what": "a fill exactly on the quote's floor is refused",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 10: the quote posted with a start",
+    "origin": "docs/design/rebalance.md, section 10: the quote posted with a start",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -963,7 +963,7 @@
   {
     "id": "U5",
     "what": "the bot names units that fail the quote posted with the proposal",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 10: the quote posted with a start",
+    "origin": "docs/design/rebalance.md, section 10: the quote posted with a start",
     "file": "keeper/bot/units.mjs",
     "test": "keeper/test/unit/units.test.mjs",
     "edits": [
@@ -977,7 +977,7 @@
   {
     "id": "B1",
     "what": "a batch hands over share stock without spending the index's stock allowance (CF-1)",
-    "origin": "design/2026-11-11-batch-fills.md",
+    "origin": "docs/design/batch-fills.md",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.t.sol",
     "edits": [
@@ -991,7 +991,7 @@
   {
     "id": "B2",
     "what": "a batch's own redeem does not count as shares handed over, so the share stock is run down unbounded (CF-1)",
-    "origin": "design/2026-11-11-batch-fills.md",
+    "origin": "docs/design/batch-fills.md",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.t.sol",
     "edits": [
@@ -1005,7 +1005,7 @@
   {
     "id": "B3",
     "what": "a batch fills a request on another index than it names",
-    "origin": "design/2026-11-11-batch-fills.md",
+    "origin": "docs/design/batch-fills.md",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.t.sol",
     "edits": [
@@ -1019,7 +1019,7 @@
   {
     "id": "B4",
     "what": "a batch fills a request in another stablecoin than it names",
-    "origin": "design/2026-11-11-batch-fills.md",
+    "origin": "docs/design/batch-fills.md",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.t.sol",
     "edits": [
@@ -1033,7 +1033,7 @@
   {
     "id": "B5",
     "what": "a batch that issues does not read the index's gate before its swaps (XS-6)",
-    "origin": "design/2026-11-11-batch-fills.md",
+    "origin": "docs/design/batch-fills.md",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.t.sol",
     "edits": [
@@ -1047,7 +1047,7 @@
   {
     "id": "B6",
     "what": "a batch does not read its requests before its swaps, so a closed one costs a basket (XS-6)",
-    "origin": "design/2026-11-11-batch-fills.md",
+    "origin": "docs/design/batch-fills.md",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.t.sol",
     "edits": [
@@ -1061,7 +1061,7 @@
   {
     "id": "B7",
     "what": "a batch keeps the stablecoin its mint requests escrowed instead of selling it into the float",
-    "origin": "design/2026-11-11-batch-fills.md",
+    "origin": "docs/design/batch-fills.md",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.t.sol",
     "edits": [
@@ -1075,7 +1075,7 @@
   {
     "id": "B8",
     "what": "the bot plans to deliver share stock beyond the owner's allowance, so its batch reverts on chain",
-    "origin": "design/2026-11-11-batch-fills.md",
+    "origin": "docs/design/batch-fills.md",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/batch.test.mjs",
     "edits": [
@@ -1089,7 +1089,7 @@
   {
     "id": "B9",
     "what": "a request whose limit is worth more than its escrow joins a batch and is paid by the others",
-    "origin": "design/2026-11-11-batch-fills.md",
+    "origin": "docs/design/batch-fills.md",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/batch.test.mjs",
     "edits": [
@@ -1103,7 +1103,7 @@
   {
     "id": "B10",
     "what": "a batch redeems the share stock the owner put above the target",
-    "origin": "design/2026-11-11-batch-fills.md",
+    "origin": "docs/design/batch-fills.md",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/batch.test.mjs",
     "edits": [
@@ -1117,7 +1117,7 @@
   {
     "id": "B11",
     "what": "shares delivered from stock count at what redeeming them brings, not at what issuing them costs",
-    "origin": "design/2026-11-11-batch-fills.md",
+    "origin": "docs/design/batch-fills.md",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/batch.test.mjs",
     "edits": [
@@ -1131,7 +1131,7 @@
   {
     "id": "B12",
     "what": "a group that cannot pay MIN_PROFIT_USD as a whole is simulated all the same (RY-8)",
-    "origin": "design/2026-11-11-batch-fills.md",
+    "origin": "docs/design/batch-fills.md",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/batch.test.mjs",
     "edits": [
@@ -1144,8 +1144,8 @@
   },
   {
     "id": "N1",
-    "what": "Ethereum's router having code names Ethereum before BNB Chain is asked, as the checks read it until 2026-11-13: on BNB Chain, where that address has code too, the deploy resolves Ethereum's book",
-    "origin": "design/2026-11-13-bnb-chain-deployment.md",
+    "what": "Ethereum's router having code names Ethereum before BNB Chain is asked, as an earlier rule read it: on BNB Chain, where that address has code too, the deploy resolves Ethereum's book",
+    "origin": "docs/design/bnb-chain.md",
     "file": "script/DeployChecks.sol",
     "test": "test/DeployChecks.t.sol",
     "edits": [
@@ -1158,7 +1158,7 @@
   {
     "id": "N2",
     "what": "BNB Chain is told by its chain id alone, so a chain-id override unpins it against BNB Chain's state (RX-23)",
-    "origin": "design/2026-11-13-bnb-chain-deployment.md",
+    "origin": "docs/design/bnb-chain.md",
     "file": "script/DeployChecks.sol",
     "test": "test/DeployChecks.t.sol",
     "edits": [
@@ -1171,7 +1171,7 @@
   {
     "id": "N5",
     "what": "BNB Chain's router having code names BNB Chain on chain 1 too: that router is a CREATE2 deployment anyone can replay onto Ethereum, and a deployment there would then resolve BNB Chain's book",
-    "origin": "design/2026-11-13-bnb-chain-deployment.md",
+    "origin": "docs/design/bnb-chain.md",
     "file": "script/DeployChecks.sol",
     "test": "test/DeployChecks.t.sol",
     "edits": [
@@ -1184,7 +1184,7 @@
   {
     "id": "N3",
     "what": "BNB Chain's USDC and USDT may be proposed as components (A7-22)",
-    "origin": "design/2026-11-13-bnb-chain-deployment.md",
+    "origin": "docs/design/bnb-chain.md",
     "file": "script/ConfigureWeighted.s.sol",
     "test": "test/ConfigureWeighted.t.sol",
     "edits": [
@@ -1197,7 +1197,7 @@
   {
     "id": "N4",
     "what": "on BNB Chain the mint currencies come from the environment, not from its address book (A7-22)",
-    "origin": "design/2026-11-13-bnb-chain-deployment.md",
+    "origin": "docs/design/bnb-chain.md",
     "file": "script/ConfigureWeighted.s.sol",
     "test": "test/ConfigureWeighted.t.sol",
     "edits": [
@@ -1210,7 +1210,7 @@
   {
     "id": "W1",
     "what": "a fill does not compare the index's rebalance nonce with the request's, so a request made before a settlement is filled after it (RW-2)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/MintRequests.sol",
     "test": "test/MintRequests.t.sol",
     "edits": [
@@ -1223,7 +1223,7 @@
   {
     "id": "W2",
     "what": "a request records rebalance nonce 0 whatever the index's nonce is (RW-2)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/MintRequests.sol",
     "test": "test/MintRequests.t.sol",
     "edits": [
@@ -1236,7 +1236,7 @@
   {
     "id": "W3",
     "what": "the bound fill does not compare the request with the hash its caller priced, so it fills whatever request sits behind the id (RW-7)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/MintRequests.sol",
     "test": "test/MintRequests.t.sol",
     "edits": [
@@ -1249,7 +1249,7 @@
   {
     "id": "W4",
     "what": "the bound fill does not require the request to be open, so a closed request fills again under the hash it has now (RW-7)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/MintRequests.sol",
     "test": "test/MintRequests.t.sol",
     "edits": [
@@ -1262,7 +1262,7 @@
   {
     "id": "W5",
     "what": "requestHash hashes the id with the request, so it is not the hash the bound fill compares (RW-7)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/MintRequests.sol",
     "test": "test/MintRequests.t.sol",
     "edits": [
@@ -1275,7 +1275,7 @@
   {
     "id": "W6",
     "what": "the settlement refuses only a supply of zero, so an index with a few wei of shares rebalances (RW-1)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
@@ -1288,7 +1288,7 @@
   {
     "id": "W7",
     "what": "the handover does not accrue, so the newcomer collects the streaming fee the outgoing creator earned (RW-6)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedHub.fees.t.sol",
     "edits": [
@@ -1301,7 +1301,7 @@
   {
     "id": "W8",
     "what": "issue does not probe a deposit, so a token that blocks the index as a sender traps the minter's basket (RW-8)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
@@ -1314,7 +1314,7 @@
   {
     "id": "W9",
     "what": "the handover accrues after it writes the new creator, so the accrual pays the newcomer (RW-6)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedHub.fees.t.sol",
     "edits": [
@@ -1327,7 +1327,7 @@
   {
     "id": "W10",
     "what": "issue's probe is measured against the balance before the deposit, so a token that loses the probe's unit passes (RW-8)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
@@ -1340,7 +1340,7 @@
   {
     "id": "W11",
     "what": "a sale hop hands the hook all its sweep brought back as unsold input, what the router already held included, so one wei left in the router reverts a frozen recipient's burn (RW-9)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/IndexZap.t.sol",
     "edits": [
@@ -1353,7 +1353,7 @@
   {
     "id": "W12",
     "what": "what the router held is not capped at what the sweep brought back, so a stray that a short-delivering hop drew on underflows and reverts the burn (RW-9)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/IndexZap.t.sol",
     "edits": [
@@ -1366,7 +1366,7 @@
   {
     "id": "W13",
     "what": "what a hop did not sell is only offered too: a recipient the token refuses is paid out while its unsold input stays in the zap, which no later call pays out (RW-9)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/IndexZap.sol",
     "test": "test/IndexZap.t.sol",
     "edits": [
@@ -1379,7 +1379,7 @@
   {
     "id": "W14",
     "what": "an accepted offer sends what the router held alone: the unsold input it announces with it stays in the zap (RW-9)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/IndexZap.sol",
     "test": "test/IndexZap.t.sol",
     "edits": [
@@ -1392,7 +1392,7 @@
   {
     "id": "W15",
     "what": "a buy's pre-fund is not checked against the component's balance, so a buy paid through the component's other address is credited what it bought and refunded it too (RW-10)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/BasketBuilder.t.sol",
     "edits": [
@@ -1405,7 +1405,7 @@
   {
     "id": "W16",
     "what": "a sale hop's pre-fund is not checked against the hop's output, so a sale between two addresses of one balance credits what the sweep returned as unsold input and pays it as proceeds (RW-10)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/BasketBuilder.t.sol",
     "edits": [
@@ -1418,7 +1418,7 @@
   {
     "id": "W17",
     "what": "a sale hop's pre-fund is not checked against the leg's tokenOut, so a first hop whose input shares tokenOut's balance is sold through an ordinary middle token (RW-10)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/BasketBuilder.t.sol",
     "edits": [
@@ -1431,7 +1431,7 @@
   {
     "id": "W18",
     "what": "a sale hop's pre-fund is checked against the hop's output only on the leg's last hop, so a sale passing through its input's other address credits what the sweep returned as unsold input and sells it on as the hop's output (RW-10)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/BasketBuilder.t.sol",
     "edits": [
@@ -1444,7 +1444,7 @@
   {
     "id": "W19",
     "what": "a hop that spends tokenOut itself is probed against tokenOut too, so a sale routed back through tokenOut is refused (RW-10)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/Security.t.sol",
     "edits": [
@@ -1457,7 +1457,7 @@
   {
     "id": "W20",
     "what": "a refused offer with nothing unsold falls through: the zap announces a return of zero and hard-transfers zero to a recipient the token refuses, which reverts the burn (RW-9)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/IndexZap.sol",
     "test": "test/IndexZap.t.sol",
     "edits": [
@@ -1470,7 +1470,7 @@
   {
     "id": "W21",
     "what": "the settlement refuses one whole share too, so the least supply that rebalances is a raw share over it (RW-1)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
@@ -1483,7 +1483,7 @@
   {
     "id": "W22",
     "what": "the settlement's floor is a raw share lower, so a supply one raw share under a whole one rebalances (RW-1)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
@@ -1496,7 +1496,7 @@
   {
     "id": "W23",
     "what": "a fill checks the index's nonce before the request's deadline, so an expired request made before a settlement answers for its nonce (RW-2)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/MintRequests.sol",
     "test": "test/MintRequests.t.sol",
     "edits": [
@@ -1513,7 +1513,7 @@
   {
     "id": "W24",
     "what": "the bound fill compares the hash after the deadline and the nonce, so a request that is not the one priced answers for those first (RW-7)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/MintRequests.sol",
     "test": "test/MintRequests.t.sol",
     "edits": [
@@ -1526,7 +1526,7 @@
   {
     "id": "W25",
     "what": "issue's probe skips its last leg, so a deposit into a last component the index cannot send is taken (RW-8)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
@@ -1539,7 +1539,7 @@
   {
     "id": "W26",
     "what": "issue's probe skips its first leg, so a deposit into a first component the index cannot send is taken (RW-8)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
@@ -1552,7 +1552,7 @@
   {
     "id": "W27",
     "what": "the builder credits a seller only what its hop did not sell, so a router leftover swept back with it is credited to nobody (RW-9)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/BasketBuilder.sol",
     "test": "test/BasketBuilder.t.sol",
     "edits": [
@@ -1565,7 +1565,7 @@
   {
     "id": "W28",
     "what": "the bound fill does not take the reentrancy guard, so a filler paid through it re-enters the contract, and a filler paid through the fill by id alone re-enters the bound fill (RW-7)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/MintRequests.sol",
     "test": "test/MintRequests.t.sol",
     "edits": [
@@ -1578,7 +1578,7 @@
   {
     "id": "W29",
     "what": "the handover swallows a failed accrual, so it goes through inside one of the index's own calls, without the accrual (RW-6)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedHub.fees.t.sol",
     "edits": [
@@ -1590,8 +1590,8 @@
   },
   {
     "id": "S1",
-    "what": "the zap's mint takes any tokenIn, not only its USDC and USDT (the owner's call of 2026-11-18)",
-    "origin": "audit/2026-11-18-zap-ether-retirement.md",
+    "what": "the zap's mint takes any tokenIn, not only its USDC and USDT",
+    "origin": "audits/retired/zap-ether.md",
     "file": "src/IndexZap.sol",
     "test": "test/IndexZap.t.sol",
     "edits": [
@@ -1604,7 +1604,7 @@
   {
     "id": "S2",
     "what": "the zap's burn pays out any tokenOut, not only its USDC and USDT",
-    "origin": "audit/2026-11-18-zap-ether-retirement.md",
+    "origin": "audits/retired/zap-ether.md",
     "file": "src/IndexZap.sol",
     "test": "test/IndexZap.t.sol",
     "edits": [
@@ -1617,7 +1617,7 @@
   {
     "id": "S3",
     "what": "the zap is built with one stablecoin twice, so it takes a single currency where it names two",
-    "origin": "audit/2026-11-18-zap-ether-retirement.md",
+    "origin": "audits/retired/zap-ether.md",
     "file": "src/IndexZap.sol",
     "test": "test/IndexZap.t.sol",
     "edits": [
@@ -1630,7 +1630,7 @@
   {
     "id": "S4",
     "what": "the builder's buy is paid in any tokenIn, not only its USDC and USDT",
-    "origin": "audit/2026-11-18-zap-ether-retirement.md",
+    "origin": "audits/retired/zap-ether.md",
     "file": "src/BasketBuilder.sol",
     "test": "test/BasketBuilder.t.sol",
     "edits": [
@@ -1643,7 +1643,7 @@
   {
     "id": "S5",
     "what": "the builder's sale pays out any tokenOut, not only its USDC and USDT",
-    "origin": "audit/2026-11-18-zap-ether-retirement.md",
+    "origin": "audits/retired/zap-ether.md",
     "file": "src/BasketBuilder.sol",
     "test": "test/BasketBuilder.t.sol",
     "edits": [
@@ -1656,7 +1656,7 @@
   {
     "id": "S6",
     "what": "the builder is built with one stablecoin twice",
-    "origin": "audit/2026-11-18-zap-ether-retirement.md",
+    "origin": "audits/retired/zap-ether.md",
     "file": "src/BasketBuilder.sol",
     "test": "test/BasketBuilder.t.sol",
     "edits": [
@@ -1669,7 +1669,7 @@
   {
     "id": "S7",
     "what": "checkDeployment no longer compares the zap's and the builder's stablecoins with MintRequests', so a deployment whose zap takes another USDC passes as one",
-    "origin": "audit/2026-11-18-zap-ether-retirement.md",
+    "origin": "audits/retired/zap-ether.md",
     "file": "script/DeployWeighted.s.sol",
     "test": "test/Scripts.t.sol",
     "edits": [
@@ -1682,7 +1682,7 @@
   {
     "id": "K1",
     "what": "startStage no longer reports a proposal waiting out its notice, so its need lapses from the board while no check reads it and the restock can send its stock home",
-    "origin": "design/2026-11-18-bridged-coins-in-a-rebalance.md",
+    "origin": "docs/design/bridged-coins.md",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/math.test.mjs",
     "edits": [
@@ -1696,7 +1696,7 @@
   {
     "id": "K2",
     "what": "startStage reports an index ahead only once it is less than the lead from its start, not at the lead exactly",
-    "origin": "design/2026-11-18-bridged-coins-in-a-rebalance.md",
+    "origin": "docs/design/bridged-coins.md",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/math.test.mjs",
     "edits": [
@@ -1710,7 +1710,7 @@
   {
     "id": "K3",
     "what": "a PRESTOCK_LEAD_SECONDS of zero still reports an index that a cancel or an expiry holds off strangers, so zero no longer turns the lead off",
-    "origin": "design/2026-11-18-bridged-coins-in-a-rebalance.md",
+    "origin": "docs/design/bridged-coins.md",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/math.test.mjs",
     "edits": [
@@ -1724,7 +1724,7 @@
   {
     "id": "T1",
     "what": "the tracker replaces a fill a block before its target, so every fill the keeper sends is cancelled by its own replacement; the test saw only the null a replacement returns too",
-    "origin": "the test review of 2026-11-18",
+    "origin": "the test review of the stablecoin-only zap (CHANGELOG.md)",
     "file": "keeper/bot/nonce.mjs",
     "test": "keeper/test/unit/nonce.test.mjs",
     "edits": [
@@ -1738,7 +1738,7 @@
   {
     "id": "T2",
     "what": "the tracker replaces a fill only a block after the target block it missed",
-    "origin": "the test review of 2026-11-18",
+    "origin": "the test review of the stablecoin-only zap (CHANGELOG.md)",
     "file": "keeper/bot/nonce.mjs",
     "test": "keeper/test/unit/nonce.test.mjs",
     "edits": [
@@ -1752,7 +1752,7 @@
   {
     "id": "T4",
     "what": "the Hermes client ignores Retry-After and waits its one-second floor; the test's header asked for that floor",
-    "origin": "the test review of 2026-11-18",
+    "origin": "the test review of the stablecoin-only zap (CHANGELOG.md)",
     "file": "keeper/bot/hermes.mjs",
     "test": "keeper/test/unit/hermes.test.mjs",
     "edits": [
@@ -1766,7 +1766,7 @@
   {
     "id": "C1",
     "what": "a request is taken while the contract holds less of the token than its open requests escrowed, so the deposit pays the earlier ones (CA-H2)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "src/MintRequests.sol",
     "test": "test/MintRequests.t.sol",
     "edits": [
@@ -1779,7 +1779,7 @@
   {
     "id": "C2",
     "what": "a fill does not take its request's escrow off the token's total (CA-H2)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "src/MintRequests.sol",
     "test": "test/MintRequests.t.sol",
     "edits": [
@@ -1792,7 +1792,7 @@
   {
     "id": "C3",
     "what": "a cancel or a refund does not take its request's escrow off the token's total (CA-H2)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "src/MintRequests.sol",
     "test": "test/MintRequests.t.sol",
     "edits": [
@@ -1805,7 +1805,7 @@
   {
     "id": "C4",
     "what": "the bound mint request does not check the nonce its limit was set at (CA-M1)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "src/MintRequests.sol",
     "test": "test/MintRequests.t.sol",
     "edits": [
@@ -1818,7 +1818,7 @@
   {
     "id": "C5",
     "what": "the bound redeem request does not check the nonce its limit was set at (CA-M1)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "src/MintRequests.sol",
     "test": "test/MintRequests.t.sol",
     "edits": [
@@ -1831,7 +1831,7 @@
   {
     "id": "C6",
     "what": "the builder credits a token it holds less of than its escrows, so the credit pays the earlier ones (CA-H2)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "src/BasketBuilder.sol",
     "test": "test/BasketBuilder.t.sol",
     "edits": [
@@ -1844,7 +1844,7 @@
   {
     "id": "C7",
     "what": "a pass-through leg is not checked again once the refund has left, so the call's unspent stablecoin hides a shortfall (CA-H2)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "src/BasketBuilder.sol",
     "test": "test/BasketBuilder.t.sol",
     "edits": [
@@ -1857,7 +1857,7 @@
   {
     "id": "C8",
     "what": "a debit of an escrow does not come off the token's total (CA-H2)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "src/BasketBuilder.sol",
     "test": "test/BasketBuilder.t.sol",
     "edits": [
@@ -1870,7 +1870,7 @@
   {
     "id": "C9",
     "what": "a withdrawal may be paid to the token's own contract (CA-R2-15)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "src/BasketBuilder.sol",
     "test": "test/BasketBuilder.t.sol",
     "edits": [
@@ -1883,7 +1883,7 @@
   {
     "id": "C10",
     "what": "a sale may be paid to the payout stablecoin's own contract (CA-R2-15)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "src/BasketBuilder.sol",
     "test": "test/BasketBuilder.t.sol",
     "edits": [
@@ -1896,7 +1896,7 @@
   {
     "id": "C11",
     "what": "a deposit that delivered nothing is recorded as a deposit of zero (CA-R2-16)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "src/BasketBuilder.sol",
     "test": "test/BasketBuilder.t.sol",
     "edits": [
@@ -1909,7 +1909,7 @@
   {
     "id": "C12",
     "what": "a partial claim is not held to the claim recorded (CA-S01)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.t.sol",
     "edits": [
@@ -1922,7 +1922,7 @@
   {
     "id": "C13",
     "what": "a partial claim clears the whole claim, so the part not paid is forgotten (CA-S01)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.t.sol",
     "edits": [
@@ -1935,7 +1935,7 @@
   {
     "id": "C14",
     "what": "the bound cancel cancels whichever proposal is pending, not the one it names (CA-S02)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
@@ -1948,7 +1948,7 @@
   {
     "id": "C15",
     "what": "a batch's count of its shares is not held against the shares held, so a redeem side paid nothing lets the stock leave unspent (CA-H1)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.t.sol",
     "edits": [
@@ -1962,7 +1962,7 @@
   {
     "id": "C16",
     "what": "a single fill does not compare the request behind its id with the one its keeper priced (CA-M6)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.t.sol",
     "edits": [
@@ -1976,7 +1976,7 @@
   {
     "id": "C17",
     "what": "a batch does not compare its requests with the ones its keeper priced (CA-M6)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.t.sol",
     "edits": [
@@ -1990,7 +1990,7 @@
   {
     "id": "C18",
     "what": "a batch's hash leaves its mint requests out (CA-M6)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.t.sol",
     "edits": [
@@ -2004,7 +2004,7 @@
   {
     "id": "C19",
     "what": "on a mainnet the deploy script takes any address for the guardian, a single key among them (CA-M4)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "script/DeployChecks.sol",
     "test": "test/Scripts.t.sol",
     "edits": [
@@ -2017,7 +2017,7 @@
   {
     "id": "C20",
     "what": "a guardian Safe of one signature passes on a mainnet (CA-M4)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "script/DeployChecks.sol",
     "test": "test/Scripts.t.sol",
     "edits": [
@@ -2030,7 +2030,7 @@
   {
     "id": "C21",
     "what": "a Safe whose owners could not be read is printed with a count of them (CA-R2-18)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "script/CheckToken.s.sol",
     "test": "test/CheckToken.t.sol",
     "edits": [
@@ -2043,7 +2043,7 @@
   {
     "id": "C22",
     "what": "the report does not read how many hold DEFAULT_ADMIN_ROLE (CA-R2-17)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "script/CheckToken.s.sol",
     "test": "test/CheckToken.t.sol",
     "edits": [
@@ -2056,7 +2056,7 @@
   {
     "id": "C23",
     "what": "the needs board is dated by its last write, so a keeper whose rounds fail publishes a fresh empty board (CA-R2-02)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "keeper/bot/needs.mjs",
     "test": "keeper/test/unit/needs.test.mjs",
     "edits": [
@@ -2070,7 +2070,7 @@
   {
     "id": "C24",
     "what": "a report with no time on the board is read as fresh for ever (CA-L6)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "keeper/bot/needs.mjs",
     "test": "keeper/test/unit/needs.test.mjs",
     "edits": [
@@ -2084,7 +2084,7 @@
   {
     "id": "C25",
     "what": "a board dated ahead of the clock is read as fresh (CA-L6)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "keeper/bot/needs.mjs",
     "test": "keeper/test/unit/needs.test.mjs",
     "edits": [
@@ -2098,7 +2098,7 @@
   {
     "id": "C26",
     "what": "a failed stock read of a leg the fill leaves alone stops the fill (CA-R2-03)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/requests.test.mjs",
     "edits": [
@@ -2112,7 +2112,7 @@
   {
     "id": "C27",
     "what": "a request its index has settled a rebalance since is still simulated and still asks the restock for stock",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/requests.test.mjs",
     "edits": [
@@ -2126,7 +2126,7 @@
   {
     "id": "C28",
     "what": "a request short of stock is checked again only after its report has lapsed from the restock's board",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "keeper/bot/backoff.mjs",
     "test": "keeper/test/unit/backoff.test.mjs",
     "edits": [
@@ -2140,7 +2140,7 @@
   {
     "id": "C29",
     "what": "the bot names its units by the logarithm's slope, not the score's, and takes less than the hub allows (CA-M7)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "keeper/bot/units.mjs",
     "test": "keeper/test/unit/units.test.mjs",
     "edits": [
@@ -2154,7 +2154,7 @@
   {
     "id": "C30",
     "what": "a finding on something the round could not read is announced as cleared (CA-M17)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "keeper/invariants/check.mjs",
     "test": "keeper/test/unit/invariants.test.mjs",
     "edits": [
@@ -2168,7 +2168,7 @@
   {
     "id": "C31",
     "what": "a cursor moves past a range before it has been read, so a failed read skips it for good (CA-M16)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "keeper/invariants/check.mjs",
     "test": "keeper/test/unit/invariants.test.mjs",
     "edits": [
@@ -2182,7 +2182,7 @@
   {
     "id": "C32",
     "what": "an alert the webhook did not take is dropped as sent (CA-M18)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "keeper/invariants/check.mjs",
     "test": "keeper/test/unit/invariants.test.mjs",
     "edits": [
@@ -2196,7 +2196,7 @@
   {
     "id": "C33",
     "what": "an escrow balance that could not be read counts as zero, a shortfall nobody measured (CA-L9)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "keeper/invariants/check.mjs",
     "test": "keeper/test/unit/invariants.test.mjs",
     "edits": [
@@ -2210,7 +2210,7 @@
   {
     "id": "C34",
     "what": "a head that has stopped moving is never reported (CA-R2-14)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "keeper/invariants/check.mjs",
     "test": "keeper/test/unit/invariants.test.mjs",
     "edits": [
@@ -2224,7 +2224,7 @@
   {
     "id": "C35",
     "what": "the checker does not watch the quote posted with a start (CA-L10)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "keeper/invariants/check.mjs",
     "test": "keeper/test/unit/invariants.test.mjs",
     "edits": [
@@ -2238,7 +2238,7 @@
   {
     "id": "C36",
     "what": "a funding is planned beyond what the treasury holds and may draw (CA-R2-10)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "keeper/restock/plan.mjs",
     "test": "keeper/test/unit/restock-plan.test.mjs",
     "edits": [
@@ -2252,7 +2252,7 @@
   {
     "id": "C37",
     "what": "spare stock is bridged out to a chain whose wallet is short of gas (CA-R2-09)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "keeper/restock/plan.mjs",
     "test": "keeper/test/unit/restock-plan.test.mjs",
     "edits": [
@@ -2266,7 +2266,7 @@
   {
     "id": "C38",
     "what": "the day's budget bounds what the buys are worth, not what they may cost (CA-M13)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "keeper/restock/plan.mjs",
     "test": "keeper/test/unit/restock-plan.test.mjs",
     "edits": [
@@ -2280,7 +2280,7 @@
   {
     "id": "C39",
     "what": "the journal counts a buy at its worth, not at the most it may cost (CA-M13)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "keeper/restock/journal.mjs",
     "test": "keeper/test/unit/restock-journal.test.mjs",
     "edits": [
@@ -2294,7 +2294,7 @@
   {
     "id": "C40",
     "what": "a bridge transfer is settled on a mined transaction without reading the bridge back (CA-M10)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "keeper/restock/advance.mjs",
     "test": "keeper/test/unit/restock-advance.test.mjs",
     "edits": [
@@ -2308,7 +2308,7 @@
   {
     "id": "C41",
     "what": "a CCTP transfer is settled on a mined transaction without reading the receiver back (CA-M10)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "keeper/restock/advance.mjs",
     "test": "keeper/test/unit/restock-advance.test.mjs",
     "edits": [
@@ -2322,7 +2322,7 @@
   {
     "id": "C42",
     "what": "a second restock process takes the journal while the first still runs (CA-M12)",
-    "origin": "audit/2026-11-21-consolidated-audit.md",
+    "origin": "audits/internal/consolidated-audit-ca.md",
     "file": "keeper/restock/journal.mjs",
     "test": "keeper/test/unit/restock-journal.test.mjs",
     "edits": [
@@ -2336,7 +2336,7 @@
   {
     "id": "Z3",
     "what": "a receipt that could not be read counts as no receipt: the fill is scored as replaced (RZ-6)",
-    "origin": "audit/2026-10-31-red-team-ii.md",
+    "origin": "audits/internal/red-team-rz.md",
     "file": "keeper/bot/nonce.mjs",
     "test": "keeper/test/unit/nonce.test.mjs",
     "edits": [
@@ -2350,7 +2350,7 @@
   {
     "id": "Z4",
     "what": "a subsidised fill is charged its simulated loss, not what its floor allows (RZ-16)",
-    "origin": "audit/2026-10-31-red-team-ii.md",
+    "origin": "audits/internal/red-team-rz.md",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/math.test.mjs",
     "edits": [
@@ -2364,7 +2364,7 @@
   {
     "id": "Z5",
     "what": "only a move that left the journal counts as having moved on: one that settled this round does not (RZ-19)",
-    "origin": "audit/2026-10-31-red-team-ii.md",
+    "origin": "audits/internal/red-team-rz.md",
     "file": "keeper/restock/journal.mjs",
     "test": "keeper/test/unit/restock-journal.test.mjs",
     "edits": [
@@ -2378,7 +2378,7 @@
   {
     "id": "Z6",
     "what": "a funding that moved on holds its coin, which it has none of, instead of its chain (RZ-19)",
-    "origin": "audit/2026-10-31-red-team-ii.md",
+    "origin": "audits/internal/red-team-rz.md",
     "file": "keeper/restock/journal.mjs",
     "test": "keeper/test/unit/restock-journal.test.mjs",
     "edits": [
@@ -2392,7 +2392,7 @@
   {
     "id": "Z1",
     "what": "a fill mined at its deadline is late, so one that reverted in time is no strike (RZ-15)",
-    "origin": "audit/2026-10-31-red-team-ii.md",
+    "origin": "audits/internal/red-team-rz.md",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/math.test.mjs",
     "edits": [
@@ -2406,7 +2406,7 @@
   {
     "id": "Z2",
     "what": "a fill's deadline is not kept with it, so none is ever told late (RZ-15)",
-    "origin": "audit/2026-10-31-red-team-ii.md",
+    "origin": "audits/internal/red-team-rz.md",
     "file": "keeper/bot/nonce.mjs",
     "test": "keeper/test/unit/nonce.test.mjs",
     "edits": [
@@ -2420,7 +2420,7 @@
   {
     "id": "N6",
     "what": "no chain id names Base: a deployment there falls to the routers' code, which names BNB Chain",
-    "origin": "design/2026-11-21-base-deployment.md",
+    "origin": "docs/design/base.md",
     "file": "script/DeployChecks.sol",
     "test": "test/DeployChecks.t.sol",
     "edits": [
@@ -2433,7 +2433,7 @@
   {
     "id": "N7",
     "what": "BNB Chain's router, replayed on Base, names BNB Chain there",
-    "origin": "design/2026-11-21-base-deployment.md",
+    "origin": "docs/design/base.md",
     "file": "script/DeployChecks.sol",
     "test": "test/DeployChecks.t.sol",
     "edits": [
@@ -2446,7 +2446,7 @@
   {
     "id": "N8",
     "what": "the Base list resolves on any chain",
-    "origin": "design/2026-11-21-base-deployment.md",
+    "origin": "docs/design/base.md",
     "file": "script/ScriptLists.sol",
     "test": "test/ConfigureWeighted.t.sol",
     "edits": [
@@ -2459,7 +2459,7 @@
   {
     "id": "N9",
     "what": "on Base the mint currencies may be replaced",
-    "origin": "design/2026-11-21-base-deployment.md",
+    "origin": "docs/design/base.md",
     "file": "script/ConfigureWeighted.s.sol",
     "test": "test/ConfigureWeighted.t.sol",
     "edits": [
@@ -2472,7 +2472,7 @@
   {
     "id": "N10",
     "what": "a copy of Base's bridge is listed with no tier",
-    "origin": "design/2026-11-21-base-deployment.md",
+    "origin": "docs/design/base.md",
     "file": "script/BaseAddresses.sol",
     "test": "test/ConfigureWeighted.t.sol",
     "edits": [
@@ -2485,7 +2485,7 @@
   {
     "id": "N11",
     "what": "the admission check calls a token as an account without ether, which a script run on an OP Stack chain fails before the call runs: every probe on Base read as a failed transfer",
-    "origin": "design/2026-11-22-coinbase-on-base.md",
+    "origin": "docs/design/coinbase-on-base.md",
     "file": "script/CheckToken.s.sol",
     "test": "test/CheckToken.t.sol",
     "edits": [
@@ -2498,7 +2498,7 @@
   {
     "id": "N12",
     "what": "the admission check creates the listing script to resolve its tokens, a creation by the script contract, which holds no ether: every CHECK on an OP Stack chain reverted",
-    "origin": "design/2026-11-22-coinbase-on-base.md",
+    "origin": "docs/design/coinbase-on-base.md",
     "file": "script/CheckToken.s.sol",
     "test": "test/CheckToken.t.sol",
     "edits": [
@@ -2515,7 +2515,7 @@
   {
     "id": "N13",
     "what": "a read of a token's symbol or decimals carries all the gas that is left: a token that burns what it is given, a precompile this EVM cannot execute among them, ends the run",
-    "origin": "design/2026-11-22-coinbase-on-base.md",
+    "origin": "docs/design/coinbase-on-base.md",
     "file": "script/ScriptUtils.sol",
     "test": "test/Scripts.t.sol",
     "edits": [
@@ -2528,7 +2528,7 @@
   {
     "id": "N14",
     "what": "a read of a token's symbol copies the whole answer, whatever its size",
-    "origin": "design/2026-11-22-coinbase-on-base.md",
+    "origin": "docs/design/coinbase-on-base.md",
     "file": "script/ScriptUtils.sol",
     "test": "test/Scripts.t.sol",
     "edits": [
@@ -2541,7 +2541,7 @@
   {
     "id": "N15",
     "what": "the admission check judges a precompile this EVM cannot execute as a token at fault: refused for its decimals",
-    "origin": "design/2026-11-22-coinbase-on-base.md",
+    "origin": "docs/design/coinbase-on-base.md",
     "file": "script/CheckToken.s.sol",
     "test": "test/CheckToken.t.sol",
     "edits": [
@@ -2554,7 +2554,7 @@
   {
     "id": "N16",
     "what": "the listing script skips a Coinbase stock it cannot read, so the Safe's batch on Base proposes none of the ten",
-    "origin": "design/2026-11-22-coinbase-on-base.md",
+    "origin": "docs/design/coinbase-on-base.md",
     "file": "script/ConfigureWeighted.s.sol",
     "test": "test/ConfigureWeighted.t.sol",
     "edits": [
@@ -2567,7 +2567,7 @@
   {
     "id": "N17",
     "what": "the address book's decimals vouch for a stock under any chain's id",
-    "origin": "design/2026-11-22-coinbase-on-base.md",
+    "origin": "docs/design/coinbase-on-base.md",
     "file": "script/ConfigureWeighted.s.sol",
     "test": "test/ConfigureWeighted.t.sol",
     "edits": [
@@ -2580,7 +2580,7 @@
   {
     "id": "N18",
     "what": "the address book's decimals vouch for any token the script cannot read on Base",
-    "origin": "design/2026-11-22-coinbase-on-base.md",
+    "origin": "docs/design/coinbase-on-base.md",
     "file": "script/ConfigureWeighted.s.sol",
     "test": "test/ConfigureWeighted.t.sol",
     "edits": [
@@ -2593,7 +2593,7 @@
   {
     "id": "N19",
     "what": "a coin or a stock of Coinbase's is listed with no tier",
-    "origin": "design/2026-11-22-coinbase-on-base.md",
+    "origin": "docs/design/coinbase-on-base.md",
     "file": "script/BaseAddresses.sol",
     "test": "test/ConfigureWeighted.t.sol",
     "edits": [
@@ -2605,8 +2605,8 @@
   },
   {
     "id": "O1",
-    "what": "Ondo's AT&T token priced at Toncoin's feed, as the listing of 2026-11-19 had it",
-    "origin": "design/2026-11-22-ondo-stocks-and-etfs.md",
+    "what": "Ondo's AT&T token priced at Toncoin's feed, as an earlier listing had it",
+    "origin": "docs/design/ondo-stocks.md",
     "file": "script/PythIds.sol",
     "test": "keeper/test/unit/config.test.mjs",
     "edits": [
@@ -2620,7 +2620,7 @@
   {
     "id": "PY1",
     "what": "no fill is checked against Pyth",
-    "origin": "design/2026-11-22-pyth-check.md",
+    "origin": "docs/design/pyth-check.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
@@ -2633,7 +2633,7 @@
   {
     "id": "PY2",
     "what": "the hub checks Pyth at the auction's last second whenever it fills, so the tolerance never starts low",
-    "origin": "design/2026-11-22-pyth-check.md",
+    "origin": "docs/design/pyth-check.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
@@ -2646,7 +2646,7 @@
   {
     "id": "PY3",
     "what": "the tolerance is the most from the first second",
-    "origin": "design/2026-11-22-pyth-check.md",
+    "origin": "docs/design/pyth-check.md",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -2659,7 +2659,7 @@
   {
     "id": "PY4",
     "what": "the tolerance rounds up, toward the executor",
-    "origin": "design/2026-11-22-pyth-check.md",
+    "origin": "docs/design/pyth-check.md",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -2672,7 +2672,7 @@
   {
     "id": "PY5",
     "what": "a tolerance is given past the auction",
-    "origin": "design/2026-11-22-pyth-check.md",
+    "origin": "docs/design/pyth-check.md",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -2685,7 +2685,7 @@
   {
     "id": "PY6",
     "what": "Pyth's refusal reads as a quote's",
-    "origin": "design/2026-11-22-pyth-check.md",
+    "origin": "docs/design/pyth-check.md",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -2698,7 +2698,7 @@
   {
     "id": "PY7",
     "what": "Pyth's confidence is ignored",
-    "origin": "design/2026-11-22-pyth-check.md",
+    "origin": "docs/design/pyth-check.md",
     "file": "src/PythPrices.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
@@ -2711,7 +2711,7 @@
   {
     "id": "PY8",
     "what": "the confidence leans toward the executor",
-    "origin": "design/2026-11-22-pyth-check.md",
+    "origin": "docs/design/pyth-check.md",
     "file": "src/PythPrices.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
@@ -2724,7 +2724,7 @@
   {
     "id": "PY9",
     "what": "a leaving leg's value rounds down",
-    "origin": "design/2026-11-22-pyth-check.md",
+    "origin": "docs/design/pyth-check.md",
     "file": "src/PythPrices.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
@@ -2737,7 +2737,7 @@
   {
     "id": "PY10",
     "what": "a price of any age is read",
-    "origin": "design/2026-11-22-pyth-check.md",
+    "origin": "docs/design/pyth-check.md",
     "file": "src/PythPrices.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
@@ -2750,7 +2750,7 @@
   {
     "id": "PY11",
     "what": "a price exactly as old as its reader allows is refused",
-    "origin": "design/2026-11-22-pyth-check.md",
+    "origin": "docs/design/pyth-check.md",
     "file": "src/PythPrices.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
@@ -2763,7 +2763,7 @@
   {
     "id": "PY12",
     "what": "a price no wider than its confidence is read",
-    "origin": "design/2026-11-22-pyth-check.md",
+    "origin": "docs/design/pyth-check.md",
     "file": "src/PythPrices.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
@@ -2776,7 +2776,7 @@
   {
     "id": "PY13",
     "what": "every leg is valued, the ones that keep their units included",
-    "origin": "design/2026-11-22-pyth-check.md",
+    "origin": "docs/design/pyth-check.md",
     "file": "src/PythPrices.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
@@ -2789,7 +2789,7 @@
   {
     "id": "PY14",
     "what": "a vault is valued as one asset a token",
-    "origin": "design/2026-11-22-pyth-check.md",
+    "origin": "docs/design/pyth-check.md",
     "file": "src/PythPrices.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
@@ -2802,20 +2802,20 @@
   {
     "id": "PY15",
     "what": "a stock token's multiplier is ignored",
-    "origin": "design/2026-11-22-pyth-check.md",
+    "origin": "docs/design/pyth-check.md",
     "file": "src/PythPrices.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
       {
-        "old": "        return (IMultiplierToken(token).multiplier(), WAD * one);",
-        "new": "        return (1, one);"
+        "old": "        if (kind == FeedKind.Multiplier) return (IMultiplierToken(token).multiplier(), WAD * one);",
+        "new": "        if (kind == FeedKind.Multiplier) return (1, one);"
       }
     ]
   },
   {
     "id": "PY16",
     "what": "a value past what the math can sum is read",
-    "origin": "design/2026-11-22-pyth-check.md",
+    "origin": "docs/design/pyth-check.md",
     "file": "src/PythPrices.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
@@ -2828,7 +2828,7 @@
   {
     "id": "PY17",
     "what": "a token without a feed is valued at feed zero",
-    "origin": "design/2026-11-22-pyth-check.md",
+    "origin": "docs/design/pyth-check.md",
     "file": "src/PythPrices.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
@@ -2841,7 +2841,7 @@
   {
     "id": "PY18",
     "what": "a price feed executes before its delay",
-    "origin": "design/2026-11-22-pyth-check.md",
+    "origin": "docs/design/pyth-check.md",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/PythPrices.t.sol",
     "edits": [
@@ -2854,7 +2854,7 @@
   {
     "id": "PY19",
     "what": "a price feed executes after its window",
-    "origin": "design/2026-11-22-pyth-check.md",
+    "origin": "docs/design/pyth-check.md",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/PythPrices.t.sol",
     "edits": [
@@ -2867,7 +2867,7 @@
   {
     "id": "PY20",
     "what": "a feed with no id is accepted",
-    "origin": "design/2026-11-22-pyth-check.md",
+    "origin": "docs/design/pyth-check.md",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/PythPrices.t.sol",
     "edits": [
@@ -2880,7 +2880,7 @@
   {
     "id": "PY21",
     "what": "anyone cancels a pending feed",
-    "origin": "design/2026-11-22-pyth-check.md",
+    "origin": "docs/design/pyth-check.md",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/PythPrices.t.sol",
     "edits": [
@@ -2893,7 +2893,7 @@
   {
     "id": "PY22",
     "what": "a second proposal replaces a pending one",
-    "origin": "design/2026-11-22-pyth-check.md",
+    "origin": "docs/design/pyth-check.md",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/PythPrices.t.sol",
     "edits": [
@@ -2906,7 +2906,7 @@
   {
     "id": "PY23",
     "what": "an index is created off its weights: no price check at creation",
-    "origin": "design/2026-11-22-pyth-check.md",
+    "origin": "docs/design/pyth-check.md",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
@@ -2919,7 +2919,7 @@
   {
     "id": "PY24",
     "what": "a leg may start 6% off its weight, not 5%",
-    "origin": "design/2026-11-22-pyth-check.md",
+    "origin": "docs/design/pyth-check.md",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
@@ -2932,7 +2932,7 @@
   {
     "id": "PY25",
     "what": "a leg exactly 5% off its weight is refused",
-    "origin": "design/2026-11-22-pyth-check.md",
+    "origin": "docs/design/pyth-check.md",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
@@ -2945,7 +2945,7 @@
   {
     "id": "PY26",
     "what": "a creation leaves its duplicate marks for the next one in the transaction",
-    "origin": "design/2026-11-22-pyth-check.md",
+    "origin": "docs/design/pyth-check.md",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedIndexFactory.t.sol",
     "edits": [
@@ -2958,7 +2958,7 @@
   {
     "id": "PY27",
     "what": "the duplicate check never sees a token twice",
-    "origin": "design/2026-11-22-pyth-check.md",
+    "origin": "docs/design/pyth-check.md",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedIndexFactory.t.sol",
     "edits": [
@@ -2971,7 +2971,7 @@
   {
     "id": "CW1",
     "what": "anyone proposes an index's weights",
-    "origin": "design/2026-11-23-changeable-weights.md",
+    "origin": "docs/design/changeable-weights.md",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
@@ -2984,7 +2984,7 @@
   {
     "id": "CW2",
     "what": "a factory without an oracle takes a proposal",
-    "origin": "design/2026-11-23-changeable-weights.md",
+    "origin": "docs/design/changeable-weights.md",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
@@ -2997,7 +2997,7 @@
   {
     "id": "CW3",
     "what": "a proposed weight may be zero",
-    "origin": "design/2026-11-23-changeable-weights.md",
+    "origin": "docs/design/changeable-weights.md",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
@@ -3010,7 +3010,7 @@
   {
     "id": "CW4",
     "what": "proposed weights need not sum to TOTAL_WEIGHT",
-    "origin": "design/2026-11-23-changeable-weights.md",
+    "origin": "docs/design/changeable-weights.md",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
@@ -3023,7 +3023,7 @@
   {
     "id": "CW5",
     "what": "a change applies with no notice",
-    "origin": "design/2026-11-23-changeable-weights.md",
+    "origin": "docs/design/changeable-weights.md",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
@@ -3036,7 +3036,7 @@
   {
     "id": "CW6",
     "what": "a change applies after its window",
-    "origin": "design/2026-11-23-changeable-weights.md",
+    "origin": "docs/design/changeable-weights.md",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
@@ -3049,7 +3049,7 @@
   {
     "id": "CW7",
     "what": "anyone cancels a pending change",
-    "origin": "design/2026-11-23-changeable-weights.md",
+    "origin": "docs/design/changeable-weights.md",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
@@ -3062,7 +3062,7 @@
   {
     "id": "CW8",
     "what": "anyone writes an index's weights",
-    "origin": "design/2026-11-23-changeable-weights.md",
+    "origin": "docs/design/changeable-weights.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
@@ -3075,7 +3075,7 @@
   {
     "id": "CW9",
     "what": "a change applies during a live rebalance",
-    "origin": "design/2026-11-23-changeable-weights.md",
+    "origin": "docs/design/changeable-weights.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
@@ -3088,7 +3088,7 @@
   {
     "id": "CW10",
     "what": "a factory takes a math without code",
-    "origin": "design/2026-11-23-changeable-weights.md",
+    "origin": "docs/design/changeable-weights.md",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
@@ -3101,7 +3101,7 @@
   {
     "id": "CW11",
     "what": "a change applies before its notice ends",
-    "origin": "design/2026-11-23-changeable-weights.md",
+    "origin": "docs/design/changeable-weights.md",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
@@ -3114,7 +3114,7 @@
   {
     "id": "CW12",
     "what": "a proposal may name more or fewer weights than components",
-    "origin": "design/2026-11-23-changeable-weights.md",
+    "origin": "docs/design/changeable-weights.md",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
@@ -3127,7 +3127,7 @@
   {
     "id": "FB1",
     "what": "the first issue pulls its basket from the factory, the caller, instead of the creator",
-    "origin": "CLAUDE.md, Product decisions: creating an index is buying it (2026-11-23)",
+    "origin": "CLAUDE.md, Product decisions: creating is buying",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedIndexFactory.t.sol",
     "edits": [
@@ -3140,7 +3140,7 @@
   {
     "id": "FB2",
     "what": "the first shares go to the payer instead of the recipient the creator named",
-    "origin": "CLAUDE.md, Product decisions: creating an index is buying it (2026-11-23)",
+    "origin": "CLAUDE.md, Product decisions: creating is buying",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedIndexFactory.t.sol",
     "edits": [
@@ -3153,7 +3153,7 @@
   {
     "id": "FB3",
     "what": "the initializer, and so the first issue, runs outside the reentrancy guard",
-    "origin": "CLAUDE.md, Product decisions: creating an index is buying it (2026-11-23)",
+    "origin": "CLAUDE.md, Product decisions: creating is buying",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedIndexFactory.t.sol",
     "edits": [
@@ -3166,7 +3166,7 @@
   {
     "id": "FB4",
     "what": "createAndIssue with no shares silently creates an empty index",
-    "origin": "CLAUDE.md, Product decisions: creating an index is buying it (2026-11-23)",
+    "origin": "CLAUDE.md, Product decisions: creating is buying",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedIndexFactory.t.sol",
     "edits": [
@@ -3179,7 +3179,7 @@
   {
     "id": "FB5",
     "what": "the factory names the recipient, not its caller, as the first issue's payer",
-    "origin": "CLAUDE.md, Product decisions: creating an index is buying it (2026-11-23)",
+    "origin": "CLAUDE.md, Product decisions: creating is buying",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedIndexFactory.t.sol",
     "edits": [
@@ -3192,7 +3192,7 @@
   {
     "id": "FB6",
     "what": "createAndIssue without the approval check, so anyone creates an index by paying for it",
-    "origin": "CLAUDE.md, Product decisions: creating an index is buying it (2026-11-23)",
+    "origin": "CLAUDE.md, Product decisions: creating is buying",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedIndexFactory.t.sol",
     "edits": [
@@ -3205,7 +3205,7 @@
   {
     "id": "FB7",
     "what": "createIndex without the approval check, now a call of its own in each creation",
-    "origin": "CLAUDE.md, Product decisions: creating an index is buying it (2026-11-23)",
+    "origin": "CLAUDE.md, Product decisions: creating is buying",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedIndexFactory.t.sol",
     "edits": [
@@ -3218,7 +3218,7 @@
   {
     "id": "RS1",
     "what": "the owner or guardian may start at any time after a fill, with no week's wait",
-    "origin": "CLAUDE.md, Design rules: the owner or guardian restarts a week after any fill (2026-11-23)",
+    "origin": "CLAUDE.md, Design rules: the owner or guardian restarts a week after any fill",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
@@ -3231,7 +3231,7 @@
   {
     "id": "RS2",
     "what": "a stranger takes the short wait meant for the owner and guardian",
-    "origin": "CLAUDE.md, Design rules: the owner or guardian restarts a week after any fill (2026-11-23)",
+    "origin": "CLAUDE.md, Design rules: the owner or guardian restarts a week after any fill",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
@@ -3244,7 +3244,7 @@
   {
     "id": "RS3",
     "what": "the owner and guardian wait out the index's whole interval after a sliver, as before the rule",
-    "origin": "CLAUDE.md, Design rules: the owner or guardian restarts a week after any fill (2026-11-23)",
+    "origin": "CLAUDE.md, Design rules: the owner or guardian restarts a week after any fill",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
@@ -3257,7 +3257,7 @@
   {
     "id": "KP1",
     "what": "a fill's Pyth update is never posted, so the index meets stale prices",
-    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.pyth.t.sol",
     "edits": [
@@ -3271,7 +3271,7 @@
   {
     "id": "KP2",
     "what": "a fill may carry any ether with its update, not exactly Pyth's fee",
-    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.pyth.t.sol",
     "edits": [
@@ -3285,7 +3285,7 @@
   {
     "id": "KP3",
     "what": "a fill without an update may carry ether, which the executor then holds",
-    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.t.sol",
     "edits": [
@@ -3299,7 +3299,7 @@
   {
     "id": "KP4",
     "what": "the executor pays Pyth with every wei it holds, not with the fill's own fee",
-    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.pyth.t.sol",
     "edits": [
@@ -3313,7 +3313,7 @@
   {
     "id": "KP5",
     "what": "an update for an index without an oracle is not refused by name",
-    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.t.sol",
     "edits": [
@@ -3327,7 +3327,7 @@
   {
     "id": "UO1",
     "what": "the bot rounds Pyth's tolerance up where the hub rounds it down",
-    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
     "file": "keeper/bot/units.mjs",
     "test": "keeper/test/unit/units.test.mjs",
     "edits": [
@@ -3341,7 +3341,7 @@
   {
     "id": "UO2",
     "what": "the bot values a leg that leaves at the price of one that arrives",
-    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
     "file": "keeper/bot/units.mjs",
     "test": "keeper/test/unit/units.test.mjs",
     "edits": [
@@ -3355,7 +3355,7 @@
   {
     "id": "UO3",
     "what": "the bot names units without Pyth's check, so its fills revert at the hub",
-    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
     "file": "keeper/bot/units.mjs",
     "test": "keeper/test/unit/units.test.mjs",
     "edits": [
@@ -3369,7 +3369,7 @@
   {
     "id": "UO4",
     "what": "a moving leg Pyth cannot value counts as worthless instead of stopping the fill",
-    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
     "file": "keeper/bot/units.mjs",
     "test": "keeper/test/unit/units.test.mjs",
     "edits": [
@@ -3383,7 +3383,7 @@
   {
     "id": "UO5",
     "what": "the ether a fill carries, Pyth's fee, is left out of what the fill costs",
-    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/math.test.mjs",
     "edits": [
@@ -3397,7 +3397,7 @@
   {
     "id": "PY28",
     "what": "a value of nothing is taken as a price, so a leg that leaves at a zero multiplier or rate is free by Pyth's measure",
-    "origin": "CLAUDE.md, where it stands: the adversarial read of 2026-11-23",
+    "origin": "CHANGELOG.md: the adversarial read of the Pyth-check build",
     "file": "src/PythPrices.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
@@ -3410,7 +3410,7 @@
   {
     "id": "RS4",
     "what": "the owner or guardian starts a week after an index's creation, before anything has filled it",
-    "origin": "CLAUDE.md, Design rules: the owner or guardian restarts a week after any fill (2026-11-23)",
+    "origin": "CLAUDE.md, Design rules: the owner or guardian restarts a week after any fill",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.fees.t.sol",
     "edits": [
@@ -3423,7 +3423,7 @@
   {
     "id": "PW1",
     "what": "the bot takes a leg's arriving value for its leaving one",
-    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
     "file": "keeper/bot/pyth.mjs",
     "test": "keeper/test/unit/pyth.test.mjs",
     "edits": [
@@ -3437,7 +3437,7 @@
   {
     "id": "PW2",
     "what": "a leg the reader values one way only is still traded",
-    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
     "file": "keeper/bot/pyth.mjs",
     "test": "keeper/test/unit/pyth.test.mjs",
     "edits": [
@@ -3451,7 +3451,7 @@
   {
     "id": "PW3",
     "what": "a leg without a feed is asked of Hermes and of the reader",
-    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
     "file": "keeper/bot/pyth.mjs",
     "test": "keeper/test/unit/pyth.test.mjs",
     "edits": [
@@ -3465,7 +3465,7 @@
   {
     "id": "PW4",
     "what": "the call that posts the update carries no fee, so the simulation is not the fill",
-    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
     "file": "keeper/bot/pyth.mjs",
     "test": "keeper/test/unit/pyth.test.mjs",
     "edits": [
@@ -3479,7 +3479,7 @@
   {
     "id": "PW5",
     "what": "a leg the keeper may not move is asked about, and its failure stops the round",
-    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
     "file": "keeper/bot/pyth.mjs",
     "test": "keeper/test/unit/pyth.test.mjs",
     "edits": [
@@ -3493,7 +3493,7 @@
   {
     "id": "PW6",
     "what": "the legs are valued before the update is posted, at whatever stale price Pyth holds",
-    "origin": "CLAUDE.md, where it stands: the keeper posts Pyth's update with each fill (2026-11-23)",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
     "file": "keeper/bot/pyth.mjs",
     "test": "keeper/test/unit/pyth.test.mjs",
     "edits": [
@@ -3507,7 +3507,7 @@
   {
     "id": "MP1",
     "what": "an index's own pause stops no issue",
-    "origin": "CLAUDE.md, Product decisions: a pause of minting that no exit reads (2026-11-23)",
+    "origin": "CLAUDE.md, Product decisions: a mint pause, and no upgrade",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
@@ -3520,7 +3520,7 @@
   {
     "id": "MP2",
     "what": "the pause of every index stops no issue",
-    "origin": "CLAUDE.md, Product decisions: a pause of minting that no exit reads (2026-11-23)",
+    "origin": "CLAUDE.md, Product decisions: a mint pause, and no upgrade",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedIndexFactory.t.sol",
     "edits": [
@@ -3533,7 +3533,7 @@
   {
     "id": "MP3",
     "what": "the guardian that paused can resume, so a pause the owner set does not hold",
-    "origin": "CLAUDE.md, Product decisions: a pause of minting that no exit reads (2026-11-23)",
+    "origin": "CLAUDE.md, Product decisions: a mint pause, and no upgrade",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedIndexFactory.t.sol",
     "edits": [
@@ -3546,7 +3546,7 @@
   {
     "id": "MP4",
     "what": "anyone pauses minting",
-    "origin": "CLAUDE.md, Product decisions: a pause of minting that no exit reads (2026-11-23)",
+    "origin": "CLAUDE.md, Product decisions: a mint pause, and no upgrade",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedIndexFactory.t.sol",
     "edits": [
@@ -3559,7 +3559,7 @@
   {
     "id": "MP5",
     "what": "a pause of an address that is no index is recorded",
-    "origin": "CLAUDE.md, Product decisions: a pause of minting that no exit reads (2026-11-23)",
+    "origin": "CLAUDE.md, Product decisions: a mint pause, and no upgrade",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedIndexFactory.t.sol",
     "edits": [
@@ -3572,7 +3572,7 @@
   {
     "id": "MP6",
     "what": "a redeem asks the factory whether minting is allowed, so a pause stops an exit",
-    "origin": "CLAUDE.md, Product decisions: a pause of minting that no exit reads (2026-11-23)",
+    "origin": "CLAUDE.md, Product decisions: a mint pause, and no upgrade",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
@@ -3585,7 +3585,7 @@
   {
     "id": "MP7",
     "what": "a resume lifts nothing",
-    "origin": "CLAUDE.md, Product decisions: a pause of minting that no exit reads (2026-11-23)",
+    "origin": "CLAUDE.md, Product decisions: a mint pause, and no upgrade",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedIndexFactory.t.sol",
     "edits": [
@@ -3598,7 +3598,7 @@
   {
     "id": "HK1",
     "what": "the callback's mark is not cleared when its fill ends, so the index just filled can call it again in the same transaction (HK-01)",
-    "origin": "audit/2026-11-23-attack-replay.md",
+    "origin": "audits/internal/attack-replay.md",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.attacks.t.sol",
     "edits": [
@@ -3612,7 +3612,7 @@
   {
     "id": "HK2",
     "what": "the executor's callback answers any caller, so a swap inside a fill takes the stock (HK-01)",
-    "origin": "audit/2026-11-23-attack-replay.md",
+    "origin": "audits/internal/attack-replay.md",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.attacks.t.sol",
     "edits": [
@@ -3626,7 +3626,7 @@
   {
     "id": "HK3",
     "what": "the weights change without the guard, so an executor changes them from inside its own fill (HK-08)",
-    "origin": "audit/2026-11-23-attack-replay.md",
+    "origin": "audits/internal/attack-replay.md",
     "file": "src/WeightedHub.sol",
     "test": "test/Attacks.t.sol",
     "edits": [
@@ -3639,7 +3639,7 @@
   {
     "id": "HK4",
     "what": "an accrual runs without the guard, so the creator role moves from inside a fill (HK-08)",
-    "origin": "audit/2026-11-23-attack-replay.md",
+    "origin": "audits/internal/attack-replay.md",
     "file": "src/WeightedHub.sol",
     "test": "test/Attacks.t.sol",
     "edits": [
@@ -3652,7 +3652,7 @@
   {
     "id": "HK5",
     "what": "a handover leaves the outgoing creator's weights pending, to take effect under the new creator (HK-16)",
-    "origin": "audit/2026-11-23-attack-replay.md",
+    "origin": "audits/internal/attack-replay.md",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/Attacks.t.sol",
     "edits": [
@@ -3665,7 +3665,7 @@
   {
     "id": "HK6",
     "what": "a creation forwards the factory's whole ether balance, so ether forced into it moves (HK-14)",
-    "origin": "audit/2026-11-23-attack-replay.md",
+    "origin": "audits/internal/attack-replay.md",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/Attacks.t.sol",
     "edits": [
@@ -3678,7 +3678,7 @@
   {
     "id": "HK7",
     "what": "an index's address leaves its creator out, so another creator takes the address an approval was given to (HK-03)",
-    "origin": "audit/2026-11-23-attack-replay.md",
+    "origin": "audits/internal/attack-replay.md",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/Attacks.t.sol",
     "edits": [
@@ -3691,7 +3691,7 @@
   {
     "id": "RB5",
     "what": "the zap refuses only the index of the call as a recipient, so another index keeps what it is sent (RB-5)",
-    "origin": "audit/2026-10-28-rebalance-review.md",
+    "origin": "audits/internal/rebalance-review-rb.md",
     "file": "src/IndexZap.sol",
     "test": "test/IndexZap.t.sol",
     "edits": [
@@ -3704,7 +3704,7 @@
   {
     "id": "Z7",
     "what": "a send signs over a pending nonce the bot is not following, replacing it or refused every block (RZ-8)",
-    "origin": "audit/2026-10-31-red-team-ii.md",
+    "origin": "audits/internal/red-team-rz.md",
     "file": "keeper/bot/nonce.mjs",
     "test": "keeper/test/unit/nonce.test.mjs",
     "edits": [
@@ -3718,7 +3718,7 @@
   {
     "id": "Z8",
     "what": "a scan re-reads every known request whatever the budget (RZ-10)",
-    "origin": "audit/2026-10-31-red-team-ii.md",
+    "origin": "audits/internal/red-team-rz.md",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/requests.test.mjs",
     "edits": [
@@ -3732,7 +3732,7 @@
   {
     "id": "Z9",
     "what": "a scan reads every new request whatever the budget (RZ-10)",
-    "origin": "audit/2026-10-31-red-team-ii.md",
+    "origin": "audits/internal/red-team-rz.md",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/requests.test.mjs",
     "edits": [
@@ -3746,7 +3746,7 @@
   {
     "id": "Z10",
     "what": "a chosen route answers a larger amount from its smaller quote within the period (RZ-11)",
-    "origin": "audit/2026-10-31-red-team-ii.md",
+    "origin": "audits/internal/red-team-rz.md",
     "file": "keeper/bot/routes.mjs",
     "test": "keeper/test/unit/routes.test.mjs",
     "edits": [
@@ -3760,7 +3760,7 @@
   {
     "id": "Z11",
     "what": "stock held beyond its stock allowance is bought again (RZ-20)",
-    "origin": "audit/2026-10-31-red-team-ii.md",
+    "origin": "audits/internal/red-team-rz.md",
     "file": "keeper/restock/plan.mjs",
     "test": "keeper/test/unit/restock-plan.test.mjs",
     "edits": [
@@ -3774,7 +3774,7 @@
   {
     "id": "Z12",
     "what": "a shortfall is counted from the deliverable stock, not what the executor holds (RZ-20)",
-    "origin": "audit/2026-10-31-red-team-ii.md",
+    "origin": "audits/internal/red-team-rz.md",
     "file": "keeper/restock/plan.mjs",
     "test": "keeper/test/unit/restock-plan.test.mjs",
     "edits": [
@@ -3788,7 +3788,7 @@
   {
     "id": "Z13",
     "what": "coins at home below RESTOCK_MIN_USD are bridged in on their own beside the round's buy (RZ-21)",
-    "origin": "audit/2026-10-31-red-team-ii.md",
+    "origin": "audits/internal/red-team-rz.md",
     "file": "keeper/restock/plan.mjs",
     "test": "keeper/test/unit/restock-plan.test.mjs",
     "edits": [
@@ -3914,7 +3914,7 @@
   {
     "id": "V25",
     "what": "a backing is shares times units times scale in 256 bits, not mulDiv's 512, so a supply past 1.5e30 on a leg near the 96-bit ceiling overflows (RZ-33)",
-    "origin": "audit/2026-10-31-red-team-ii.md",
+    "origin": "audits/internal/red-team-rz.md",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -3927,7 +3927,7 @@
   {
     "id": "UX1",
     "what": "anyone deposits stock, earning its restock allowance (RS-1)",
-    "origin": "design/2026-11-24-uniswapx-restock.md",
+    "origin": "docs/design/uniswapx-restock.md",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.t.sol",
     "root": "keeper",
@@ -3941,7 +3941,7 @@
   {
     "id": "UX2",
     "what": "the treasury deposits USDC as stock",
-    "origin": "design/2026-11-24-uniswapx-restock.md",
+    "origin": "docs/design/uniswapx-restock.md",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.t.sol",
     "root": "keeper",
@@ -3955,7 +3955,7 @@
   {
     "id": "UX3",
     "what": "a deposit credits what was asked, not what arrived",
-    "origin": "design/2026-11-24-uniswapx-restock.md",
+    "origin": "docs/design/uniswapx-restock.md",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.t.sol",
     "root": "keeper",
@@ -3969,7 +3969,7 @@
   {
     "id": "UX4",
     "what": "a credit does not spend the restock allowance (RS-1)",
-    "origin": "design/2026-11-24-uniswapx-restock.md",
+    "origin": "docs/design/uniswapx-restock.md",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.t.sol",
     "root": "keeper",
@@ -3983,7 +3983,7 @@
   {
     "id": "UX5",
     "what": "a credit overflows a stock allowance at its most (RS-6)",
-    "origin": "design/2026-11-24-uniswapx-restock.md",
+    "origin": "docs/design/uniswapx-restock.md",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.t.sol",
     "root": "keeper",
@@ -3997,7 +3997,7 @@
   {
     "id": "UX6",
     "what": "an order for another reactor is signed",
-    "origin": "design/2026-11-24-uniswapx-restock.md",
+    "origin": "docs/design/uniswapx-restock.md",
     "file": "keeper/restock/uniswapx.mjs",
     "test": "keeper/test/unit/restock-uniswapx.test.mjs",
     "runner": "node",
@@ -4011,7 +4011,7 @@
   {
     "id": "UX7",
     "what": "an order of another swapper is signed",
-    "origin": "design/2026-11-24-uniswapx-restock.md",
+    "origin": "docs/design/uniswapx-restock.md",
     "file": "keeper/restock/uniswapx.mjs",
     "test": "keeper/test/unit/restock-uniswapx.test.mjs",
     "runner": "node",
@@ -4025,7 +4025,7 @@
   {
     "id": "UX8",
     "what": "an order naming a validation contract is signed",
-    "origin": "design/2026-11-24-uniswapx-restock.md",
+    "origin": "docs/design/uniswapx-restock.md",
     "file": "keeper/restock/uniswapx.mjs",
     "test": "keeper/test/unit/restock-uniswapx.test.mjs",
     "runner": "node",
@@ -4039,7 +4039,7 @@
   {
     "id": "UX9",
     "what": "an order with any deadline ahead is signed",
-    "origin": "design/2026-11-24-uniswapx-restock.md",
+    "origin": "docs/design/uniswapx-restock.md",
     "file": "keeper/restock/uniswapx.mjs",
     "test": "keeper/test/unit/restock-uniswapx.test.mjs",
     "runner": "node",
@@ -4053,7 +4053,7 @@
   {
     "id": "UX10",
     "what": "an order reusing an open order's nonce is signed",
-    "origin": "design/2026-11-24-uniswapx-restock.md",
+    "origin": "docs/design/uniswapx-restock.md",
     "file": "keeper/restock/uniswapx.mjs",
     "test": "keeper/test/unit/restock-uniswapx.test.mjs",
     "runner": "node",
@@ -4067,7 +4067,7 @@
   {
     "id": "UX11",
     "what": "an order spending another token than USDC is signed",
-    "origin": "design/2026-11-24-uniswapx-restock.md",
+    "origin": "docs/design/uniswapx-restock.md",
     "file": "keeper/restock/uniswapx.mjs",
     "test": "keeper/test/unit/restock-uniswapx.test.mjs",
     "runner": "node",
@@ -4081,7 +4081,7 @@
   {
     "id": "UX12",
     "what": "an order's most spent is its smaller input amount",
-    "origin": "design/2026-11-24-uniswapx-restock.md",
+    "origin": "docs/design/uniswapx-restock.md",
     "file": "keeper/restock/uniswapx.mjs",
     "test": "keeper/test/unit/restock-uniswapx.test.mjs",
     "runner": "node",
@@ -4095,7 +4095,7 @@
   {
     "id": "UX13",
     "what": "an order with several outputs is signed",
-    "origin": "design/2026-11-24-uniswapx-restock.md",
+    "origin": "docs/design/uniswapx-restock.md",
     "file": "keeper/restock/uniswapx.mjs",
     "test": "keeper/test/unit/restock-uniswapx.test.mjs",
     "runner": "node",
@@ -4109,7 +4109,7 @@
   {
     "id": "UX14",
     "what": "an order paying another token is signed",
-    "origin": "design/2026-11-24-uniswapx-restock.md",
+    "origin": "docs/design/uniswapx-restock.md",
     "file": "keeper/restock/uniswapx.mjs",
     "test": "keeper/test/unit/restock-uniswapx.test.mjs",
     "runner": "node",
@@ -4123,7 +4123,7 @@
   {
     "id": "UX15",
     "what": "an order paying someone else is signed",
-    "origin": "design/2026-11-24-uniswapx-restock.md",
+    "origin": "docs/design/uniswapx-restock.md",
     "file": "keeper/restock/uniswapx.mjs",
     "test": "keeper/test/unit/restock-uniswapx.test.mjs",
     "runner": "node",
@@ -4137,7 +4137,7 @@
   {
     "id": "UX16",
     "what": "an order's least paid is its larger output amount",
-    "origin": "design/2026-11-24-uniswapx-restock.md",
+    "origin": "docs/design/uniswapx-restock.md",
     "file": "keeper/restock/uniswapx.mjs",
     "test": "keeper/test/unit/restock-uniswapx.test.mjs",
     "runner": "node",
@@ -4151,7 +4151,7 @@
   {
     "id": "UX17",
     "what": "the permit signed is for the input's start amount",
-    "origin": "design/2026-11-24-uniswapx-restock.md",
+    "origin": "docs/design/uniswapx-restock.md",
     "file": "keeper/restock/uniswapx.mjs",
     "test": "keeper/test/unit/restock-uniswapx.test.mjs",
     "runner": "node",
@@ -4165,7 +4165,7 @@
   {
     "id": "UX18",
     "what": "Permit2's nonce word is read off by one bit",
-    "origin": "design/2026-11-24-uniswapx-restock.md",
+    "origin": "docs/design/uniswapx-restock.md",
     "file": "keeper/restock/uniswapx.mjs",
     "test": "keeper/test/unit/restock-uniswapx.test.mjs",
     "runner": "node",
@@ -4179,7 +4179,7 @@
   {
     "id": "UX19",
     "what": "the draw leaves out the USDC the local coins' orders take",
-    "origin": "design/2026-11-24-uniswapx-restock.md",
+    "origin": "docs/design/uniswapx-restock.md",
     "file": "keeper/restock/plan.mjs",
     "test": "keeper/test/unit/restock-plan.test.mjs",
     "runner": "node",
@@ -4193,7 +4193,7 @@
   {
     "id": "UX20",
     "what": "fundings are planned from USDC an order has taken",
-    "origin": "design/2026-11-24-uniswapx-restock.md",
+    "origin": "docs/design/uniswapx-restock.md",
     "file": "keeper/restock/plan.mjs",
     "test": "keeper/test/unit/restock-plan.test.mjs",
     "runner": "node",
@@ -4207,7 +4207,7 @@
   {
     "id": "UX21",
     "what": "an order's least amount allows twice the loss bound",
-    "origin": "design/2026-11-24-uniswapx-restock.md",
+    "origin": "docs/design/uniswapx-restock.md",
     "file": "keeper/restock/plan.mjs",
     "test": "keeper/test/unit/restock-plan.test.mjs",
     "runner": "node",
@@ -4221,7 +4221,7 @@
   {
     "id": "UX22",
     "what": "an order is planned while the treasury has a move to settle",
-    "origin": "design/2026-11-24-uniswapx-restock.md",
+    "origin": "docs/design/uniswapx-restock.md",
     "file": "keeper/restock/plan.mjs",
     "test": "keeper/test/unit/restock-plan.test.mjs",
     "runner": "node",
@@ -4235,7 +4235,7 @@
   {
     "id": "UX23",
     "what": "a local coin's order is not held to the restock allowance (RS-1)",
-    "origin": "design/2026-11-24-uniswapx-restock.md",
+    "origin": "docs/design/uniswapx-restock.md",
     "file": "keeper/restock/plan.mjs",
     "test": "keeper/test/unit/restock-plan.test.mjs",
     "runner": "node",
@@ -4249,7 +4249,7 @@
   {
     "id": "UX24",
     "what": "an open order does not hold the treasury",
-    "origin": "design/2026-11-24-uniswapx-restock.md",
+    "origin": "docs/design/uniswapx-restock.md",
     "file": "keeper/restock/journal.mjs",
     "test": "keeper/test/unit/restock-journal.test.mjs",
     "runner": "node",
@@ -4263,7 +4263,7 @@
   {
     "id": "UX25",
     "what": "a posted order is dropped before it expired",
-    "origin": "design/2026-11-24-uniswapx-restock.md",
+    "origin": "docs/design/uniswapx-restock.md",
     "file": "keeper/restock/journal.mjs",
     "test": "keeper/test/unit/restock-journal.test.mjs",
     "runner": "node",
@@ -4277,7 +4277,7 @@
   {
     "id": "UX26",
     "what": "an order is given up at its deadline, inside Ethereum's finality",
-    "origin": "design/2026-11-24-uniswapx-restock.md",
+    "origin": "docs/design/uniswapx-restock.md",
     "file": "keeper/restock/advance.mjs",
     "test": "keeper/test/unit/restock-advance.test.mjs",
     "runner": "node",
@@ -4291,7 +4291,7 @@
   {
     "id": "UX27",
     "what": "an order is given up by the service's clock, not the chain's",
-    "origin": "design/2026-11-24-uniswapx-restock.md",
+    "origin": "docs/design/uniswapx-restock.md",
     "file": "keeper/restock/advance.mjs",
     "test": "keeper/test/unit/restock-advance.test.mjs",
     "runner": "node",
@@ -4305,7 +4305,7 @@
   {
     "id": "UX28",
     "what": "a filled order is checked for expiry first, and dropped",
-    "origin": "design/2026-11-24-uniswapx-restock.md",
+    "origin": "docs/design/uniswapx-restock.md",
     "file": "keeper/restock/advance.mjs",
     "test": "keeper/test/unit/restock-advance.test.mjs",
     "runner": "node",
@@ -4319,7 +4319,7 @@
   {
     "id": "OS1",
     "what": "an sValue under a scheduled or active corporate action is used",
-    "origin": "design/2026-11-22-ondo-stocks-and-etfs.md",
+    "origin": "docs/design/ondo-stocks.md",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/svalues.test.mjs",
     "runner": "node",
@@ -4333,7 +4333,7 @@
   {
     "id": "OS2",
     "what": "an sValue is used the moment Ondo changes it",
-    "origin": "design/2026-11-22-ondo-stocks-and-etfs.md",
+    "origin": "docs/design/ondo-stocks.md",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/svalues.test.mjs",
     "runner": "node",
@@ -4347,7 +4347,7 @@
   {
     "id": "OS3",
     "what": "an sValue settled exactly the settle time ago is refused",
-    "origin": "design/2026-11-22-ondo-stocks-and-etfs.md",
+    "origin": "docs/design/ondo-stocks.md",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/svalues.test.mjs",
     "runner": "node",
@@ -4361,7 +4361,7 @@
   {
     "id": "OS4",
     "what": "an sValue of zero is used",
-    "origin": "design/2026-11-22-ondo-stocks-and-etfs.md",
+    "origin": "docs/design/ondo-stocks.md",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/svalues.test.mjs",
     "runner": "node",
@@ -4375,7 +4375,7 @@
   {
     "id": "OS5",
     "what": "a share-priced leg's confidence at a rate rounds down",
-    "origin": "design/2026-11-22-ondo-stocks-and-etfs.md",
+    "origin": "docs/design/ondo-stocks.md",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/svalues.test.mjs",
     "runner": "node",
@@ -4389,7 +4389,7 @@
   {
     "id": "OS6",
     "what": "a share-priced leg without a settled sValue stops being share-priced",
-    "origin": "design/2026-11-22-ondo-stocks-and-etfs.md",
+    "origin": "docs/design/ondo-stocks.md",
     "file": "keeper/bot/svalues.mjs",
     "test": "keeper/test/unit/svalues.test.mjs",
     "runner": "node",
@@ -4403,7 +4403,7 @@
   {
     "id": "OS7",
     "what": "a share-priced leg with an sValue keeps its share's price",
-    "origin": "design/2026-11-22-ondo-stocks-and-etfs.md",
+    "origin": "docs/design/ondo-stocks.md",
     "file": "keeper/bot/svalues.mjs",
     "test": "keeper/test/unit/svalues.test.mjs",
     "runner": "node",
@@ -4417,7 +4417,7 @@
   {
     "id": "OS8",
     "what": "an sValue read at one block is kept for the next",
-    "origin": "design/2026-11-22-ondo-stocks-and-etfs.md",
+    "origin": "docs/design/ondo-stocks.md",
     "file": "keeper/bot/svalues.mjs",
     "test": "keeper/test/unit/svalues.test.mjs",
     "runner": "node",
@@ -4431,7 +4431,7 @@
   {
     "id": "LV1",
     "what": "the constructor ties no DEX to its router: a router for none, or none for PancakeSwap, is taken",
-    "origin": "design/2026-11-26-chain-venues.md",
+    "origin": "docs/design/chain-venues.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/UniversalRouterSwaps.venues.t.sol",
     "edits": [
@@ -4444,7 +4444,7 @@
   {
     "id": "LV2",
     "what": "the constructor lets Uniswap's router be named again as the chain's DEX",
-    "origin": "design/2026-11-26-chain-venues.md",
+    "origin": "docs/design/chain-venues.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/UniversalRouterSwaps.venues.t.sol",
     "edits": [
@@ -4457,7 +4457,7 @@
   {
     "id": "LV3",
     "what": "the constructor takes Aero without its stable-pool factory",
-    "origin": "design/2026-11-26-chain-venues.md",
+    "origin": "docs/design/chain-venues.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/UniversalRouterSwaps.venues.t.sol",
     "edits": [
@@ -4470,7 +4470,7 @@
   {
     "id": "LV4",
     "what": "a leg naming two venues is taken",
-    "origin": "design/2026-11-26-chain-venues.md",
+    "origin": "docs/design/chain-venues.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/UniversalRouterSwaps.venues.t.sol",
     "edits": [
@@ -4483,7 +4483,7 @@
   {
     "id": "LV5",
     "what": "a deployment without a DEX of its own takes a local route",
-    "origin": "design/2026-11-26-chain-venues.md",
+    "origin": "docs/design/chain-venues.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/UniversalRouterSwaps.venues.t.sol",
     "edits": [
@@ -4496,7 +4496,7 @@
   {
     "id": "LV6",
     "what": "a local route of an unknown family is taken as constant-function pools",
-    "origin": "design/2026-11-26-chain-venues.md",
+    "origin": "docs/design/chain-venues.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/UniversalRouterSwaps.venues.t.sol",
     "edits": [
@@ -4509,7 +4509,7 @@
   {
     "id": "LV7",
     "what": "a constant-function hop's parameter is never checked",
-    "origin": "design/2026-11-26-chain-venues.md",
+    "origin": "docs/design/chain-venues.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/UniversalRouterSwaps.venues.t.sol",
     "edits": [
@@ -4522,7 +4522,7 @@
   {
     "id": "LV8",
     "what": "an Aero basic pool may not be stable",
-    "origin": "design/2026-11-26-chain-venues.md",
+    "origin": "docs/design/chain-venues.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/UniversalRouterSwaps.venues.t.sol",
     "edits": [
@@ -4535,7 +4535,7 @@
   {
     "id": "LV9",
     "what": "a PancakeSwap V2 hop may carry a parameter of one",
-    "origin": "design/2026-11-26-chain-venues.md",
+    "origin": "docs/design/chain-venues.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/UniversalRouterSwaps.venues.t.sol",
     "edits": [
@@ -4548,7 +4548,7 @@
   {
     "id": "LV10",
     "what": "an Aero basic hop's parameter picks the wrong factory",
-    "origin": "design/2026-11-26-chain-venues.md",
+    "origin": "docs/design/chain-venues.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/UniversalRouterSwaps.venues.t.sol",
     "edits": [
@@ -4561,7 +4561,7 @@
   {
     "id": "LV11",
     "what": "Aero's pools of a buy are named in the route's order, not forward from what is paid",
-    "origin": "design/2026-11-26-chain-venues.md",
+    "origin": "docs/design/chain-venues.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/UniversalRouterSwaps.venues.t.sol",
     "edits": [
@@ -4574,7 +4574,7 @@
   {
     "id": "LV12",
     "what": "a PancakeSwap V2 buy's tokens are named in the route's order, not forward",
-    "origin": "design/2026-11-26-chain-venues.md",
+    "origin": "docs/design/chain-venues.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/UniversalRouterSwaps.venues.t.sol",
     "edits": [
@@ -4587,7 +4587,7 @@
   {
     "id": "LV13",
     "what": "a PancakeSwap V2 sale hop's pair is named backwards",
-    "origin": "design/2026-11-26-chain-venues.md",
+    "origin": "docs/design/chain-venues.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/UniversalRouterSwaps.venues.t.sol",
     "edits": [
@@ -4600,7 +4600,7 @@
   {
     "id": "LV14",
     "what": "a local leg pre-funds and runs on Uniswap's router",
-    "origin": "design/2026-11-26-chain-venues.md",
+    "origin": "docs/design/chain-venues.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/UniversalRouterSwaps.venues.t.sol",
     "edits": [
@@ -4613,7 +4613,7 @@
   {
     "id": "LV15",
     "what": "an Aero leg is sent as a Universal Router call, without the Metarouter's deadline",
-    "origin": "design/2026-11-26-chain-venues.md",
+    "origin": "docs/design/chain-venues.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/UniversalRouterSwaps.venues.t.sol",
     "edits": [
@@ -4626,7 +4626,7 @@
   {
     "id": "LV16",
     "what": "the zap pays the chain's DEX router as a recipient",
-    "origin": "design/2026-11-26-chain-venues.md",
+    "origin": "docs/design/chain-venues.md",
     "file": "src/IndexZap.sol",
     "test": "test/UniversalRouterSwaps.venues.t.sol",
     "edits": [
@@ -4639,7 +4639,7 @@
   {
     "id": "LV17",
     "what": "the builder pays the chain's DEX router as a recipient",
-    "origin": "design/2026-11-26-chain-venues.md",
+    "origin": "docs/design/chain-venues.md",
     "file": "src/BasketBuilder.sol",
     "test": "test/UniversalRouterSwaps.venues.t.sol",
     "edits": [
@@ -4652,7 +4652,7 @@
   {
     "id": "LV18",
     "what": "the pass-through leg may name a local route",
-    "origin": "design/2026-11-26-chain-venues.md",
+    "origin": "docs/design/chain-venues.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/UniversalRouterSwaps.venues.t.sol",
     "edits": [
@@ -4665,7 +4665,7 @@
   {
     "id": "LV19",
     "what": "an Aero sale spends millionths of the router's balance, not the hop's amount",
-    "origin": "design/2026-11-26-chain-venues.md",
+    "origin": "docs/design/chain-venues.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/UniversalRouterSwaps.venues.t.sol",
     "edits": [
@@ -4678,7 +4678,7 @@
   {
     "id": "LV20",
     "what": "a PancakeSwap concentrated buy is sent as a V2 swap",
-    "origin": "design/2026-11-26-chain-venues.md",
+    "origin": "docs/design/chain-venues.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/UniversalRouterSwaps.venues.t.sol",
     "edits": [
@@ -4691,7 +4691,7 @@
   {
     "id": "LV21",
     "what": "BNB Chain's deployment names no DEX of its own",
-    "origin": "design/2026-11-26-chain-venues.md",
+    "origin": "docs/design/chain-venues.md",
     "file": "script/DeployChecks.sol",
     "test": "test/DeployChecks.t.sol",
     "edits": [
@@ -4704,7 +4704,7 @@
   {
     "id": "LV22",
     "what": "a deployment whose builder names another DEX than its zap passes the check",
-    "origin": "design/2026-11-26-chain-venues.md",
+    "origin": "docs/design/chain-venues.md",
     "file": "script/DeployWeighted.s.sol",
     "test": "test/Scripts.t.sol",
     "edits": [
@@ -4717,7 +4717,7 @@
   {
     "id": "LV23",
     "what": "a pinned chain's deployment that left its DEX out passes the check",
-    "origin": "design/2026-11-26-chain-venues.md",
+    "origin": "docs/design/chain-venues.md",
     "file": "script/DeployWeighted.s.sol",
     "test": "test/Scripts.t.sol",
     "edits": [
@@ -4730,7 +4730,7 @@
   {
     "id": "LV24",
     "what": "the chain's DEX may hold a role",
-    "origin": "design/2026-11-26-chain-venues.md",
+    "origin": "docs/design/chain-venues.md",
     "file": "script/DeployChecks.sol",
     "test": "test/Scripts.t.sol",
     "edits": [
@@ -4743,7 +4743,7 @@
   {
     "id": "HK8",
     "what": "a buy approves the router for every token it holds, which the next caller of a router could spend (HK-21)",
-    "origin": "audit/2026-11-27-attack-replay-ii.md",
+    "origin": "audits/internal/attack-replay-ii.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/UniversalRouterSwaps.venues.t.sol",
     "edits": [
@@ -4756,7 +4756,7 @@
   {
     "id": "HK9",
     "what": "a sale hop approves its router for the input token as well as paying it (HK-21)",
-    "origin": "audit/2026-11-27-attack-replay-ii.md",
+    "origin": "audits/internal/attack-replay-ii.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/UniversalRouterSwaps.venues.t.sol",
     "edits": [
@@ -4769,7 +4769,7 @@
   {
     "id": "HK10",
     "what": "a redeem is paid at the scale before its own accrual, so the shares it burns escape the streaming fee (HK-24)",
-    "origin": "audit/2026-11-27-attack-replay-ii.md",
+    "origin": "audits/internal/attack-replay-ii.md",
     "file": "src/WeightedHub.sol",
     "test": "test/Attacks.t.sol",
     "edits": [
@@ -4782,7 +4782,7 @@
   {
     "id": "HK11",
     "what": "a fill reads a price of the last minute again, so the filler picks among sixty seconds of prices (HK-25)",
-    "origin": "audit/2026-11-27-attack-replay-ii.md",
+    "origin": "audits/internal/attack-replay-ii.md",
     "file": "src/PythPrices.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
@@ -4795,13 +4795,284 @@
   {
     "id": "HK12",
     "what": "a creation's check reads prices at a fill's fifteen seconds, which a wallet's signer rarely meets (HK-25)",
-    "origin": "audit/2026-11-27-attack-replay-ii.md",
+    "origin": "audits/internal/attack-replay-ii.md",
     "file": "src/PythPrices.sol",
     "test": "test/WeightedHub.oracle.t.sol",
     "edits": [
       {
         "old": "            values[i] = _valueAt(tokens[i], feeds[i], decimals[i], leaving, MAX_CREATION_PRICE_AGE);",
         "new": "            values[i] = _valueAt(tokens[i], feeds[i], decimals[i], leaving, MAX_PRICE_AGE);"
+      }
+    ]
+  },
+  {
+    "id": "OV1",
+    "what": "an sValue the oracle does not hold is not refused as one, so the leg reads as a zero value instead",
+    "origin": "docs/design/ondo-svalue.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "if (sValue == 0 || pauseStart != 0 || lastUpdate + MIN_SVALUE_AGE > block.timestamp) {",
+        "new": "if (pauseStart != 0 || lastUpdate + MIN_SVALUE_AGE > block.timestamp) {"
+      }
+    ]
+  },
+  {
+    "id": "OV2",
+    "what": "an sValue is used while a corporate action is scheduled or under way",
+    "origin": "docs/design/ondo-svalue.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "if (sValue == 0 || pauseStart != 0 || lastUpdate + MIN_SVALUE_AGE > block.timestamp) {",
+        "new": "if (sValue == 0 || lastUpdate + MIN_SVALUE_AGE > block.timestamp) {"
+      }
+    ]
+  },
+  {
+    "id": "OV3",
+    "what": "an sValue that changed this very second is used: no wait for the share's price to agree",
+    "origin": "docs/design/ondo-svalue.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "if (sValue == 0 || pauseStart != 0 || lastUpdate + MIN_SVALUE_AGE > block.timestamp) {",
+        "new": "if (sValue == 0 || pauseStart != 0) {"
+      }
+    ]
+  },
+  {
+    "id": "OV4",
+    "what": "an sValue that has stood exactly twenty minutes is still refused",
+    "origin": "docs/design/ondo-svalue.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "if (sValue == 0 || pauseStart != 0 || lastUpdate + MIN_SVALUE_AGE > block.timestamp) {",
+        "new": "if (sValue == 0 || pauseStart != 0 || lastUpdate + MIN_SVALUE_AGE >= block.timestamp) {"
+      }
+    ]
+  },
+  {
+    "id": "OV5",
+    "what": "the leg is valued at a scheduled corporate action's sValue before it lands",
+    "origin": "docs/design/ondo-svalue.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "(uint128 sValue,, uint256 lastUpdate, uint256 pauseStart,,) = ISyntheticSharesOracle",
+        "new": "(, uint128 sValue, uint256 lastUpdate, uint256 pauseStart,,) = ISyntheticSharesOracle"
+      }
+    ]
+  },
+  {
+    "id": "OV6",
+    "what": "a reader without Ondo's oracle calls the zero address instead of refusing the leg by name",
+    "origin": "docs/design/ondo-svalue.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (oracle == address(0)) revert SValueUnavailable(token);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "OV7",
+    "what": "an Ondo token is valued at its share's price alone, the finding it answers",
+    "origin": "docs/design/ondo-svalue.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        return (_settledSValue(token), WAD * one);",
+        "new": "        return (1, one);"
+      }
+    ]
+  },
+  {
+    "id": "OV8",
+    "what": "the factory hands its reader no oracle, so no Ondo leg is ever valued",
+    "origin": "docs/design/ondo-svalue.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/PythPrices.t.sol",
+    "edits": [
+      {
+        "old": "address(new PythPrices(pyth, sharesOracle))",
+        "new": "address(new PythPrices(pyth, address(0)))"
+      }
+    ]
+  },
+  {
+    "id": "OV9",
+    "what": "a mainnet deployment whose reader reads another sValue oracle, or none, passes the deployment check",
+    "origin": "docs/design/ondo-svalue.md",
+    "file": "script/DeployWeighted.s.sol",
+    "test": "test/Scripts.t.sol",
+    "edits": [
+      {
+        "old": "            if (sharesOracle != pinnedSharesOracle()) {",
+        "new": "            if (false) {"
+      }
+    ]
+  },
+  {
+    "id": "OV10",
+    "what": "the keeper takes any share feed of kind SharesOracle, and values a leg its sValues never turn into the token's",
+    "origin": "docs/design/ondo-svalue.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/math.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "  if (kind === SHARES_ORACLE_FEED && sharePricedIds.includes(id)) return id;",
+        "new": "  if (kind === SHARES_ORACLE_FEED) return id;"
+      }
+    ]
+  },
+  {
+    "id": "KV1",
+    "what": "a route of a path's length plus one is read as local whatever its first byte",
+    "origin": "docs/design/keeper-chain-venues.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "        return route.length % HOP == LOCAL_REMAINDER && route[0] == LOCAL_ROUTE;",
+        "new": "        return route.length % HOP == LOCAL_REMAINDER;"
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "KV2",
+    "what": "the local router keeps the float's approval after a purchase that spent less than its bound",
+    "origin": "docs/design/keeper-chain-venues.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "        SafeERC20.forceApprove(IERC20(USDC), router, 0);\n    }",
+        "new": "    }"
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "KV3",
+    "what": "Aero is asked to buy at a deadline already past",
+    "origin": "docs/design/keeper-chain-venues.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "                        deadline: block.timestamp,\n                        amountOut: amountOut,",
+        "new": "                        deadline: block.timestamp - 1,\n                        amountOut: amountOut,"
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "KV4",
+    "what": "Aero's router is called as a SwapRouter02, whose calls it does not have",
+    "origin": "docs/design/keeper-chain-venues.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "        if (local && LOCAL_KIND == LocalKind.Aero) {",
+        "new": "        if (false) {"
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "KV5",
+    "what": "an executor names a DEX without its kind, or a kind without its DEX",
+    "origin": "docs/design/keeper-chain-venues.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "        if ((localRouter == address(0)) != (localKind == LocalKind.None)) {\n            revert BadLocalRouter(localRouter, localKind);\n        }\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "KV6",
+    "what": "a local route is taken by an executor with no DEX beside Uniswap",
+    "origin": "docs/design/keeper-chain-venues.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "            if (LOCAL_KIND == LocalKind.None) return false;\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "KV7",
+    "what": "a purchase takes the venue that quotes it the most",
+    "origin": "docs/design/keeper-chain-venues.md",
+    "file": "keeper/bot/routes.mjs",
+    "test": "keeper/test/unit/routes.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "  const better = (side, a, b) => (side === \"sell\" ? a > b : a < b);",
+        "new": "  const better = (side, a, b) => a > b;"
+      }
+    ]
+  },
+  {
+    "id": "KV8",
+    "what": "Aero quotes a purchase along the route's pools from the component, not from the float it pays",
+    "origin": "docs/design/keeper-chain-venues.md",
+    "file": "keeper/bot/routes.mjs",
+    "test": "keeper/test/unit/routes.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "[pools.reverse(), hops[hops.length - 1].b, amount]",
+        "new": "[pools, hops[hops.length - 1].b, amount]"
+      }
+    ]
+  },
+  {
+    "id": "KV9",
+    "what": "a chain's own DEX is read as Aero's whatever its kind",
+    "origin": "docs/design/keeper-chain-venues.md",
+    "file": "keeper/bot/routes.mjs",
+    "test": "keeper/test/unit/routes.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "    aero: dex.kind === AERO_KIND,",
+        "new": "    aero: true,"
+      }
+    ]
+  },
+  {
+    "id": "KV10",
+    "what": "a local route goes to the executor without the LOCAL_ROUTE byte, as a Uniswap path",
+    "origin": "docs/design/keeper-chain-venues.md",
+    "file": "keeper/bot/routes.mjs",
+    "test": "keeper/test/unit/routes.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "        pick = v.tag ? `0x${v.tag}${route.slice(2)}` : route;",
+        "new": "        pick = route;"
       }
     ]
   }

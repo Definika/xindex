@@ -4,28 +4,24 @@ pragma solidity 0.8.28;
 import {Listings} from "./Listings.sol";
 
 /// @notice The BNB Chain contracts the deploy and listing scripts use for the BNB Chain deployment
-///         (`design/2026-11-13-bnb-chain-deployment.md`): the tokens its indexes may hold, each with its trust tier,
+///         (`docs/design/bnb-chain.md`): the tokens its indexes may hold, each with its trust tier,
 ///         the mint currencies and Uniswap's contracts there. This is the only copy: `DeployChecks`,
 ///         `ConfigureWeighted` and `CheckToken` read it on chain 56, and `test/fork/BnbChainAddresses.fork.t.sol`
 ///         checks it on chain (tokens by symbol and decimals, the router, the PoolManager and the V3 factory by their
-///         runtime code). No coin carries a price feed: an index rebalances on units alone
-///         (`design/2026-11-10-oracle-free-rebalance.md`). Every address here was read on chain 56 on 2026-11-13.
-/// @dev The list is the BNB Chain list of 2026-10-07, deleted on 2026-10-13 and restored on 2026-11-13 (the owner's
-///      call), less what the owner's later rulings exclude:
+///         runtime code). Each token's Pyth feed is in `PriceFeeds`. Every address here was read on
+///         chain 56.
+/// @dev The list is BNB Chain's first list, less what the owner's rulings exclude:
 ///      - DOGE (0xbA2aE424d960c26247Dd6c32edC70B295c744C43), AVAX (0x1CE0c2827e2eF14D5C4f29a091d735A204794041) and
 ///        FIL (0x0D8Ce2A99Bb6e3B7Db580eD848240e4a0F9aE153): each is a proxy whose admin, one externally owned key
-///        (0xD2f93484f2D319194cBa95C5171B18C1d8cfD6C4), can replace its code. That is the reason DOGE left the
-///        Ethereum list on 2026-10-14 and FIL is held (RX-64); the read of 2026-11-13 found the same admin on all
-///        three.
-///      - TRX (0xCE7de646e7208a4Ef112cb6ed5038FA6cC6b12e3): TRON closed its BTTC bridge on 2026-06-18, the reason
-///        BTT left the Ethereum list (RX-28).
-///      - Binance-Peg SOL (0x570A5D26f7765Ecb712C0924E4De545B89fD43dF): SOL is held on Ethereum as Wormhole's copy
-///        (the owner's call of 2026-10-10).
-///      - NIGHT (0xFe930c2d63AeD9b82fC4DBC801920dD2c1a3224F) is refused (the owner's call of 2026-10-06).
-///      On 2026-11-19 every Ondo stock and ETF Pyth has a feed for joined, 352 in all, each `Custodial`
-///      (the owner's call, design/2026-11-22-ondo-stocks-and-etfs.md), and on 2026-11-25 Anthropic's, ANTon (the
-///      owner's call), 353 in all. On 2026-11-27 CAKE joined (the owner's call), PancakeSwap's
-///      own token, whose market is on BNB Chain's PancakeSwap, the zap's local venue there since 2026-11-26.
+///        (0xD2f93484f2D319194cBa95C5171B18C1d8cfD6C4), can replace its code. That is the reason DOGE is off the
+///        Ethereum list and FIL is held (RX-64); one read found the same admin on all three.
+///      - TRX (0xCE7de646e7208a4Ef112cb6ed5038FA6cC6b12e3): TRON has closed its BTTC bridge, the reason BTT is
+///        off the Ethereum list (RX-28).
+///      - Binance-Peg SOL (0x570A5D26f7765Ecb712C0924E4De545B89fD43dF): SOL is held on Ethereum as Wormhole's copy.
+///      - NIGHT (0xFe930c2d63AeD9b82fC4DBC801920dD2c1a3224F) is refused.
+///      It adds every Ondo stock and ETF Pyth has a feed for, ANTon among them, 353 in all, each `Custodial`
+///      (docs/design/ondo-stocks.md), and CAKE, PancakeSwap's own token, whose market is on BNB Chain's
+///      PancakeSwap, the zap's local venue there.
 library BnbChainAddresses {
     /// @notice BNB Chain's chain id.
     uint256 internal constant CHAIN_ID = 56;
@@ -73,9 +69,9 @@ library BnbChainAddresses {
     ///      (0x6e85689f055B6894803d5135981F7B108C9DAfd5) answering to a Safe of 3 of 7
     ///      (0xeCc90d54B10ADd1ab746ABE7E83abe178B72aa9E). Pyth's CAKE/USD feed has a price stored on BNB Chain.
     address internal constant CAKE = 0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82;
-    /// @dev The Ondo stocks and ETFs listed on 2026-11-19 (the owner's call: every Ondo stock and ETF Pyth has a
-    ///      feed for, design/2026-11-22-ondo-stocks-and-etfs.md), each the same `GMToken` code as Ethereum's behind
-    ///      BNB Chain's beacon (0xc046b05A920e4B412815934DD8E58904dDA73315), read from Ondo's app on 2026-11-19 and on
+    /// @dev The Ondo stocks and ETFs listed (the owner's call: every Ondo stock and ETF Pyth has a
+    ///      feed for, docs/design/ondo-stocks.md), each the same `GMToken` code as Ethereum's behind
+    ///      BNB Chain's beacon (0xc046b05A920e4B412815934DD8E58904dDA73315), read from Ondo's app and on
     ///      chain at block 134,534,714 by symbol and decimals; by the underlying's market cap.
     address internal constant AAPLON = 0x390a684EF9cADE28A7AD0DFa61AB1Eb3842618c4;
     address internal constant MSFTON = 0x6Bfe75D1ad432050eA973C3A3DcD88F02e2444C3;
@@ -429,7 +425,7 @@ library BnbChainAddresses {
     address internal constant DRAMON = 0x087b5761b161429013d41eA54cd2fb6022A21564;
     address internal constant SATAON = 0x732823512Ba98D1BCDE471ca023ee2A0C9f117b7;
     address internal constant STRCON = 0x71E9dc9DEbc18650BD2342B93623B88C2aD00c89;
-    /// @dev Anthropic's Ondo token, listed on 2026-11-25 (the owner's call: "both to eth and bnb"): the same `GMToken`
+    /// @dev Anthropic's Ondo token, listed (the owner's call: "both to eth and bnb"): the same `GMToken`
     ///      behind the same beacon, first active at block 135,500,512; read from Ondo's app and on chain that day.
     address internal constant ANTON = 0x343ccbc9f8409f862008b7abebFFf20ECf935C75;
 
@@ -444,7 +440,7 @@ library BnbChainAddresses {
 
     // ---------------------------------------------------------------------
     // Execution. The router is the same build as the Ethereum one the zap is pinned to, byte for byte but for its
-    // immutables (compared on 2026-10-07), so the command inputs the zap encodes hold here. The runtime code hashes
+    // immutables, so the command inputs the zap encodes hold here. The runtime code hashes
     // are pinned by `test/fork/BnbChainAddresses.fork.t.sol`.
     //
     // Ethereum's router address, `MainnetAddresses.UNIVERSAL_ROUTER`, has code on BNB Chain too: a byte-identical
@@ -461,15 +457,22 @@ library BnbChainAddresses {
     ///      not the coin's market.
     address internal constant UNISWAP_V3_FACTORY = 0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7;
     /// @dev PancakeSwap's Infinity Universal Router, the chain's own DEX beside Uniswap for the zap and the builder
-    ///      (the owner's call of 2026-11-26, `design/2026-11-26-chain-venues.md`): its V3 and V2 pools. A fork of
+    ///      (`docs/design/chain-venues.md`): its V3 and V2 pools. A fork of
     ///      Uniswap's router whose V3 and SWEEP commands take the same inputs, read from its verified source (Sourcify,
     ///      exact match; deployed at block 47,215,887). Its owner, a Safe of 3 of 7, can pause it.
     address internal constant PANCAKE_UNIVERSAL_ROUTER = 0xd9C500DfF816a1Da21A48A732d3498Bf09dc9AEB;
     /// @dev Pyth's price contract, a proxy, through which the factory's `PythPrices` reads the price a fill is checked
-    ///      against (the owner's call of 2026-11-22). A filler posts a fresh update to it in its own transaction. Read
+    ///      against. A filler posts a fresh update to it in its own transaction. Read
     ///      on chain that day: it answers `priceFeedExists` for ETH/USD, and `DeployChecks` resolves it as it does the
     ///      router.
     address internal constant PYTH = 0x4D7E825f80bDf85e913E0DD2A2D54927e9dE1594;
+    /// @dev Ondo's `SyntheticSharesOracle`, which holds each Ondo token's sValue, the shares of its stock one token
+    ///      stands for: the factory's `PythPrices` values a leg of feed kind `SharesOracle` at its share's Pyth price
+    ///      times that sValue, once settled. Named in Ondo's documentation; verified
+    ///      source, not a proxy, the same code on Ethereum and BNB Chain, its runtime code hash pinned by the fork
+    ///      suite. Its admin role adds and removes assets and schedules corporate actions; its setter raises an
+    ///      sValue within each asset's allowed drift. It holds 349 of the list's 353 Ondo tokens.
+    address internal constant ONDO_SHARES_ORACLE = 0xF4Fd8a1B412633e10527454137A29Db7Aa35F15e;
 
     /// @notice Every coin of the list: WBNB, BTCB and ETH first, then the Binance-Peg coins, then BNB Chain's own
     ///         tokens, then Ondo's stocks and ETFs.

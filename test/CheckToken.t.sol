@@ -615,7 +615,7 @@ contract CheckTokenTest is Test {
         _assertPower("hasRole(bytes32,address)", checker.ROLES());
     }
 
-    /// @dev TokenSoft's wrapped XRP, read on 2026-10-26: the check called it listable, because its table named none of
+    /// @dev TokenSoft's wrapped XRP, read: the check called it listable, because its table named none of
     ///      the token's powers. A whitelist its owner can switch on stops any holder not on it, and a revoker takes any
     ///      holder's balance (`revoke(from, amount)`): a blacklist with a destroy, which the WBT rule refuses.
     function test_tokenSoftsWhitelistAndRevokeFallUnderTheWbtRule() public view {
@@ -630,7 +630,7 @@ contract CheckTokenTest is Test {
         assertEq(reason, "the WBT rule: it can blacklist a holder and destroy its balance");
     }
 
-    /// @dev CF-4: the names the owed source reading of 2026-10-18 found outside the table. GALA's blocklist beside its
+    /// @dev CF-4: the names the owed source reading found outside the table. GALA's blocklist beside its
     ///      `burnFrom` goes to review, since the check cannot tell whether that burn needs an allowance; SAND's second
     ///      admin appoints operators that move any balance, as its first does.
     function test_CF4_theSourceReadingsNamesAreInTheTable() public view {
@@ -932,7 +932,7 @@ contract CheckTokenTest is Test {
     }
 
     /// @dev A `forge script` run against an OP Stack chain fails a state-changing call from an account that holds no
-    ///      ether before the call runs, so until 2026-11-22 every probe on Base read as a failed transfer. The check
+    ///      ether before the call runs, so without it every probe on Base reads as a failed transfer. The check
     ///      gives an account ether before it calls a token as it. A test run has no such rule: this token, which moves
     ///      only for a caller that holds ether, stands in for it.
     function test_theProbesCallersHoldEther() public {
@@ -947,8 +947,8 @@ contract CheckTokenTest is Test {
         assertEq(uint8(moved), uint8(CheckToken.Transfers.Exact), "every probe ran as an account that holds ether");
     }
 
-    /// @dev The check resolves its tokens without creating a contract. Until 2026-11-22 it created a
-    ///      `ConfigureWeighted` for them, and a `forge script` run against an OP Stack chain fails a creation by the
+    /// @dev The check resolves its tokens without creating a contract. Creating a `ConfigureWeighted` for
+    ///      them failed: a `forge script` run against an OP Stack chain fails a creation by the
     ///      script contract, which holds no ether: every CHECK on Base reverted before it read a token. A test run
     ///      has no such rule, so what is held here is the cause: the checker's nonce, which a creation would raise.
     function test_resolvingTheTokensCreatesNoContract() public {

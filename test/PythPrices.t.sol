@@ -11,6 +11,9 @@ import {IPythPrices} from "../src/interfaces/IPythPrices.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockPyth} from "./mocks/MockPyth.sol";
+import {MockSharesOracle} from "./mocks/MockPricedTokens.sol";
+import {OndoSValues} from "./fork/OndoSValues.sol";
+import {PriceFeeds} from "../script/PriceFeeds.sol";
 
 /// @notice The factory's price feeds and the reader it deploys. A feed is the owner's to propose, behind the listing
 ///         delay, the guardian's to cancel and anyone's to execute within the window; a factory without an oracle has
@@ -29,7 +32,7 @@ contract PythPricesTest is Test {
         vm.warp(1_800_000_000);
         pyth = new MockPyth();
         pyth.addFeed(FEED);
-        factory = new WeightedIndexFactory(owner, guardian, address(pyth), address(new WeightedMath()));
+        factory = new WeightedIndexFactory(owner, guardian, address(pyth), address(new WeightedMath()), address(0));
         token = new MockERC20("Ether", "ETH", 18);
     }
 
@@ -43,9 +46,17 @@ contract PythPricesTest is Test {
         PythPrices prices = PythPrices(factory.PRICES());
         assertEq(prices.PYTH(), address(pyth));
         assertEq(prices.FACTORY(), address(factory));
+        assertEq(prices.SHARES_ORACLE(), address(0), "a factory built without Ondo's oracle reads no sValue");
+        address sharesOracle = makeAddr("sharesOracle");
+        WeightedIndexFactory withOndo =
+            new WeightedIndexFactory(owner, guardian, address(pyth), address(new WeightedMath()), sharesOracle);
+        assertEq(
+            PythPrices(withOndo.PRICES()).SHARES_ORACLE(), sharesOracle, "one built with it hands it to its reader"
+        );
         assertEq(WeightedHub(factory.IMPLEMENTATION()).PRICES(), address(prices));
 
-        WeightedIndexFactory bare = new WeightedIndexFactory(owner, guardian, address(0), address(new WeightedMath()));
+        WeightedIndexFactory bare =
+            new WeightedIndexFactory(owner, guardian, address(0), address(new WeightedMath()), address(0));
         assertEq(bare.PRICES(), address(0));
         assertEq(WeightedHub(bare.IMPLEMENTATION()).PRICES(), address(0));
         vm.prank(owner);
@@ -53,7 +64,7 @@ contract PythPricesTest is Test {
         bare.proposePriceFeed(address(token), _feed(FEED, IPythPrices.FeedKind.Token));
 
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new PythPrices(address(0));
+        new PythPrices(address(0), address(0));
     }
 
     /// @dev A feed goes through the listing delay: proposed by the owner alone, executable by anyone from its eta and
@@ -149,5 +160,24 @@ contract PythPricesTest is Test {
         factory.proposePriceFeed(address(other), _feed(unposted, IPythPrices.FeedKind.Token));
         (IPythPrices.PriceFeed memory pending,) = factory.pendingPriceFeed(address(other));
         assertEq(pending.id, unposted);
+    }
+
+    /// @dev The fork suites' Ondo check (`test/fork/OndoSValues.sol`), run against mocks: of Ethereum's 344 legs of kind
+    ///      `SharesOracle`, the one an oracle holds settled is valued at the stand-in price times its sValue, and one
+    ///      held but changed a minute ago, one under a scheduled action and every one it does not hold are refused.
+    function test_theForkSuitesOndoCheckIsChecked() public {
+        MockSharesOracle ondo = new MockSharesOracle();
+        (address[] memory tokens, IPythPrices.PriceFeed[] memory feeds) = PriceFeeds.table(1);
+        address[3] memory picked;
+        uint256 found = 0;
+        for (uint256 i = 0; i < tokens.length && found < 3; ++i) {
+            if (feeds[i].kind == IPythPrices.FeedKind.SharesOracle) picked[found++] = tokens[i];
+        }
+        ondo.set(picked[0], 10e18, block.timestamp - 1 days, 0, 0);
+        ondo.set(picked[1], 2e18, block.timestamp - 1 minutes, 0, 0);
+        ondo.set(picked[2], 1e18, block.timestamp - 1 days, block.timestamp + 1 days, 5e18);
+        (uint256 valued, uint256 refused) = OndoSValues.check(1, address(pyth), address(ondo));
+        assertEq(valued, 1, "the one held and settled");
+        assertEq(refused, 343, "every other");
     }
 }

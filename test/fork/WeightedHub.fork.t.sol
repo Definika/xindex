@@ -109,7 +109,7 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
             );
         }
 
-        factory = new WeightedIndexFactory(address(this), guardian, address(0), address(new WeightedMath()));
+        factory = new WeightedIndexFactory(address(this), guardian, address(0), address(new WeightedMath()), address(0));
         factory.setApprovedCreator(creator, true);
         zap = new IndexZap(
             IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER), LocalVenues.none(), A.USDC, A.USDT
@@ -149,7 +149,7 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
                 (uint256 smallOut, bool priced) = _quote(c.route, small);
                 // A live route that prices a coin at nothing means a quote failed, not that the coin is worthless.
                 // Pricing it at the smallest unit instead once gave VIRTUAL 10^-8 USD and units past MAX_UNITS, when the
-                // public RPC dropped its pool's storage reads (2026-10-06): refuse with the reason rather than misprice.
+                // public RPC dropped its pool's storage reads: refuse with the reason rather than misprice.
                 require(
                     priced && smallOut != 0,
                     string.concat(
@@ -473,7 +473,7 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
     function testFork_everyCoinIssuesRebalancesAndRedeems() public {
         _discover(Listings.COUNT);
         _report();
-        // the list holds more than one index may (its Ondo stocks and ETFs, since 2026-11-22): the first MAX_COMPONENTS
+        // the list holds more than one index may (its Ondo stocks and ETFs): the first MAX_COMPONENTS
         // that `deal` can fund, every coin among them
         Coin[] memory picked = _first(_pick(_dealable), factory.MAX_COMPONENTS());
         console2.log("coins in the index:", picked.length, "of", coins.length);

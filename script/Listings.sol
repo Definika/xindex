@@ -3,50 +3,31 @@ pragma solidity 0.8.28;
 
 import {MainnetAddresses as M} from "./MainnetAddresses.sol";
 
-/// @notice The Ethereum coins Xindex lists, in listing order, and each one's trust tier. No coin carries a price feed:
-///         an index rebalances through an auction on units alone and nothing reads a price
-///         (`design/2026-11-10-oracle-free-rebalance.md`). The owner's calls behind the list:
-///         - 2026-10-06: GRAM is out, its bridge closed; so are OKB, being retired on Ethereum, and BGB and GT, which
-///           no Uniswap route trades (design/2026-10-05-wide-asset-support.md, section 6).
-///         - 2026-10-10: INJ, SHIB and PEPE joined, from CoinGecko's top 100 of that day, SHIB and PEPE on the owner's
-///           call; Wormhole's SOL, in place of BNB Chain's Binance-Peg SOL; Tether Gold and 17 Ondo stock tokens; and
-///           the hundred-coin list (design/2026-10-10-one-index-wormhole-legs.md): 31 Ethereum-issued coins and 13
-///           Wormhole copies.
-///         - 2026-10-14: DOGE's copy left (`MainnetAddresses`).
-///         - 2026-10-18: Wormhole's copies of BNB, SUI and SEI, which the count of 2026-10-10 missed, joined; SAND and
-///           RLB left after the source reading (design/2026-10-18-token-source-reading.md).
-///         - 2026-10-19: BTT and SEI's copy left, the red team's RX-28 and RX-32: the bridge behind each has closed or
-///           is closing.
-///         - 2026-11-13: Wormhole's copies of the six coins BNB Chain's deployment holds in kind left (XRP, ADA, LTC,
-///           DOT, ATOM and BNB, each wrapped from BNB Chain): those coins are on `BnbChainAddresses`' list, with no
-///           bridge under them (design/2026-11-13-bnb-chain-deployment.md). The nine copies from other chains stay.
-///         - 2026-11-18: Wormhole's copies of JUP, PYTH, SUI, APT and ALGO left: no Ethereum pool trades them, so a
-///           rebalance can buy them only from stock bridged in from Solana, Sui, Aptos or Algorand, and the restock
-///           that would bridge them has never run (design/2026-11-18-bridged-coins-in-a-rebalance.md). SOL's copy,
-///           which a Uniswap pool trades, and AVAX's, OP's and AERO's, which the EVM restock serves, stay.
-///         - 2026-11-19: every Ondo stock and ETF Pyth has a feed for joined, 335 beside the 17 listed on
-///           2026-10-10, each `Custodial` (the owner's call, design/2026-11-22-ondo-stocks-and-etfs.md). The 127
-///           without a feed join as Pyth publishes one; USDY and OUSG, cash tokens, are not listed.
-///         - 2026-11-21: Wormhole's copy of OP left (the owner's call: "remove op for now"). No Ethereum pool trades
-///           it, and the restock that would buy it on Optimism found no route that day: Uniswap v3's deepest OP pool
-///           there held about $35,000 of USDC, and $1,430 of OP cost 4.7% over the pools' price. Its address stays in
-///           `MainnetAddresses` for a relisting. AVAX's and AERO's copies, which the restock bought and bridged in a
-///           test of the same day, stay, and so does SOL's.
-///         - 2026-11-21: the Ondo stocks left for 109 of Backed's wrapped xStocks, and on 2026-11-22 the owner
-///           reversed it ("delete everything releated to xtokcs and leave only ondo"): no xStock is listed, and every
-///           Ondo stock and ETF above is, as of 2026-11-19.
-///         - 2026-11-25: Ondo's ANTon, Anthropic's token, joined (the owner's call: "both to eth and bnb"), at Pyth's
-///           24/7 price for the share, Pyth having no feed for the token; on BNB Chain too.
-///         - 2026-11-26: Wormhole's copy of AERO left (the owner's call: "კი, ამოიღე", yes, take it out). It is a copy
-///           of Aerodrome's AERO, which Aero replaced with a token of its own on 2026-10-21: the copy redeems to the
-///           old token alone, whose depth is leaving and whose one-for-one conversion Aero's owner can end. Base's
-///           list holds Aero's token since the same day (design/2026-11-26-chain-venues.md). Its address stays in
-///           `MainnetAddresses` for a relisting.
+/// @notice The Ethereum tokens Xindex lists, in listing order, and each one's trust tier. Each token's Pyth feed is in
+///         `PriceFeeds`, for the check that can only refuse a fill (`docs/design/pyth-check.md`). What the list holds:
+///         - The issuer's own contract for each coin Ethereum has, Bitcoin as WBTC, and Tether Gold.
+///         - Wormhole's copies of SOL and AVAX, labelled Bridged (docs/design/wormhole-legs.md).
+///         - Every Ondo stock and ETF Pyth has a feed for, ANTon among them, each `Custodial`
+///           (docs/design/ondo-stocks.md). One without a feed joins when Pyth publishes one; USDY and OUSG, Ondo's
+///           cash tokens, are not listed, nor are Backed's xStocks.
+///         What it leaves out, by the owner's decisions:
+///         - GRAM, its bridge closed; OKB, being retired on Ethereum; BGB and GT, which no Uniswap route trades
+///           (docs/design/wide-asset-support.md, section 6). DOGE's copy (`MainnetAddresses`). SAND and RLB, after
+///           their source reading (docs/design/token-source-reading.md).
+///         - A Wormhole copy whose bridge has closed or is closing: BTT's and SEI's (RX-28, RX-32).
+///         - A copy of a coin BNB Chain's deployment holds in kind: XRP, ADA, LTC, DOT, ATOM and BNB, each wrapped
+///           from BNB Chain (docs/design/bnb-chain.md).
+///         - A copy no Ethereum pool trades and no restock route serves: JUP, PYTH, SUI, APT and ALGO
+///           (docs/design/bridged-coins.md), and OP, whose deepest pool on Optimism holds about $35,000 of USDC.
+///         - Wormhole's copy of Aerodrome's old AERO, which Aero replaced with a token of its own: the copy redeems to
+///           the old token alone. Base lists Aero's token (docs/design/chain-venues.md).
+///         The addresses of what left stay in `MainnetAddresses` for a relisting, and `CHANGELOG.md` records how the
+///         list came to be.
 library Listings {
     /// @notice How many coins the list names.
     uint256 internal constant COUNT = 414;
 
-    /// @notice A token's trust tier (design/2026-10-05-wide-asset-support.md, section 1), shown by the app beside every
+    /// @notice A token's trust tier (docs/design/wide-asset-support.md, section 1), shown by the app beside every
     ///         index that holds it and by `ConfigureWeighted`'s safe mode beside every listing.
     enum Tier {
         Unrecorded,
@@ -58,7 +39,7 @@ library Listings {
     /// @notice The tier of a token in the table: `Custodial` for WBTC (BitGo holds the bitcoin), Tether Gold and the
     ///         Ondo stocks; `Bridged` for a bridge's copy of a coin issued elsewhere, Wormhole's copies among them;
     ///         `Native` for a token issued on Ethereum, ether's WETH among them; and `Unrecorded` for any token off the
-    ///         table. No copy of a Binance-Peg coin is listed since 2026-11-13: those were the `Custodial` copies.
+    ///         table. No copy of a Binance-Peg coin is listed: those were the `Custodial` copies.
     function tierOf(address token) internal pure returns (Tier) {
         if (
             token == M.WBTC || token == M.XAUT || token == M.NVDAON || token == M.AAPLON || token == M.GOOGLON
@@ -164,10 +145,8 @@ library Listings {
     }
 
     /// @notice Every coin of the list: WETH, WBTC, LINK and UNI first, the `default` list, then the wide
-    ///         list: the 45 of 2026-10-06 and 2026-10-10's first additions, then the hundred-coin list's 28
-    ///         Ethereum-issued coins (31, less SAND, RLB and BTT) and 1 Wormhole copy (12, less the five from BNB
-    ///         Chain, the four from Solana, Aptos and Algorand, OP's and AERO's), each group by market cap. The copy found on
-    ///         2026-10-18 that stayed until 2026-11-18, SUI's, has left too.
+    ///         list's first 45 coins and its first additions, then the hundred-coin list's 28 Ethereum-issued coins and
+    ///         its one Wormhole copy, each group by market cap, then Ondo's tokens.
     function all() internal pure returns (address[] memory tokens) {
         tokens = new address[](COUNT);
         tokens[0] = M.WETH;

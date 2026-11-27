@@ -15,8 +15,8 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 ///         against the market, and the market addresses themselves. `DeployWeighted` runs them on each chain it
 ///         deploys to, so the rules on who may own a factory exist once. Three chains are pinned, each to its address
 ///         book: Ethereum (1) to `MainnetAddresses`, BNB Chain (56) to `BnbChainAddresses`
-///         (`design/2026-11-13-bnb-chain-deployment.md`) and Base (8453) to `BaseAddresses`
-///         (`design/2026-11-21-base-deployment.md`). On a pinned chain the market addresses are the book's and
+///         (`docs/design/bnb-chain.md`) and Base (8453) to `BaseAddresses`
+///         (`docs/design/base.md`). On a pinned chain the market addresses are the book's and
 ///         nothing else; elsewhere they come from the environment.
 abstract contract DeployChecks is Script {
     /// @dev The addresses a `LocalVenue` names: its router and Aero's three factories.
@@ -29,7 +29,7 @@ abstract contract DeployChecks is Script {
     /// @notice Default {resolveRouter} uses on chain 8453, from `BaseAddresses`.
     address public constant BASE_UNIVERSAL_ROUTER = BaseAddresses.UNIVERSAL_ROUTER;
     /// @notice Fewest signatures a Safe owner may need on a mainnet: the design's 3-of-5 hardware wallets held by
-    ///         separate people (the owner's call on 2026-09-30).
+    ///         separate people.
     uint256 public constant MIN_OWNER_THRESHOLD = 3;
     /// @notice Fewest signatures the guardian's Safe may need on a mainnet: more than one key's (CA-M4).
     uint256 public constant MIN_GUARDIAN_THRESHOLD = 2;
@@ -89,7 +89,7 @@ abstract contract DeployChecks is Script {
 
     /// @notice Rejects a missing owner and Foundry's default sender. On a pinned chain, a mainnet, the owner must be a
     ///         contract, not an EIP-7702 delegated account. A Safe must need at least MIN_OWNER_THRESHOLD (3)
-    ///         signatures, the owner's call on 2026-09-30 to match the design's 3-of-5, and have no enabled module,
+    ///         signatures to match the design's 3-of-5, and have no enabled module,
     ///         because a module acts as the Safe without signatures. Modules or guards added later are not checked, so
     ///         the Safe must keep none. Any other contract, a timelock as much as a smart account with one key, is
     ///         refused unless the operator acknowledges it (A7-08): nothing here can tell who signs for it.
@@ -309,7 +309,7 @@ abstract contract DeployChecks is Script {
 
     /// @notice Whether the pinned chain is Base: its own id, 8453, and nothing else. No router's code tells Base:
     ///         Base's router address has code on Ethereum and on BNB Chain too, and theirs on Base (read on
-    ///         2026-11-21), each a replay that settles against nothing where it stands. A run against Base's state
+    ///         chain), each a replay that settles against nothing where it stands. A run against Base's state
     ///         under another id is still pinned, by BNB Chain's router standing there: it resolves BNB Chain's book
     ///         and stops at BNB Chain's USDC address, empty on Base.
     function onBase() public view returns (bool) {
@@ -321,7 +321,7 @@ abstract contract DeployChecks is Script {
     ///         id, BNB Chain's router having code here names it, and is asked before Ethereum's, so a chain-id
     ///         override cannot unpin a run against BNB Chain's state (RX-23). The order matters because Ethereum's
     ///         router address has code on BNB Chain too, a replay of Ethereum's deployment that settles against
-    ///         nothing there (read on 2026-11-13).
+    ///         nothing there.
     /// @dev The id has to win on chain 1: both routers are CREATE2 deployments from a factory anyone may call, so
     ///      anyone can put BNB Chain's router at its address on Ethereum, as someone did on Base, and a rule that
     ///      read that code first would hand a deployment on Ethereum BNB Chain's book, which stops it at BNB Chain's
@@ -348,7 +348,7 @@ abstract contract DeployChecks is Script {
     }
 
     /// @notice The chain's own DEX beside Uniswap, from its address book: PancakeSwap on BNB Chain, Aero on Base, none
-    ///         on Ethereum and off the pinned chains (the owner's call of 2026-11-26). Never taken from the
+    ///         on Ethereum and off the pinned chains. Never taken from the
     ///         environment: the engine encodes against these routers' command inputs, read from their verified source.
     function pinnedLocalVenue() public view returns (IUniversalRouterSwaps.LocalVenue memory local) {
         if (onBase()) {
@@ -392,6 +392,19 @@ abstract contract DeployChecks is Script {
     function pinnedPyth() public view returns (address) {
         if (onBase()) return BaseAddresses.PYTH;
         return onBnbChain() ? BnbChainAddresses.PYTH : MainnetAddresses.PYTH;
+    }
+
+    /// @notice The pinned chain's Ondo `SyntheticSharesOracle`, from which the factory's price reader takes an Ondo
+    ///         leg's sValue: Ethereum's and BNB Chain's address book's, and zero on Base, where Ondo has none.
+    function pinnedSharesOracle() public view returns (address) {
+        if (onBase()) return address(0);
+        return onBnbChain() ? BnbChainAddresses.ONDO_SHARES_ORACLE : MainnetAddresses.ONDO_SHARES_ORACLE;
+    }
+
+    /// @notice Ondo's oracle for the factory's price reader: the pinned chain's own ({pinnedSharesOracle}), and zero
+    ///         elsewhere, where no Ondo token is listed. Nothing in the environment sets it.
+    function resolveSharesOracle() public view returns (address) {
+        return isPinnedChain() ? pinnedSharesOracle() : address(0);
     }
 
     /// @notice Pyth's contract for the factory's price check. On a pinned chain it is the chain's own: zero takes it,

@@ -20,8 +20,7 @@ import {UniversalRouterSwaps} from "./UniversalRouterSwaps.sol";
 ///        a sale, or a withdrawal.
 ///      - The builder has no owner, no upgrade and nothing to configure. It holds only the escrows, plus whatever
 ///        strangers send it, which nothing may take (as in `MintRequests`).
-///      - A buy pays and a sale is paid in the builder's `USDC` or `USDT`, and nothing else, as at the zap (the owner's
-///        call of 2026-11-18). A deposit and a withdrawal take any token: they move legs in kind, not a payment.
+///      - A buy pays and a sale is paid in the builder's `USDC` or `USDT`, and nothing else, as at the zap. A deposit and a withdrawal take any token: they move legs in kind, not a payment.
 ///      - Every amount is measured where it lands:
 ///        - a deposit or a redeem credits the balance increase it caused;
 ///        - a buy credits what the basket needs, once the engine has measured at least that much delivered

@@ -132,7 +132,8 @@ contract SecurityForkTest is Test {
                 )
             );
         }
-        factory = new WeightedIndexFactory(address(this), address(0), address(0), address(new WeightedMath()));
+        factory =
+            new WeightedIndexFactory(address(this), address(0), address(0), address(new WeightedMath()), address(0));
         factory.setApprovedCreator(address(this), true);
         zap = new IndexZap(
             IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER), LocalVenues.none(), A.USDC, A.USDT
@@ -282,7 +283,7 @@ contract SecurityForkTest is Test {
         vm.stopPrank();
     }
 
-    /// @dev Paid in USDC through WETH, the zap's only currencies being the two stablecoins since 2026-11-18.
+    /// @dev Paid in USDC through WETH, the zap's only currencies being the two stablecoins.
     function test_I03_strayRouterEthIsRefundedNotLocked() public {
         WeightedHub idx = _create(A.WBTC, A.LINK);
         IUniversalRouterSwaps.MintLeg[] memory legs = new IUniversalRouterSwaps.MintLeg[](2);
@@ -644,7 +645,7 @@ contract SecurityForkTest is Test {
     ///      only learned to honour `start` in this review, so the real Safe is the proof: a 3-of-3 Safe without modules
     ///      is accepted as an owner, and the same Safe with one module enabled is refused, on 1.3.0, which answers any
     ///      other start with an empty page, and on 1.4.1, which refuses one. A real 2-of-3 is refused outright, since
-    ///      the owner needs at least three signatures (the owner's call on 2026-09-30).
+    ///      the owner needs at least three signatures.
     function test_XA07_CRI36_aRealSafeWithAModuleIsRefused() public {
         DeployWeighted deployer = new DeployWeighted();
         address module = makeAddr("module");

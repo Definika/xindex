@@ -54,7 +54,7 @@ merging. CI does not run Aderyn yet: run it before pushing.
 After an ABI change, regenerate `abi/`:
 
 ```bash
-for c in IndexZap BasketBuilder MintRequests WeightedIndexFactory WeightedHub; do
+for c in IndexZap BasketBuilder MintRequests WeightedIndexFactory WeightedHub PythPrices; do
   forge inspect $c abi --json > abi/$c.json
 done
 ```

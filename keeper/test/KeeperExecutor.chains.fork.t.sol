@@ -19,6 +19,11 @@ interface IV3FactoryView {
     function getPool(address, address, uint24) external view returns (address);
 }
 
+/// @dev Aero's concentrated-liquidity factory, whose pools are keyed by tick spacing.
+interface IAeroFactoryView {
+    function getPool(address, address, int24) external view returns (address);
+}
+
 interface IPeripheryView {
     function factory() external view returns (address);
     function WETH9() external view returns (address);
@@ -68,6 +73,16 @@ abstract contract ChainForkTest is Test {
     /// @dev Two listed coins and each one's units per share, worth a few dollars a share.
     function _basket() internal pure virtual returns (address[2] memory coins, uint256[2] memory units);
 
+    // The chain's own DEX beside Uniswap, as the bot's table names it.
+    function _localRouter() internal pure virtual returns (address);
+    function _localKind() internal pure virtual returns (KeeperExecutor.LocalKind);
+    function _localFactory() internal pure virtual returns (address);
+    function _localQuoter() internal pure virtual returns (address);
+    /// @dev The local pool of `a` and `b` at `step`, a fee or a tick spacing, or zero.
+    function _localPool(address a, address b, uint24 step) internal view virtual returns (address);
+    /// @dev The fees or tick spacings the local DEX keys its pools by.
+    function _localSteps() internal pure virtual returns (uint24[] memory);
+
     function setUp() public {
         string memory url = vm.envOr(_rpcVar(), string(""));
         if (bytes(url).length == 0) {
@@ -80,7 +95,9 @@ abstract contract ChainForkTest is Test {
         assertEq(block.chainid, _chainId(), "the RPC serves the chain this suite is for");
         unit = 10 ** _usdcDecimals();
 
-        factory = new WeightedIndexFactory(execOwner, makeAddr("guardian"), address(0), address(new WeightedMath()));
+        factory = new WeightedIndexFactory(
+            execOwner, makeAddr("guardian"), address(0), address(new WeightedMath()), address(0)
+        );
         requests = new MintRequests(address(factory), _usdc(), _usdt());
         executor = new KeeperExecutor(
             IV3SwapRouter(_router()),
@@ -89,7 +106,9 @@ abstract contract ChainForkTest is Test {
             IMintRequests(address(requests)),
             ITokenBridge(_bridge()),
             execOwner,
-            keeper
+            keeper,
+            address(0),
+            KeeperExecutor.LocalKind.None
         );
 
         (address[2] memory coins, uint256[2] memory units) = _basket();
@@ -128,7 +147,17 @@ abstract contract ChainForkTest is Test {
     ///      the bridge with Wormhole's id for the chain, the float with the decimals the table states.
     function testFork_theChainTableIsTheChains() public view {
         string memory table = vm.readFile("./bot/config.mjs");
-        address[6] memory named = [_router(), _quoter(), _v3Factory(), _usdc(), _bridge(), _pyth()];
+        address[9] memory named = [
+            _router(),
+            _quoter(),
+            _v3Factory(),
+            _usdc(),
+            _bridge(),
+            _pyth(),
+            _localRouter(),
+            _localFactory(),
+            _localQuoter()
+        ];
         for (uint256 i = 0; i < named.length; ++i) {
             assertTrue(vm.indexOf(table, vm.toString(named[i])) != type(uint256).max, "the bot's table names it");
             assertGt(named[i].code.length, 0, "and it has code here");
@@ -137,6 +166,8 @@ abstract contract ChainForkTest is Test {
         assertEq(IPeripheryView(_router()).WETH9(), _hub());
         assertEq(IPeripheryView(_quoter()).factory(), _v3Factory());
         assertEq(IPeripheryView(_quoter()).WETH9(), _hub());
+        assertEq(IPeripheryView(_localRouter()).factory(), _localFactory(), "the local router trades the local pools");
+        assertEq(IPeripheryView(_localRouter()).WETH9(), _hub());
         assertEq(ITokenBridgeChain(_bridge()).chainId(), _wormholeId());
         assertEq(IERC20Metadata(_usdc()).decimals(), _usdcDecimals());
         assertEq(address(executor.ROUTER()), _router());
@@ -186,6 +217,83 @@ abstract contract ChainForkTest is Test {
         for (uint256 i = 0; i < 2; ++i) {
             assertGe(IERC20(coins[i]).balanceOf(index), need[i], "the index holds the share's basket");
             assertEq(IERC20(coins[i]).balanceOf(address(executor)), 0, "and the executor keeps none of it");
+        }
+    }
+
+    /// @dev The same request filled through the chain's own DEX alone: each leg's route the deepest local pool of its
+    ///      coin, behind the byte `LOCAL_ROUTE`, on an executor that names that DEX and its kind. Nothing of the basket
+    ///      or the float's approval stays with the local router.
+    function testFork_aMintRequestIsFilledThroughTheChainsOwnDex() public {
+        KeeperExecutor local = new KeeperExecutor(
+            IV3SwapRouter(_router()),
+            _usdc(),
+            IWeightedIndexFactory(address(factory)),
+            IMintRequests(address(requests)),
+            ITokenBridge(_bridge()),
+            execOwner,
+            keeper,
+            _localRouter(),
+            _localKind()
+        );
+        vm.prank(execOwner);
+        local.setRequestUsdcAllowance(type(uint256).max);
+        deal(_usdc(), address(local), 1000 * unit);
+        uint256 escrow = 100 * unit;
+        deal(_usdc(), requester, escrow);
+        vm.startPrank(requester);
+        IERC20(_usdc()).approve(address(requests), escrow);
+        uint256 id = requests.requestMint(index, _usdc(), escrow, 1e18, block.timestamp + 1 days);
+        vm.stopPrank();
+        (address[2] memory coins,) = _basket();
+        bytes[] memory routes = new bytes[](2);
+        for (uint256 i = 0; i < 2; ++i) {
+            routes[i] = bytes.concat(local.LOCAL_ROUTE(), _localRoute(coins[i]));
+        }
+        KeeperExecutor.RequestFill memory f = KeeperExecutor.RequestFill({
+            id: id,
+            amount: 1e18,
+            routes: routes,
+            legLimits: new uint256[](0),
+            stableRoute: "",
+            stableLimit: 0,
+            expectedNonce: 0,
+            expected: requests.requestHash(id),
+            minUsdcDelta: type(int256).min,
+            deadline: block.timestamp
+        });
+        vm.prank(keeper);
+        (int256 usdcDelta,) = local.fillMint(f);
+        assertEq(IHubIssue(index).balanceOf(requester), 1e18, "the requester holds the share it asked for");
+        assertGt(usdcDelta, 0, "the escrow paid for the basket");
+        assertLt(uint256(usdcDelta), escrow, "and the basket was bought, on the chain's own DEX");
+        for (uint256 i = 0; i < 2; ++i) {
+            assertEq(IERC20(coins[i]).balanceOf(address(local)), 0, "the executor keeps none of the basket");
+        }
+        assertEq(
+            IERC20(_usdc()).allowance(address(local), _localRouter()), 0, "nor does the local router keep an approval"
+        );
+    }
+
+    /// @dev The deepest local pool of `token` against the float, or through the wrapped gas coin, as {_route} picks.
+    function _localRoute(address token) internal view returns (bytes memory) {
+        (uint24 step, uint256 depth) = _deepestLocal(token, _usdc());
+        if (depth >= 1000 * unit || token == _hub()) {
+            require(depth > 0, "no local pool against the float");
+            return abi.encodePacked(token, step, _usdc());
+        }
+        (uint24 toHub, uint256 hubDepth) = _deepestLocal(token, _hub());
+        (uint24 hubToUsdc,) = _deepestLocal(_hub(), _usdc());
+        require(hubDepth > 0, "no local pool against the wrapped gas coin");
+        return abi.encodePacked(token, toHub, _hub(), hubToUsdc, _usdc());
+    }
+
+    function _deepestLocal(address token, address quote) internal view returns (uint24 best, uint256 depth) {
+        uint24[] memory steps = _localSteps();
+        for (uint256 i = 0; i < steps.length; ++i) {
+            address pool = _localPool(token, quote, steps[i]);
+            if (pool == address(0)) continue;
+            uint256 held = IERC20(quote).balanceOf(pool);
+            if (held > depth) (best, depth) = (steps[i], held);
         }
     }
 
@@ -273,6 +381,32 @@ contract KeeperExecutorBnbChainForkTest is ChainForkTest {
         coins = [B.WBNB, B.ETH];
         units = [uint256(5e15), uint256(1e15)];
     }
+
+    /// @dev PancakeSwap's SmartRouter, whose V3 calls are SwapRouter02's, its V3 factory and its QuoterV2.
+    function _localRouter() internal pure override returns (address) {
+        return 0x13f4EA83D0bd40E75C8222255bc855a974568Dd4;
+    }
+
+    function _localKind() internal pure override returns (KeeperExecutor.LocalKind) {
+        return KeeperExecutor.LocalKind.SwapRouter02;
+    }
+
+    function _localFactory() internal pure override returns (address) {
+        return 0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865;
+    }
+
+    function _localQuoter() internal pure override returns (address) {
+        return 0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997;
+    }
+
+    function _localPool(address a, address b, uint24 fee) internal view override returns (address) {
+        return IV3FactoryView(_localFactory()).getPool(a, b, fee);
+    }
+
+    function _localSteps() internal pure override returns (uint24[] memory steps) {
+        steps = new uint24[](4);
+        (steps[0], steps[1], steps[2], steps[3]) = (100, 500, 2500, 10_000);
+    }
 }
 
 /// @dev Base: a basket of WETH and cbBTC, bought with USDC, six decimals.
@@ -332,5 +466,32 @@ contract KeeperExecutorBaseForkTest is ChainForkTest {
     function _basket() internal pure override returns (address[2] memory coins, uint256[2] memory units) {
         coins = [C.WETH, C.CBBTC];
         units = [uint256(1e15), uint256(1e4)];
+    }
+
+    /// @dev Aero's concentrated-liquidity SwapRouter, its CL factory and its Metaquoter (Aero's deployment record,
+    ///      `cl-base.json`).
+    function _localRouter() internal pure override returns (address) {
+        return 0x9Ee35Bf1bd69a03c6F0393582030fCe8Bb93D418;
+    }
+
+    function _localKind() internal pure override returns (KeeperExecutor.LocalKind) {
+        return KeeperExecutor.LocalKind.Aero;
+    }
+
+    function _localFactory() internal pure override returns (address) {
+        return C.AERO_CL_FACTORY;
+    }
+
+    function _localQuoter() internal pure override returns (address) {
+        return 0x1dDfeC5058180C207F55BB77D95AcDd0d8227868;
+    }
+
+    function _localPool(address a, address b, uint24 spacing) internal view override returns (address) {
+        return IAeroFactoryView(_localFactory()).getPool(a, b, int24(spacing));
+    }
+
+    function _localSteps() internal pure override returns (uint24[] memory steps) {
+        steps = new uint24[](5);
+        (steps[0], steps[1], steps[2], steps[3], steps[4]) = (1, 50, 100, 200, 2000);
     }
 }

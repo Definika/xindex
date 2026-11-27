@@ -9,7 +9,7 @@ What the contracts do not protect against, and what an app built on them has to 
   executor chooses the price that 2% is counted at: it posts Pyth's update itself, so of the prices Pyth signed in
   the last fifteen seconds (`MAX_PRICE_AGE`), and newer than the one Pyth's contract stores, it posts the one that
   suits it, and can keep the 2% plus the most a coin moved within those seconds, as long as the units clear the bar
-  (HK-25; the window was a minute until 2026-11-27). Pyth's
+  (HK-25). Pyth's
   check can only refuse. If Pyth is stale or missing, no fill that moves the affected coins lands until it is back;
   if it is wrong or hostile, a fill is bounded by the units alone, as on a factory without an oracle, and the rest
   of this entry is that bound. The executor names
@@ -20,7 +20,7 @@ What the contracts do not protect against, and what an app built on them has to 
   an ordinary week, up to about 1.8% after a week in which a tenth of the index halved, 5.0% in one fill after one
   coin of two doubled, 8.7% after it tripled. It is what a fee-less constant-weight pool loses to arbitrage, and no
   fill can take more; on its weights an index has nothing to take
-  (`design/2026-11-10-oracle-free-rebalance.md`, sections 3 and 6). A fair price therefore needs a bidder, where a
+  (`docs/design/rebalance.md`, sections 3 and 6). A fair price therefore needs a bidder, where a
   price feed gave one whoever filled. The owner or guardian can cap it for a proposal by starting it with a quote
   (`startRebalance(keepMask, prices, tolerance)`): a lone executor then keeps at most the tolerance of what it
   trades, counted at the quote's prices, which are fixed at the start. If the market moves afterwards, a fill the
@@ -48,13 +48,14 @@ What the contracts do not protect against, and what an app built on them has to 
   ordinary week and about half the way after a quarter's drift. The next rebalance takes the rest.
 - **Wrapped legs rest on Wormhole.** They rest on the chain each copy comes from too. Wormhole runs delegated
   guardian sets: for BNB Chain, Kaia, NEAR, Sui, Arbitrum and Monad, five of seven named guardians suffice to mint, so
-  11 of the 15 listed copies and 13 of those queued rest on five keys, not 13 of 19; upgrading a copy's code still
-  takes a governance message (RX-6). A copy whose home chain shuts its bridge side redeems for nothing:
-  BTT's and SEI's copies left the list for that (RX-28, RX-32). Wormhole's guardians (13 of 19) can forge a bridge message, minting unbacked
+  a copy from one of those chains rests on five keys, not 13 of 19; upgrading a copy's code still
+  takes a governance message (RX-6). A copy whose home chain shuts its bridge side redeems for nothing, which keeps
+  BTT's and SEI's copies off the list (RX-28, RX-32). Wormhole's guardians (13 of 19) can forge a bridge message,
+  minting unbacked
   wrapped tokens or upgrading every wrapped token's code at once, with no timelock; that reaches the whole of every
   wrapped leg, and through a fill the bounded share of the rest described above. The wrapped copies have no DEX liquidity: redeem pays them, and turning them
   into the coin needs Wormhole live. The app shows every index's wrapped share of value before it is created and to
-  every holder (`design/2026-10-10-one-index-wormhole-legs.md`, section 3).
+  every holder (`docs/design/wormhole-legs.md`, section 3).
 - **A collapsing coin is still bought.** Fixed weights keep buying a coin whose price falls: an executor is paid to
   deliver it, at most doubling its units per fill (RX-15). Units beyond `uint96` stop a fill rather than wrap
   (RX-61). The guardian stops the buying by starting a rebalance with the coin kept (V5-L3). A two-component index
@@ -62,15 +63,19 @@ What the contracts do not protect against, and what an app built on them has to 
 - **An issuer's corporate action is not accounted for.** An index holds fixed units per share and pays out only those.
   If an issuer mints tokens to every holder, as a stock split paid in tokens would, the index's new tokens belong to no
   share; if it burns them, that leg falls below its backing. Ondo does neither: its token's balance never changes,
-  and each token tracks a multiplier of shares (`sValue`) that reinvested dividends raise and a split multiplies. No
-  contract prices an Ondo token, so nothing misprices it: executors price the token the market trades. The guardian
-  still keeps an affected leg out of any rebalance around a corporate action, which Ondo announces at least 24 hours
-  ahead (CF-3, `design/2026-10-18-pre-mainnet-readings.md`, section 2).
+  and each token tracks a multiplier of shares (`sValue`) that reinvested dividends raise and a split multiplies.
+  Pyth's check values such a token at its share's price times the sValue Ondo's `SyntheticSharesOracle` holds for it,
+  read at the fill, and only once settled: from the moment Ondo schedules a corporate action, at least 24 hours
+  ahead, until twenty minutes after its sValue lands, a fill that moves the leg and a creation that holds it wait
+  (`SValueUnavailable`), and so does any leg whose token Ondo's oracle on the chain does not hold. On Ethereum it
+  held 10 of the 353 listed tokens when last read, so the others cannot be created into an index or moved by a fill
+  there until Ondo registers them; BNB Chain's held 349. Exits read no price (CF-3,
+  `docs/design/ondo-svalue.md`).
 - **A Coinbase stock token is not one share.** On Base, one of Coinbase's stock tokens redeems for its
-  `multiplier()` shares, 1.0005 for NVDAc and 8 for SNDKc on 2026-11-22, which a dividend raises and a split
+  `multiplier()` shares (1.0005 for NVDAc and 8 for SNDKc when the list was read), which a dividend raises and a split
   multiplies while balances stay fixed: whoever values such a leg multiplies its feed by that multiplier, and a new
   index's units are named from it. Each is a precompile of Base that an EVM without Base's precompiles cannot execute,
-  so its evidence is a simulation run by Base's node, not a local fork test (`design/2026-11-22-coinbase-on-base.md`).
+  so its evidence is a simulation run by Base's node, not a local fork test (`docs/design/coinbase-on-base.md`).
 - **Rebalances clear only when the distance pays for the fill.** An executor fills when the index's distance from its
   weights covers its gas and its swaps, so small indexes on mainnet rarely rebalance, and a
   fresh index cannot rebalance until its own interval, 7 to 91 days, has passed since its creation. An unfilled auction expires, and for `REBALANCE_DELAY`
@@ -105,8 +110,8 @@ What the contracts do not protect against, and what an app built on them has to 
   keep-mask auction the outgoing guardian left pending, `REBALANCE_DELAY` + `AUCTION_DURATION` more (RX-44); the owner and
   the new guardian can start a keep-mask rebalance then too. A quote stalls the same way: one that refuses
   every trade worth making still lets a gift through, and a fill without a keep mask restarts the index's whole
-  interval, up to 91 days, for strangers. The owner and the guardian may start again a week after any fill
-  (since 2026-11-23), so that hold too outlasts the guardian's replacement by a week at most (RW-3). The same rule
+  interval, up to 91 days, for strangers. The owner and the guardian may start again a week after any fill,
+  so that hold too outlasts the guardian's replacement by a week at most (RW-3). The same rule
   gives a hostile guardian a window of its own, from a week after a fill to the end of the index's interval, in
   which it can start and settle a sliver every week and keep strangers from ever starting; the owner can start in
   that window too, and ends it for good by replacing the guardian.
@@ -121,7 +126,7 @@ What the contracts do not protect against, and what an app built on them has to 
   token by an issuer redemption paid only to KYC'd redeemers, on at least 30 business days' notice: holders still in at
   the date lose that leg, so the app tells them to exit first (RX-29). Tether Gold and Ondo's stocks can blacklist a holder, an index included, and destroy
   its balance, and the admins of H, PLUME, SNX and SYRUP can burn or move any holder's balance without a blacklist
-  (`design/2026-10-18-token-source-reading.md`); the app names them. A paused component makes `redeem`, the zap and any fill that moves it revert; `redeemSkipping`, `claim`
+  (`docs/design/token-source-reading.md`); the app names them. A paused component makes `redeem`, the zap and any fill that moves it revert; `redeemSkipping`, `claim`
   and the guardian's keep mask are the recourse, and a permanently frozen component needs the keep mask at every
   rebalance. A destroyed balance is lost to the index's holders, and the loss is not shared out: the index pays
   amounts, never a share of a balance, so redeems and claims on that leg are paid in full, first come, first served,
@@ -129,7 +134,7 @@ What the contracts do not protect against, and what an app built on them has to 
   recorded before the burn: an ordinary redeem takes from the same coins (CA-M3). A holder whose claim is larger than
   what is left collects that with `claim(token, to, amount)` and keeps the rest recorded, where the whole claim could
   only revert (CA-S01). Issue tests that the index can still send each leg it
-  pulls, as a fill does (RX-12), since 2026-11-14 (RW-8; RZ-25 had left the check to the app): a deposit into a leg a
+  pulls, as a fill does (RX-12, RW-8): a deposit into a leg a
   sender-blocking blacklist has already frozen for the index reverts `CannotSendOut`, for a direct caller too, at
   about 4,600 gas a leg. A freeze that comes after a deposit still holds it until the issuer lifts it.
 - **A request's surplus goes to the fastest filler.** A fill delivers what the filler sends and at least the
@@ -200,15 +205,17 @@ What the contracts do not protect against, and what an app built on them has to 
   the Universal Router with exactly a leg's cap and sweeps it back within the same `execute`; the pre-fund is the bound
   (CR-I14, RT-11). Mint and burn currencies are the user's choice, so the app should offer only USDC and USDT.
 - **Zap gas grows with components and hops, and nothing on chain bounds it.** See the Gas note in [integration.md](integration.md): about 35 components is
-  the zap's practical limit. The in-kind path is what fits at 100.
+  the zap's practical limit. The in-kind path is what fits at 200, `MAX_COMPONENTS`.
 - The zap is pinned to **Universal Router 2.0.0** rather than the 2.1.x line, whose command inputs carry an extra
   per-hop price array. Moving to a newer router means a new zap; the hub and factory do not depend on it.
-- **The chain's own DEX adds its operators** (since 2026-11-26). On BNB Chain PancakeSwap's Safe, 3 of 7, can pause its
+- **The chain's own DEX adds its operators**. On BNB Chain PancakeSwap's Safe, 3 of 7, can pause its
   Infinity Universal Router, and its V3 factory's owner sets the farm contracts (`LMPool`) its pools call on every
   swap; on Base Aero's Safe, 3 signatures, sets its pools' dynamic-fee and MEV-tax modules and can pause its basic
   pools, and an Aero trade whose priority fee passes a threshold pays an MEV tax. Each can make that venue's legs
   revert or cost more, within the limits the caller set; none can take a leg's pre-fund, which the router returns in
   the same call. A leg can always name Uniswap instead. The zap and the builder pin each router by address, and the
-  fork suites pin their code.
+  fork suites pin their code. The keeper's executor reaches the same DEXes, through PancakeSwap's
+  SmartRouter and Aero's concentrated-liquidity SwapRouter, approving the local router only for each purchase's bound
+  and nothing after it (`docs/design/keeper-chain-venues.md`).
 - Bytecode targets the Cancun EVM (`evm_version = "cancun"`), which Ethereum runs. Re-check before deploying to any
   other chain.

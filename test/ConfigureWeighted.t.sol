@@ -34,7 +34,8 @@ contract ConfigureWeightedTest is Test {
 
     function setUp() public {
         configure = new ConfigureWeighted();
-        factory = new WeightedIndexFactory(DEFAULT_SENDER, guardian, address(0), address(new WeightedMath()));
+        factory =
+            new WeightedIndexFactory(DEFAULT_SENDER, guardian, address(0), address(new WeightedMath()), address(0));
         a = new MockERC20("Alpha", "A", 18);
         b = new MockERC20("Beta", "B", 8);
     }
@@ -66,7 +67,7 @@ contract ConfigureWeightedTest is Test {
         assertEq(
             tokens.length,
             414,
-            "the list of 2026-10-06 and 2026-10-10's additions, less DOGE, SAND, RLB, BTT, SEI, BNB Chain's six, the five no restock has served, OP and AERO, the 335 Ondo stocks and ETFs of 2026-11-19 and ANTon"
+            "the first list and its additions, less DOGE, SAND, RLB, BTT, SEI, BNB Chain's six, the five no restock has served, OP and AERO, and Ondo's 353 stocks and ETFs"
         );
         for (uint256 i = 0; i < tokens.length; ++i) {
             assertEq(i < 4 ? first[i] : wide[i - 4], tokens[i]);
@@ -76,7 +77,7 @@ contract ConfigureWeightedTest is Test {
 
     /// @dev The router is pinned here too, written out independently of the address book like the table below, since
     ///      every swap of the zap and the builder goes through it and no test reaching only the address book would
-    ///      catch a wrong one (RX-33). Pyth's address, pinned beside it until 2026-11-10, went with the oracle.
+    ///      catch a wrong one (RX-33). Pyth's address is pinned in the deploy checks.
     function test_RX33_theRouterIsPinnedIndependently() public pure {
         assertEq(
             MainnetAddresses.UNIVERSAL_ROUTER, 0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af, "Universal Router 2.0.0"
@@ -122,14 +123,14 @@ contract ConfigureWeightedTest is Test {
         );
         assertEq(uint8(Listings.tierOf(MainnetAddresses.W)), uint8(Listings.Tier.Bridged), "a mesh peer, home Solana");
         assertEq(uint8(Listings.tierOf(MainnetAddresses.AVAX)), uint8(Listings.Tier.Bridged), "a Wormhole copy");
-        // Wormhole's copy of OP, off since 2026-11-21: the restock found no route to buy it on Optimism
+        // Wormhole's copy of OP, off: the restock found no route to buy it on Optimism
         assertEq(uint8(Listings.tierOf(MainnetAddresses.OP)), uint8(Listings.Tier.Unrecorded), "OP is off the list");
-        // Wormhole's copy of Aerodrome's AERO, off since 2026-11-26: Aero replaced the token it redeems to
+        // Wormhole's copy of Aerodrome's AERO, off: Aero replaced the token it redeems to
         assertEq(uint8(Listings.tierOf(MainnetAddresses.AERO)), uint8(Listings.Tier.Unrecorded), "AERO is off the list");
         for (uint256 j = 0; j < tokens.length; ++j) {
             assertTrue(tokens[j] != MainnetAddresses.OP, "OP's copy is listed");
         }
-        // Wormhole's copies of the five coins with no Ethereum pool and no restock that has run, off since 2026-11-18
+        // Wormhole's copies of the five coins with no Ethereum pool and no restock that has run, off
         address[5] memory unserved = [
             0x8687a10BCa6F139B25eb31020FCABB5782214764, // JUP
             0xeFc0CED4B3D536103e76a1c4c74F0385C8F4Bdd3, // PYTH
@@ -143,7 +144,7 @@ contract ConfigureWeightedTest is Test {
                 assertTrue(tokens[j] != unserved[i], "a copy no restock serves is listed");
             }
         }
-        // Wormhole's copies of the six coins BNB Chain's deployment holds in kind, off the list since 2026-11-13
+        // Wormhole's copies of the six coins BNB Chain's deployment holds in kind, off the list
         address[6] memory onBnbChain = [
             0xc730d8256B8A1030eEA67f1Bc7ebed3898f7A535, // XRP
             0x8EfFbF747d4A60Bc6b68D9A1bE4c4188bA8A3a0b, // ADA
@@ -161,27 +162,27 @@ contract ConfigureWeightedTest is Test {
         assertEq(
             uint8(Listings.tierOf(0xd881A7F17Ed2c71FD671AfbA3A9b30Eb914Aea5F)),
             uint8(Listings.Tier.Unrecorded),
-            "DOGE's copy, off the list since 2026-10-14"
+            "DOGE's copy, off the list"
         );
         assertEq(
             uint8(Listings.tierOf(0x3845badAde8e6dFF049820680d1F14bD3903a5d0)),
             uint8(Listings.Tier.Unrecorded),
-            "SAND, off the list since 2026-10-18"
+            "SAND, off the list"
         );
         assertEq(
             uint8(Listings.tierOf(0xC669928185DbCE49d2230CC9B0979BE6DC797957)),
             uint8(Listings.Tier.Unrecorded),
-            "BTT, off the list since 2026-10-19 (RX-28)"
+            "BTT, off the list (RX-28)"
         );
         assertEq(
             uint8(Listings.tierOf(0xf91e605af079384cc7077B3914A4a36019a89EE8)),
             uint8(Listings.Tier.Unrecorded),
-            "SEI's copy, off the list since 2026-10-19 (RX-32)"
+            "SEI's copy, off the list (RX-32)"
         );
         assertEq(
             uint8(Listings.tierOf(0x046EeE2cc3188071C02BfC1745A6b17c656e3f3d)),
             uint8(Listings.Tier.Unrecorded),
-            "RLB, off the list since 2026-10-18"
+            "RLB, off the list"
         );
         assertEq(uint8(Listings.tierOf(MainnetAddresses.VON)), uint8(Listings.Tier.Custodial));
         assertEq(uint8(Listings.tierOf(MainnetAddresses.USDC)), uint8(Listings.Tier.Unrecorded));
@@ -648,7 +649,7 @@ contract ConfigureWeightedTest is Test {
         assertEq(
             list.length,
             366,
-            "the BNB Chain list of 2026-10-07, less SOL, DOGE, AVAX, FIL and TRX, the 352 Ondo stocks and ETFs of 2026-11-19, ANTon and CAKE"
+            "BNB Chain's first list, less SOL, DOGE, AVAX, FIL and TRX, Ondo's 353 stocks and ETFs, and CAKE"
         );
         assertEq(list, tokens);
         uint256[4] memory count;
@@ -1203,7 +1204,7 @@ contract ConfigureWeightedTest is Test {
 
     function test_XA18_LR07_proposeNeedsAnOwnerThatSigns() public {
         WeightedIndexFactory owned =
-            new WeightedIndexFactory(address(configure), guardian, address(0), address(new WeightedMath()));
+            new WeightedIndexFactory(address(configure), guardian, address(0), address(new WeightedMath()), address(0));
         address[] memory list = _list();
         address[] memory none = _none();
         vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.OwnerIsContract.selector, address(configure)));
@@ -1250,7 +1251,7 @@ contract ConfigureWeightedTest is Test {
     function test_FR05_executeWorksFromAnyAccountAndNeverReproposesACancelledListing() public {
         address someoneElse = makeAddr("someone else"); // the broadcaster is neither owner nor guardian
         WeightedIndexFactory other =
-            new WeightedIndexFactory(someoneElse, guardian, address(0), address(new WeightedMath()));
+            new WeightedIndexFactory(someoneElse, guardian, address(0), address(new WeightedMath()), address(0));
         address[] memory list = _list();
         vm.startPrank(someoneElse);
         other.proposeListing(list[0]);
@@ -1460,7 +1461,7 @@ contract ConfigureWeightedTest is Test {
         address[] memory list = configure.baseList();
         address[32] memory tokens = [
             0x4200000000000000000000000000000000000006, // WETH
-            0x3f5bF3EdAc59d650D8fDf9657a71F2f904A3a4Ee, // AERO, Aero's since 2026-11-26
+            0x3f5bF3EdAc59d650D8fDf9657a71F2f904A3a4Ee, // AERO, Aero's
             0x6985884C4392D348587B19cb9eAAf157F13271cd, // ZRO
             0xc3De830EA07524a0761646a6a4e4be0e114a3C83, // UNI
             0x63706e401c06ac8513145b7687A14804d17f814b, // AAVE
@@ -1609,6 +1610,21 @@ contract ConfigureWeightedTest is Test {
         );
         assertEq(uint8(PriceFeeds.feedOf(1, address(0xbeef)).kind), uint8(IPythPrices.FeedKind.None));
         assertEq(uint8(PriceFeeds.feedOf(11_155_111, MainnetAddresses.WETH).kind), uint8(IPythPrices.FeedKind.None));
+        // Ondo's 344 tokens priced at their share's feed are worth their sValue of shares, on both chains; the nine at
+        // their token's own feed, and every coin, at their own price (the keeper's suite pins which, id by id).
+        assertEq(_countKind(1, IPythPrices.FeedKind.SharesOracle), 344);
+        assertEq(_countKind(BnbChainAddresses.CHAIN_ID, IPythPrices.FeedKind.SharesOracle), 344);
+        assertEq(_countKind(BaseAddresses.CHAIN_ID, IPythPrices.FeedKind.SharesOracle), 0);
+        assertEq(uint8(PriceFeeds.feedOf(1, MainnetAddresses.NFLXON).kind), uint8(IPythPrices.FeedKind.SharesOracle));
+        assertEq(uint8(PriceFeeds.feedOf(1, MainnetAddresses.NVDAON).kind), uint8(IPythPrices.FeedKind.Token));
+    }
+
+    /// @dev How many of chain `chainId`'s feeds are of `kind`.
+    function _countKind(uint256 chainId, IPythPrices.FeedKind kind) internal pure returns (uint256 count) {
+        (, IPythPrices.PriceFeed[] memory feeds) = PriceFeeds.table(chainId);
+        for (uint256 i = 0; i < feeds.length; ++i) {
+            if (feeds[i].kind == kind) ++count;
+        }
     }
 
     /// @dev Every token of `list` has a feed on `chainId`, none zero, `vaults` of them vaults.
@@ -1631,7 +1647,7 @@ contract ConfigureWeightedTest is Test {
         vm.chainId(BaseAddresses.CHAIN_ID);
         MockPyth pyth = new MockPyth();
         WeightedIndexFactory priced =
-            new WeightedIndexFactory(DEFAULT_SENDER, guardian, address(pyth), address(new WeightedMath()));
+            new WeightedIndexFactory(DEFAULT_SENDER, guardian, address(pyth), address(new WeightedMath()), address(0));
         address[] memory list = new address[](2);
         (list[0], list[1]) = (BaseAddresses.CBBTC, BaseAddresses.NVDAC);
         for (uint256 i = 0; i < list.length; ++i) {
