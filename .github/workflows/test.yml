@@ -100,7 +100,7 @@ jobs:
       - name: Check the committed ABIs are current
         run: |
           set -euo pipefail
-          for contract in IndexZap BasketBuilder MintRequests WeightedIndexFactory WeightedHub; do
+          for contract in IndexZap BasketBuilder MintRequests WeightedIndexFactory WeightedHub PythPrices; do
             forge inspect "$contract" abi --json > "abi/$contract.json"
           done
           git diff --exit-code abi/
@@ -119,12 +119,13 @@ jobs:
             exit 1
           fi
 
-      # BNB_RPC_URL runs the BNB Chain fork suite too; without that secret the suite skips.
+      # BNB_RPC_URL runs the BNB Chain fork suite too, and BASE_RPC_URL Base's; without its secret a suite skips.
       - name: Run Forge tests
         run: forge test -vvv
         env:
           MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}
           BNB_RPC_URL: ${{ secrets.BNB_RPC_URL }}
+          BASE_RPC_URL: ${{ secrets.BASE_RPC_URL }}
 
       # The keeper (keeper/) is a Foundry project of its own and holds no role in the protocol; its executor gets the
       # same gates as the repo's contracts, a compiler warning failing its build too (A7-17) and its fork test on
@@ -145,7 +146,8 @@ jobs:
         run: node --test keeper/test/unit/*.test.mjs
 
       # Offline suites only; the fork helpers are covered by them. Every file row must show hit == total for lines,
-      # statements, branches and functions, and an empty summary fails.
+      # statements, branches and functions, and an empty summary fails. So does a row that does not carry all four
+      # counts: with fewer there was less to compare, and a row cut short passed (CA-L11).
       - name: Require 100% coverage on every file
         run: |
           set -euo pipefail
@@ -154,16 +156,22 @@ jobs:
           import re
           import sys
 
-          rows, short = 0, []
+          rows, short, cut = 0, [], []
           for line in open("coverage.txt"):
               cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
               if not re.match(r"^(src|script|test)/", cells[0]):
                   continue
               rows += 1
-              if any(hit != total for hit, total in re.findall(r"\((\d+)/(\d+)\)", line)):
+              counts = re.findall(r"\((\d+)/(\d+)\)", line)
+              if len(counts) != 4:
+                  cut.append(cells[0])
+              elif any(hit != total for hit, total in counts):
                   short.append(cells[0])
           if rows == 0:
               print("::error::the coverage summary lists no files")
+              sys.exit(1)
+          if cut:
+              print("::error::the coverage summary lacks one of the four counts for " + ", ".join(cut))
               sys.exit(1)
           if short:
               print("::error::coverage is below 100% in " + ", ".join(short))
@@ -171,7 +179,7 @@ jobs:
           print(f"100% coverage on all {rows} files")
           EOF
 
-  # Wake runs in a job of its own (CF-6, audit of 2026-10-13). Installing eth-wake with pipx resolves its dependencies
+  # Wake runs in a job of its own (CF-6). Installing eth-wake with pipx resolves its dependencies
   # from PyPI at run time, and the check job saves Foundry's RPC cache (~/.foundry/cache/rpc, foundry-toolchain's
   # default) for later runs, whose fork suites read cached chain state instead of fetching it. In one job, a
   # compromised dependency could have planted state those suites would trust; here it reaches no cache, no secret
@@ -209,7 +217,7 @@ jobs:
           fi
           wake detect all src
 
-  # The mutation gate (step 4 of the logic-hardening plan, 2026-10-31): every mutant of test/mutants/mutants.json is
+  # The mutation gate (step 4 of the logic-hardening plan): every mutant of test/mutants/mutants.json is
   # applied in turn and the suite it names must fail. It runs in a job of its own, with no secret and no shared cache,
   # since it rewrites src/ while it runs. A mutant whose code has changed fails as stale: update its edit with the code.
   mutants:

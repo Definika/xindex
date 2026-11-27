@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
+import {WeightedMath} from "../src/WeightedMath.sol";
 import {Test} from "forge-std/Test.sol";
 import {WeightedIndexFactory} from "../src/WeightedIndexFactory.sol";
 import {WeightedHub} from "../src/WeightedHub.sol";
@@ -252,7 +253,8 @@ contract MintRequestsInvariantTest is Test {
     address owner = makeAddr("owner");
 
     function setUp() public {
-        factory = new WeightedIndexFactory(owner, makeAddr("guardian"));
+        factory =
+            new WeightedIndexFactory(owner, makeAddr("guardian"), address(0), address(new WeightedMath()), address(0));
         address[] memory components = new address[](2);
         vm.startPrank(owner);
         factory.setApprovedCreator(address(this), true);
@@ -300,6 +302,8 @@ contract MintRequestsInvariantTest is Test {
                 handler.openEscrow(tokens[i]) + handler.donated(tokens[i]),
                 "the balance drifted from the open escrows"
             );
+            // What a new request's deposit is measured against (CA-H2).
+            assertEq(requests.totalEscrow(tokens[i]), handler.openEscrow(tokens[i]), "the total is not the escrows");
         }
     }
 

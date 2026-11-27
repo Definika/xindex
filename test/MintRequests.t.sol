@@ -641,6 +641,131 @@ contract MintRequestsTest is XindexTest {
     }
 
     // ---------------------------------------------------------------------
+    // the escrows' total, and a request bound to its basket (the consolidated audit, CA)
+    // ---------------------------------------------------------------------
+
+    /// @dev CA-H2: every escrow of a token sits in one balance, and nothing compared that balance with what the open
+    ///      requests escrowed. After Tether destroyed the contract's USDT and lifted its blacklist, a newcomer's
+    ///      deposit passed every check and paid the refund of an earlier request, whose own escrow was gone. A request
+    ///      is now taken only while the balance covers the open escrows: not one unit short, and again once it is
+    ///      whole. The other stablecoin and the shares are other balances, and still take requests.
+    function test_CAH2_noRequestIsTakenIntoAnUncoveredEscrow() public {
+        uint256 first = _requestMint(address(usdt), 300e6, 1e18);
+        usdt.addBlackList(address(requests));
+        usdt.destroyBlackFunds(address(requests));
+        usdt.removeBlackList(address(requests));
+        assertEq(usdt.balanceOf(address(requests)), 0, "the issuer took the escrow");
+        assertEq(requests.totalEscrow(address(usdt)), 300e6, "which the request still records");
+
+        _fund(stranger, address(usdt), 300e6);
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Underbacked.selector, address(usdt), 0, 300e6));
+        requests.requestMint(address(index), address(usdt), 300e6, 1e18, block.timestamp + DAY);
+        assertEq(usdt.balanceOf(stranger), 300e6, "the newcomer keeps its coins");
+
+        _requestMint(address(usdc), 300e6, 1e18);
+        _requestRedeem(1e18, address(usdt), 250e6);
+
+        usdt.mint(address(requests), 300e6 - 1);
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Underbacked.selector, address(usdt), 300e6 - 1, 300e6));
+        requests.requestMint(address(index), address(usdt), 300e6, 1e18, block.timestamp + DAY);
+
+        usdt.mint(address(requests), 1);
+        vm.prank(stranger);
+        uint256 second = requests.requestMint(address(index), address(usdt), 300e6, 1e18, block.timestamp + DAY);
+        vm.prank(alice);
+        requests.cancel(first);
+        vm.prank(stranger);
+        requests.cancel(second);
+        assertEq(usdt.balanceOf(alice), 300e6, "made whole, the first request is refunded from its own escrow");
+        assertEq(usdt.balanceOf(stranger), 300e6, "and the newcomer from its own");
+        assertEq(requests.totalEscrow(address(usdt)), 0);
+    }
+
+    /// @dev CA-H2: the total is the open escrows and nothing else. It rises by what arrived, the net under a fee, and
+    ///      falls by exactly the request's escrow at a fill, a cancel and a refund, for the stablecoin of a mint
+    ///      request and for the shares of a redeem request. A donation is in the balance and not in the total.
+    function test_CAH2_theTotalIsTheOpenEscrows() public {
+        usdt.setParams(10, 5);
+        usdt.mint(address(requests), 7e6);
+        uint256 filled = _requestMint(address(usdt), 1_000e6, 1e18);
+        uint256 cancelled = _requestMint(address(usdt), 2_000e6, 1e18);
+        uint256 paid = _requestRedeem(2e18, address(usdc), 500e6);
+        uint256 refunded = _requestRedeem(1e18, address(usdc), 250e6);
+        assertEq(requests.totalEscrow(address(usdt)), 999e6 + 1_998e6, "what arrived after the fee");
+        assertEq(requests.totalEscrow(address(index)), 3e18);
+        assertEq(requests.totalEscrow(address(usdc)), 0, "a redeem request escrows no stablecoin");
+
+        vm.startPrank(minter);
+        index.approve(address(requests), 1e18);
+        requests.fill(filled, 1e18);
+        vm.stopPrank();
+        assertEq(requests.totalEscrow(address(usdt)), 1_998e6, "a fill takes its request's escrow off");
+        vm.prank(alice);
+        requests.cancel(cancelled);
+        assertEq(requests.totalEscrow(address(usdt)), 0, "and so does a cancel");
+        assertEq(usdt.balanceOf(address(requests)), 7e6, "leaving the donation, which was never in it");
+
+        _fund(minter, address(usdc), 500e6);
+        vm.prank(minter);
+        requests.fill(paid, 500e6);
+        assertEq(requests.totalEscrow(address(index)), 1e18, "the shares of a filled redeem request");
+        vm.warp(block.timestamp + DAY + 1);
+        requests.refund(refunded);
+        assertEq(requests.totalEscrow(address(index)), 0, "and of a refunded one");
+        assertEq(index.balanceOf(address(requests)), 0);
+    }
+
+    /// @dev CA-M1: a request records the nonce the index reads when its transaction lands, which need not be the one
+    ///      its requester set the limit at. A settlement in between opened the request on the new basket at the old
+    ///      limit, and the fill's own check, which reads the recorded nonce, let it fill. The bound overloads name the
+    ///      nonce the limit was set at: after a settlement they are refused before anything is escrowed, and at that
+    ///      nonce they open the request the unbound ones do.
+    function test_CAM1_aBoundRequestIsRefusedAfterASettlement() public {
+        uint256 quoted = index.rebalanceNonce();
+        _settleRebalance();
+        _fund(alice, address(usdc), 300e6);
+        vm.prank(minter);
+        index.transfer(alice, 1e18);
+        uint256 deadline = block.timestamp + DAY;
+        bytes memory stale = abi.encodeWithSelector(IXindexErrors.StaleRebalanceNonce.selector, quoted, quoted + 1);
+
+        vm.startPrank(alice);
+        index.approve(address(requests), 1e18);
+        vm.expectRevert(stale);
+        requests.requestMint(address(index), address(usdc), 300e6, 1e18, deadline, quoted);
+        vm.expectRevert(stale);
+        requests.requestRedeem(address(index), 1e18, address(usdc), 250e6, deadline, quoted);
+        assertEq(requests.requestCount(), 0, "neither opened");
+        assertEq(_balance(address(usdc), alice), 300e6, "and nothing was escrowed");
+        assertEq(index.balanceOf(alice), 1e18);
+
+        uint256 mintId = requests.requestMint(address(index), address(usdc), 300e6, 1e18, deadline, quoted + 1);
+        uint256 redeemId = requests.requestRedeem(address(index), 1e18, address(usdc), 250e6, deadline, quoted + 1);
+        vm.stopPrank();
+        IMintRequests.Request memory mint = requests.getRequest(mintId);
+        IMintRequests.Request memory redeem = requests.getRequest(redeemId);
+        assertTrue(mint.open && mint.isMint, "the mint request opened");
+        assertEq(mint.escrow, 300e6);
+        assertEq(mint.rebalanceNonce, quoted + 1, "on the basket its limit was set for");
+        assertTrue(redeem.open && !redeem.isMint, "and the redeem request");
+        assertEq(redeem.escrow, 1e18);
+        assertEq(redeem.rebalanceNonce, quoted + 1);
+    }
+
+    /// @dev CA-M1: a bound request checks its arguments before it asks the index for its nonce, so an address the
+    ///      factory did not deploy is refused by name, as in the unbound one, and never called.
+    function test_CAM1_aBoundRequestChecksItsArgumentsFirst() public {
+        address notIndex = makeAddr("notIndex");
+        uint256 deadline = block.timestamp + DAY;
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotIndex.selector, notIndex));
+        requests.requestMint(notIndex, address(usdc), 300e6, 1e18, deadline, 0);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotIndex.selector, notIndex));
+        requests.requestRedeem(notIndex, 1e18, address(usdc), 250e6, deadline, 0);
+    }
+
+    // ---------------------------------------------------------------------
     // reentrancy
     // ---------------------------------------------------------------------
 
@@ -717,5 +842,62 @@ contract MintRequestsTest is XindexTest {
         assertEq(hooked.requestHash(other), otherPriced, "the redeem request is as it was, still open");
         assertEq(index.balanceOf(address(hooked)), 1e18, "with its shares in escrow");
         assertEq(index.balanceOf(alice), 2e18, "and each fill delivered its share to the requester");
+    }
+
+    /// @dev CA-M1: each bound request is an entry point of its own, which no test above re-enters. A filler paid by a
+    ///      fill tries to open one from inside the payment and is refused by the guard, the mint and the redeem
+    ///      alike. The mint it tries would have gone through without the guard: the filler holds the payment by then
+    ///      and has approved it.
+    function test_CAM1_theBoundRequestsShareTheGuard() public {
+        MockHookToken hook = new MockHookToken();
+        MintRequests hooked = new MintRequests(address(factory), address(hook), address(usdt));
+        ReentrantFiller intoMint = new ReentrantFiller(hooked);
+        ReentrantFiller intoRedeem = new ReentrantFiller(hooked);
+        bytes memory refused = abi.encodeWithSelector(ReentrancyGuard.ReentrancyGuardReentrantCall.selector);
+        uint256 deadline = block.timestamp + DAY;
+
+        hook.mint(alice, 200e18);
+        vm.startPrank(minter);
+        index.transfer(address(intoMint), 1e18);
+        index.transfer(address(intoRedeem), 2e18);
+        vm.stopPrank();
+        vm.startPrank(alice);
+        hook.approve(address(hooked), 200e18);
+        uint256 first = hooked.requestMint(address(index), address(hook), 100e18, 1e18, deadline);
+        uint256 second = hooked.requestMint(address(index), address(hook), 100e18, 1e18, deadline);
+        vm.stopPrank();
+        vm.prank(address(intoMint));
+        hook.approve(address(hooked), 100e18);
+
+        intoMint.setReentry(
+            abi.encodeWithSignature(
+                "requestMint(address,address,uint256,uint256,uint256,uint256)",
+                address(index),
+                address(hook),
+                100e18,
+                1e18,
+                deadline,
+                0
+            )
+        );
+        intoMint.fill(first, 1e18, address(index));
+        assertFalse(intoMint.reentered(), "no bound mint request opened from inside a fill");
+        assertEq(intoMint.reentryError(), refused, "the guard refused it");
+
+        intoRedeem.setReentry(
+            abi.encodeWithSignature(
+                "requestRedeem(address,uint256,address,uint256,uint256,uint256)",
+                address(index),
+                1e18,
+                address(hook),
+                100e18,
+                deadline,
+                0
+            )
+        );
+        intoRedeem.fill(second, 1e18, address(index));
+        assertFalse(intoRedeem.reentered(), "nor a bound redeem request");
+        assertEq(intoRedeem.reentryError(), refused, "the guard refused it");
+        assertEq(hooked.requestCount(), 2, "the two requests alice made are all there is");
     }
 }

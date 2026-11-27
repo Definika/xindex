@@ -11,7 +11,8 @@ import {IXindexErrors} from "./interfaces/IXindexErrors.sol";
 /// @notice The settlement arithmetic of `WeightedHub`, in its own contract so the hub fits the EIP-170 size limit.
 ///         See {IWeightedMath}. The settlement vectors replay it against an exact model
 ///         (`test/WeightedMath.vectors.t.sol`), and `test_theMathConstantsAreTheHubs` pins its constants to the hub's.
-/// @dev Pure: nothing here reads storage or calls anything, and nothing here is a price.
+/// @dev Pure: nothing here reads storage or calls anything. The gain is units alone; the two value checks take the
+///      prices they are given, the quote's and Pyth's, and can only refuse a fill the gain accepted.
 ///      - The executor names the new units. This contract only checks them: each leg inside its unit caps, and the
 ///        weighted gain at or above the auction's bar.
 ///      - {_backing} is the hub's `_backing` formula. So the settlement moves each leg's change in backing exactly as
@@ -32,6 +33,8 @@ contract WeightedMath is IWeightedMath {
     uint256 public constant BAR_HALF_LIFE = 12 minutes;
     /// @inheritdoc IWeightedMath
     uint256 public constant AUCTION_DURATION = 4 hours;
+    /// @inheritdoc IWeightedMath
+    uint256 public constant MAX_ORACLE_TOLERANCE = 0.02e18;
 
     uint256 private constant WAD = 1e18;
     uint256 private constant SHARE_UNIT = 1e18;
@@ -64,16 +67,45 @@ contract WeightedMath is IWeightedMath {
     }
 
     /// @inheritdoc IWeightedMath
-    /// @dev Exact: the two sums are integers, and the floor is the value out less the tolerance, rounded up, so the
-    ///      rounding goes against the executor.
     function quoteCheck(
         uint256[] memory currentUnits,
         uint256[] memory newUnits,
         uint256[] memory prices,
         uint256 tolerance
     ) external pure {
+        (uint256 valueIn, uint256 floor) = _valueFloor(currentUnits, newUnits, prices, tolerance);
+        if (valueIn < floor) revert IWeightedHub.BelowQuote(valueIn, floor);
+    }
+
+    /// @inheritdoc IWeightedMath
+    function oracleCheck(
+        uint256[] memory currentUnits,
+        uint256[] memory newUnits,
+        uint256[] memory values,
+        uint256 elapsed
+    ) external pure {
+        (uint256 valueIn, uint256 floor) = _valueFloor(currentUnits, newUnits, values, oracleToleranceAt(elapsed));
+        if (valueIn < floor) revert IWeightedHub.BelowOracleValue(valueIn, floor);
+    }
+
+    /// @inheritdoc IWeightedMath
+    function oracleToleranceAt(uint256 elapsed) public pure returns (uint256) {
+        if (elapsed > AUCTION_DURATION) revert IWeightedHub.AuctionOver(elapsed);
+        // Rounded down, against the executor.
+        return MAX_ORACLE_TOLERANCE * elapsed / AUCTION_DURATION;
+    }
+
+    /// @dev What the units a fill adds are worth at `prices`, and the least they may be worth: what the units it takes
+    ///      are worth, less `tolerance`. Exact: the two sums are integers, and the floor is rounded up, so the rounding
+    ///      goes against the executor. A leg whose units do not change counts for nothing, whatever its price.
+    function _valueFloor(
+        uint256[] memory currentUnits,
+        uint256[] memory newUnits,
+        uint256[] memory prices,
+        uint256 tolerance
+    ) private pure returns (uint256 valueIn, uint256 floor) {
+        valueIn = 0;
         uint256 valueOut = 0;
-        uint256 valueIn = 0;
         uint256 n = currentUnits.length;
         for (uint256 i = 0; i < n; ++i) {
             uint256 current = currentUnits[i];
@@ -81,8 +113,7 @@ contract WeightedMath is IWeightedMath {
             if (next < current) valueOut += prices[i] * (current - next);
             else if (next > current) valueIn += prices[i] * (next - current);
         }
-        uint256 floor = Math.mulDiv(valueOut, WAD - tolerance, WAD, Math.Rounding.Ceil);
-        if (valueIn < floor) revert IWeightedHub.BelowQuote(valueIn, floor);
+        floor = Math.mulDiv(valueOut, WAD - tolerance, WAD, Math.Rounding.Ceil);
     }
 
     /// @inheritdoc IWeightedMath
@@ -119,7 +150,7 @@ contract WeightedMath is IWeightedMath {
             }
             if (next < lowest || next > highest) revert IWeightedHub.LegOutOfBounds(i, next, lowest, highest);
             if (next > type(uint96).max) revert SafeCast.SafeCastOverflowedUintDowncast(96, next);
-            // A weight is at most 1e4 and a score below 1e18 in size, so a hundred products fit with room to spare.
+            // A weight is at most 1e4 and a score below 1e18 in size, so an index's products fit with room to spare.
             // forge-lint: disable-next-line(unsafe-typecast)
             total += int256(weights[i]) * _score(_change(current, next));
         }

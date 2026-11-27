@@ -1,11 +1,12 @@
-// The units a fill names. Since 2026-11-10 no contract reads a price: `executeRebalance(newUnits, data)` settles at
+// The units a fill names. No contract reads a price to settle a rebalance: `executeRebalance(newUnits, data)` settles at
 // the units its caller names, and `WeightedMath` accepts them when every leg is inside its unit caps and a weighted
-// gain in units clears the auction's bar (design/2026-11-10-oracle-free-rebalance.md). This file is the keeper's side
+// gain in units clears the auction's bar (docs/design/rebalance.md). This file is the keeper's side
 // of that rule, pure and dependency-free:
 //   - the hub's arithmetic, word for word (`barAt`, `gainOf`), so the bot knows what the index will accept before it
 //     asks; `test/unit/units.test.mjs` replays the contracts' own vectors (test/vectors/settlement.json) through it;
 //   - `nameUnits`, which picks, at the keeper's own prices, the units that clear the bar while giving the index the
-//     least: the keeper's best fill at that second.
+//     least: the keeper's best fill at that second, found on the score the hub computes, not on the logarithm it
+//     stands under (CA-M7).
 // Amounts and units are BigInt; prices are floats, used only to choose, and whatever they choose is checked in exact
 // integers before it is returned.
 
@@ -20,10 +21,35 @@ export const MAX_GROWTH = WAD;
 export const BAR_MAX = 5n * 10n ** 17n;
 export const BAR_HALF_LIFE = 720n;
 export const AUCTION_DURATION = 14_400n;
+export const MAX_ORACLE_TOLERANCE = 2n * 10n ** 16n;
 
 /// The most the keeper grows a leg: 1.9 times its units. The hub allows twice, but the score `L` peaks near 1.92 and
 /// falls after, so past it a leg costs more and scores less; under it the gain only rises with the units named.
 const GROWTH_USED = 9n * 10n ** 17n;
+
+/// The slope of the score, `L'(x) = 1 − x + x² − 6x³/5`. It falls all the way across the changes the keeper names,
+/// from 1.2496 at the lower cap to 0.0352 at 1.9 times a leg's units, so `L` is concave there and each slope is
+/// reached at one change only.
+const slope = (x) => 1 - x + x * x - 1.2 * x * x * x;
+const LOWEST_CHANGE = -0.2;
+const HIGHEST_CHANGE = 0.9;
+const SLOPE_AT_LOWEST = slope(LOWEST_CHANGE);
+const SLOPE_AT_HIGHEST = slope(HIGHEST_CHANGE);
+
+/// The change at which the score's slope is `y`: a cap where the slope never gets there, and otherwise found by
+/// halving, to a float's precision.
+function changeAtSlope(y) {
+  if (!(y < SLOPE_AT_LOWEST)) return LOWEST_CHANGE;
+  if (!(y > SLOPE_AT_HIGHEST)) return HIGHEST_CHANGE;
+  let below = LOWEST_CHANGE;
+  let above = HIGHEST_CHANGE;
+  for (let step = 0; step < 60; step++) {
+    const mid = (below + above) / 2;
+    if (slope(mid) > y) below = mid;
+    else above = mid;
+  }
+  return (below + above) / 2;
+}
 
 const ceilDiv = (a, b) => (a + b - 1n) / b;
 /// a / b rounded toward minus infinity, for b > 0: BigInt division truncates toward zero.
@@ -89,19 +115,61 @@ export function quoteOf(units, newUnits, prices, tolerance) {
   return { valueOut, valueIn, floor, holds: valueIn >= floor };
 }
 
-/// The units the keeper names for a fill that must clear `bar`: for every leg it may move, `λ · weight / price`, with
-/// `λ` the smallest that clears the bar. That is the fill that leaves the index the least value at `prices` among
-/// those the index accepts (the first-order condition of maximising what is taken under a gain of logarithms), so it
-/// is the keeper's best at that second; whether it pays is the simulation's to say, not this function's.
+/// The tolerance of Pyth's check `elapsed` seconds into an auction, as `WeightedMath.oracleToleranceAt`: from nothing
+/// to MAX_ORACLE_TOLERANCE along a straight line, rounded down. Null once the auction is over, where the hub reverts.
+export function oracleToleranceAt(elapsed) {
+  const e = BigInt(elapsed);
+  if (e < 0n || e > AUCTION_DURATION) return null;
+  return (MAX_ORACLE_TOLERANCE * e) / AUCTION_DURATION;
+}
+
+/// Pyth's check on a fill `elapsed` seconds into its auction, as `WeightedMath.oracleCheck`: at `values`, what one
+/// raw unit of each leg is worth as `PythPrices` reports it for the way that leg moves, the units the fill adds must
+/// be worth at least the units it takes, less the tolerance of that second, rounded up. `holds` is the hub's verdict;
+/// null once the auction is over.
+export function oracleOf(units, newUnits, values, elapsed) {
+  const tolerance = oracleToleranceAt(elapsed);
+  if (tolerance === null) return null;
+  return { tolerance, ...quoteOf(units, newUnits, values, tolerance) };
+}
+
+/// The value `PythPrices` puts on each leg of a fill from `units` to `newUnits`: `leaving[i]` for a leg that falls,
+/// `arriving[i]` for one that rises, nothing for one that keeps its units, which the hub does not read. Null when a
+/// leg that moves has no value: the hub would refuse that fill.
+export function legValuesOf(units, newUnits, leaving, arriving) {
+  const values = [];
+  for (let i = 0; i < units.length; i++) {
+    const value = newUnits[i] < units[i] ? leaving[i] : newUnits[i] > units[i] ? arriving[i] : 0n;
+    if (value === null || value === undefined) return null;
+    values.push(value);
+  }
+  return values;
+}
+
+/// The units the keeper names for a fill that must clear `bar`: the fill that leaves the index the least value at
+/// `prices` among those the index accepts, so the keeper's best at that second; whether it pays is the simulation's
+/// to say, not this function's.
+///
+/// What is taken is linear in the units and the gain is a sum of concave scores, so the best fill is where every
+/// moved leg's score has the same slope per dollar: `L'(x_i) = price_i · units_i / (λ · weight_i)`, with `λ` the
+/// smallest that clears the bar. Naming the legs by the logarithm's slope instead, `1 / (1 + x)`, which
+/// is `λ · weight / price` units, gives a fill the hub accepts, but not the best one, because `L` lies under the logarithm
+/// and further under it the more a leg grows. With two legs moving freely that rule takes an eighth less, forty
+/// minutes into the auction of an index one of whose three coins had doubled and another halved, so a keeper using it
+/// waits for a lower bar than it needs to (CA-M7).
 ///
 /// `prices[i]` is dollars per raw unit of leg `i`, or null for a leg the keeper cannot value, which it leaves alone,
 /// as it does a kept one. `costBps` is what trading a leg is taken to cost: a leg is grown only past its target at the
 /// price plus that cost, shrunk only past it at the price less that cost, and otherwise left, so a leg within the
 /// cost of its weight is not traded for nothing. `quote`, `{prices, tolerance}` as the hub reports it, is the quote
 /// posted with the proposal, which the fill must also hold: the units named then give the index more, as much as the
-/// quote asks. Returns `{newUnits, gain}`, checked in the hub's exact arithmetic, or null when fewer than two legs can
-/// move or nothing this function can name clears the bar and holds the quote.
-export function nameUnits({ units, weights, keepMask = 0n, prices, bar, costBps = 0, quote = null }) {
+/// quote asks. `oracle`, `{leaving, arriving, elapsed}`, is Pyth's check on a factory with an oracle: each leg's
+/// value per raw unit as `PythPrices` reports it for a leg that leaves and for one that arrives (null for a leg it
+/// cannot value), and the auction's second, which sets the tolerance; the fill must hold it too, so early in an
+/// auction the units named leave the keeper next to nothing. Returns `{newUnits, gain}`, checked in the hub's exact
+/// arithmetic, or null when fewer than two legs can move or nothing this function can name clears the bar and holds
+/// the quote and Pyth's check.
+export function nameUnits({ units, weights, keepMask = 0n, prices, bar, costBps = 0, quote = null, oracle = null }) {
   const free = [];
   for (let i = 0; i < units.length; i++) {
     const kept = ((keepMask >> BigInt(i)) & 1n) === 1n;
@@ -117,10 +185,14 @@ export function nameUnits({ units, weights, keepMask = 0n, prices, bar, costBps 
   const at = (lambda) => {
     const named = [...units];
     for (const i of free) {
-      const grown = (lambda * w[i]) / ask(i);
-      const shrunk = (lambda * w[i]) / bid(i);
-      const target = grown > u[i] ? grown : shrunk < u[i] ? shrunk : null;
-      if (target === null || !Number.isFinite(target)) continue;
+      // A leg is grown where buying it scores more per dollar than λ asks, shrunk where selling it costs less
+      // score per dollar, and left alone in between, where its trading cost is more than either is worth.
+      const grown = changeAtSlope((u[i] * ask(i)) / (lambda * w[i]));
+      const shrunk = changeAtSlope((u[i] * bid(i)) / (lambda * w[i]));
+      const change = grown > 0 ? grown : shrunk < 0 ? shrunk : null;
+      if (change === null) continue;
+      const target = u[i] * (1 + change);
+      if (!Number.isFinite(target)) continue;
       const lowest = lowestOf(units[i]);
       const top = units[i] + (units[i] * GROWTH_USED) / WAD;
       const highest = top > UINT96_MAX ? UINT96_MAX : top;
@@ -135,6 +207,10 @@ export function nameUnits({ units, weights, keepMask = 0n, prices, bar, costBps 
     const g = gainOf(units, named, weights, keepMask);
     if (g.error !== undefined || g.gain < bar) return null;
     if (quote !== null && !quoteOf(units, named, quote.prices, quote.tolerance).holds) return null;
+    if (oracle !== null) {
+      const values = legValuesOf(units, named, oracle.leaving, oracle.arriving);
+      if (values === null || !oracleOf(units, named, values, oracle.elapsed)?.holds) return null;
+    }
     return g.gain;
   };
 
@@ -142,8 +218,8 @@ export function nameUnits({ units, weights, keepMask = 0n, prices, bar, costBps 
   let low = Infinity;
   let high = 0;
   for (const i of free) {
-    low = Math.min(low, Math.log((0.8 * u[i] * bid(i)) / w[i]));
-    high = Math.max(high, Math.log((1.9 * u[i] * ask(i)) / w[i]));
+    low = Math.min(low, Math.log((u[i] * bid(i)) / (w[i] * SLOPE_AT_LOWEST)));
+    high = Math.max(high, Math.log((u[i] * ask(i)) / (w[i] * SLOPE_AT_HIGHEST)));
   }
   low -= 1e-6;
   high += 1e-6;
@@ -164,14 +240,3 @@ export function nameUnits({ units, weights, keepMask = 0n, prices, bar, costBps 
   return { newUnits: best, gain: bestGain };
 }
 
-/// What `newUnits` leaves the keeper, in dollars per 1e18 shares at `prices` (dollars per raw unit): the value of the
-/// units the index gives up less the value of those it gains, before routes and gas. Legs without a price count as
-/// nothing, and the keeper never moves them.
-export function takeUsd(units, newUnits, prices) {
-  let usd = 0;
-  for (let i = 0; i < units.length; i++) {
-    if (!(prices[i] > 0)) continue;
-    usd += (Number(units[i]) - Number(newUnits[i])) * prices[i];
-  }
-  return usd;
-}

@@ -5,7 +5,8 @@ import {IXindexErrors} from "./IXindexErrors.sol";
 
 /// @notice Escrowed requests to mint or redeem an index's shares for USDC or USDT. Anyone who holds the other side can
 ///         fill one. A requester names their own limit; nothing reads a price. The contract has no owner and nothing
-///         to configure. Every escrow leaves with its request, unless the stablecoin's issuer freezes or destroys it.
+///         to configure. Every escrow leaves with its request, unless the stablecoin's issuer freezes or destroys it,
+///         and after a destruction no new request is taken in that token until the open ones are covered again.
 ///         Tokens sent here outside a request stay here.
 interface IMintRequests is IXindexErrors {
     /// @notice A request.
@@ -82,6 +83,11 @@ interface IMintRequests is IXindexErrors {
     /// @notice USDT, the other.
     function USDT() external view returns (address);
 
+    /// @notice The sum of the open requests' escrows in `token`: a stablecoin's for mint requests, an index's shares
+    ///         for redeem requests. The contract's balance of `token` covers it unless the token's issuer took some
+    ///         away, and while it does not, no new request escrows `token` (Underbacked, CA-H2).
+    function totalEscrow(address token) external view returns (uint256);
+
     /// @notice Number of requests ever made, which is the last one's id; ids start at 1.
     function requestCount() external view returns (uint256);
 
@@ -98,10 +104,27 @@ interface IMintRequests is IXindexErrors {
     /// @notice Escrows `amount` of `stable` (USDC or USDT) from the caller, for at least `minShares` shares of the
     ///         factory index `index`, fillable until `deadline`. The escrow is the balance increase this transfer
     ///         caused: less than `amount` if USDT charges a fee. Needs an allowance of `amount` on `stable`.
+    ///         Reverts Underbacked while the contract holds less of `stable` than its open requests escrowed, as
+    ///         after the issuer destroyed part of it: the deposit would pay those requests (CA-H2).
+    ///         The request records the index's `rebalanceNonce` when this call lands, which may not be the one the
+    ///         caller set `minShares` at: a caller that priced a basket uses the bound overload below.
     /// @return id The new request's id.
     function requestMint(address index, address stable, uint256 amount, uint256 minShares, uint256 deadline)
         external
         returns (uint256 id);
+
+    /// @notice As {requestMint}, and only while `index` still reads `expectedNonce`, the `rebalanceNonce` the caller
+    ///         set its limit at. A settlement between the caller's quote and this call changed what a share is
+    ///         backed by, and the request would open on the new basket at the old limit: it reverts
+    ///         StaleRebalanceNonce instead, before anything is escrowed (CA-M1).
+    function requestMint(
+        address index,
+        address stable,
+        uint256 amount,
+        uint256 minShares,
+        uint256 deadline,
+        uint256 expectedNonce
+    ) external returns (uint256 id);
 
     /// @notice Escrows `shares` of the factory index `index` from the caller, for at least `minOut` of `stable`
     ///         (USDC or USDT), fillable until `deadline`. Needs an allowance of `shares` on `index`.
@@ -109,6 +132,17 @@ interface IMintRequests is IXindexErrors {
     function requestRedeem(address index, uint256 shares, address stable, uint256 minOut, uint256 deadline)
         external
         returns (uint256 id);
+
+    /// @notice As {requestRedeem}, and only while `index` still reads `expectedNonce`, as the bound {requestMint}
+    ///         (CA-M1).
+    function requestRedeem(
+        address index,
+        uint256 shares,
+        address stable,
+        uint256 minOut,
+        uint256 deadline,
+        uint256 expectedNonce
+    ) external returns (uint256 id);
 
     /// @notice Anyone, until the deadline. Fills request `id`, whichever request that id names when the call lands.
     ///         An id is only a counter: after a re-org, or for a request that was still pending when the caller

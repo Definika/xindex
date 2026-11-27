@@ -20,3 +20,25 @@ contract MockFeeToken is ERC20 {
         super._update(from, to, value);
     }
 }
+
+/// @notice Burns up to FLAT_FEE raw units of every transfer between two accounts, so the whole of a smaller one, and
+///         nothing of a transfer to oneself. A small deposit then delivers nothing, while the basket builder's
+///         one-unit send-out probe, a transfer to itself, still passes (CA-R2-16).
+contract MockFlatFeeToken is ERC20 {
+    uint256 public constant FLAT_FEE = 5;
+
+    constructor() ERC20("Flat Fee Token", "FLAT") {}
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
+
+    function _update(address from, address to, uint256 value) internal override {
+        if (from != address(0) && to != address(0) && from != to) {
+            uint256 fee = value < FLAT_FEE ? value : FLAT_FEE;
+            super._update(from, address(0), fee);
+            value -= fee;
+        }
+        super._update(from, to, value);
+    }
+}

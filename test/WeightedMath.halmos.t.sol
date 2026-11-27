@@ -13,7 +13,7 @@ import {WeightedMath} from "../src/WeightedMath.sol";
 ///      is what the hub relies on without a price: an accepted fill clears a bar that is never zero, keeps every leg
 ///      inside its unit caps, grows at least one leg, and never has a leg both send and receive. That it never lowers
 ///      the weighted product of the units is a fact about the logarithm, proven in the record
-///      (`design/2026-11-10-oracle-free-rebalance.md`, section 3), which no solver of integers states.
+///      (`docs/design/rebalance.md`, section 3), which no solver of integers states.
 contract WeightedMathProofs is Test {
     uint256 constant WAD = 1e18;
     uint256 constant TOTAL_WEIGHT = 10_000;

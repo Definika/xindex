@@ -3,18 +3,8 @@
 // script/PythIds.sol; the home-chain addresses are checked on their own chains before the service sends anything.
 
 /// Each home chain: its Wormhole chain id, its platform, its gas coin, the stablecoin its float is kept in, and its
-/// CCTP domain (null where Circle's CCTP does not run, so its float is topped up by hand). Every one of them runs CCTP
-/// V2, Sui and Aptos included (read on 2026-11-01; Circle retires V1 by 2026-12-01).
+/// CCTP domain. Every one of them runs CCTP V2, which Circle keeps as V1 retires.
 export const CHAINS = Object.freeze({
-  bsc: {
-    wormhole: 4,
-    platform: "evm",
-    evmChainId: 56,
-    gas: { symbol: "BNB", decimals: 18 },
-    // BNB Chain's Binance-Peg coins trade against Binance-Peg USDT; BNB Chain has no CCTP.
-    float: { symbol: "USDT", id: "0x55d398326f99059fF775485246999027B3197955", decimals: 18 },
-    cctpDomain: null,
-  },
   avalanche: {
     wormhole: 6,
     platform: "evm",
@@ -39,94 +29,76 @@ export const CHAINS = Object.freeze({
     float: { symbol: "USDC", id: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", decimals: 6 },
     cctpDomain: 6,
   },
-  solana: {
-    wormhole: 1,
-    platform: "solana",
-    gas: { symbol: "SOL", decimals: 9 },
-    float: { symbol: "USDC", id: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", decimals: 6 },
-    cctpDomain: 5,
-  },
-  sui: {
-    wormhole: 21,
-    platform: "sui",
-    gas: { symbol: "SUI", decimals: 9 },
-    float: { symbol: "USDC", id: "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC", decimals: 6 },
-    cctpDomain: 8,
-  },
-  aptos: {
-    wormhole: 22,
-    platform: "aptos",
-    gas: { symbol: "APT", decimals: 8 },
-    float: { symbol: "USDC", id: "0xbae207659db88bea0cbead6da0ed00aac12edcdda169e591cd41c94180b46f3b", decimals: 6 },
-    cctpDomain: 9,
-  },
-  algorand: {
-    wormhole: 8,
-    platform: "algorand",
-    gas: { symbol: "ALGO", decimals: 6 },
-    // Algorand's USDC is Circle's own asset, but Algorand has no CCTP.
-    float: { symbol: "USDC", id: "31566704", decimals: 6 },
-    cctpDomain: null,
-  },
 });
 
-/// The fourteen coins: the Ethereum copy (`MainnetAddresses`' constant `name`), its home chain and the token there,
-/// its decimals (the copy's and the home token's are the same), its Pyth feed, and the venue the service trades it on.
-/// `isGas` marks a coin that is its home chain's gas coin, of which the service always keeps a reserve.
+/// The three coins: the Ethereum copy (`MainnetAddresses`' constant `name`), its home chain and the token there, its
+/// decimals (the copy's and the home token's are the same), its Pyth feed, and the venue the service trades it on.
 export const COINS = Object.freeze(
   [
-    { symbol: "XRP", name: "XRP", copy: "0xc730d8256B8A1030eEA67f1Bc7ebed3898f7A535", chain: "bsc", home: "0x1d2f0da169ceb9fc7b3144628db156f3f6c60dbe", decimals: 18, venue: "pancakeswap-v3" },
-    { symbol: "ADA", name: "ADA", copy: "0x8EfFbF747d4A60Bc6b68D9A1bE4c4188bA8A3a0b", chain: "bsc", home: "0x3ee2200efb3400fabb9aacf31297cbdd1d435d47", decimals: 18, venue: "pancakeswap-v3" },
-    { symbol: "LTC", name: "LTC", copy: "0x1cA1Ef3fB8Ff4a480C0ae7eea5f91A24a5BB3344", chain: "bsc", home: "0x4338665cbb7b2485a8855a139b75d5e34ab0db94", decimals: 18, venue: "pancakeswap-v3" },
-    { symbol: "DOT", name: "DOT", copy: "0x1839a38E59536D88C25e8E6e0D0f59e05b143ab2", chain: "bsc", home: "0x7083609fce4d1d8dc0c979aab8c869ea2c873402", decimals: 18, venue: "pancakeswap-v3" },
-    { symbol: "ATOM", name: "ATOM", copy: "0x7845167B54253269624dBA0cA5Fee87933107b34", chain: "bsc", home: "0x0eb3a705fc54725037cc9e008bdede697f62f335", decimals: 18, venue: "pancakeswap-v3" },
     // BNB's copy wraps WBNB, an ERC-20 like the others here; the gas reserve is native BNB, so it is no gas coin (RZ-5).
-    { symbol: "BNB", name: "BNB", copy: "0x418D75f65a02b3D53B2418FB8E1fe493759c7605", chain: "bsc", home: "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c", decimals: 18, venue: "pancakeswap-v3" },
     { symbol: "AVAX", name: "AVAX", copy: "0x85f138bfEE4ef8e540890CFb48F620571d67Eda3", chain: "avalanche", home: "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7", decimals: 18, venue: "uniswap-v3" },
     { symbol: "OP", name: "OP", copy: "0x1df721D242E0783F8fCab4A9FfE4F35bdf329909", chain: "optimism", home: "0x4200000000000000000000000000000000000042", decimals: 18, venue: "uniswap-v3" },
     { symbol: "AERO", name: "AERO", copy: "0x750525C1877E30304F1E22b1b49b4C9DdE674ddF", chain: "base", home: "0x940181a94a35a4569e4529a3cdfb74e38fd98631", decimals: 18, venue: "uniswap-v3" },
-    { symbol: "JUP", name: "JUP", copy: "0x8687a10BCa6F139B25eb31020FCABB5782214764", chain: "solana", home: "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN", decimals: 6, venue: "jupiter" },
-    { symbol: "PYTH", name: "PYTH_TOKEN", copy: "0xeFc0CED4B3D536103e76a1c4c74F0385C8F4Bdd3", chain: "solana", home: "HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3", decimals: 6, venue: "jupiter" },
-    { symbol: "SUI", name: "SUI", copy: "0x84074EA631dEc7a4edcD5303d164D5dEa4c653D6", chain: "sui", home: "0x2::sui::SUI", decimals: 9, venue: "cetus", isGas: true },
-    { symbol: "APT", name: "APT", copy: "0x8CDf7AF57E4c8B930e1B23c477c22f076530585e", chain: "aptos", home: "0x1::aptos_coin::AptosCoin", decimals: 8, venue: "panora", isGas: true },
-    { symbol: "ALGO", name: "ALGO", copy: "0xe31Cfcd36FeD044ae4Cf9405B577fe875762194F", chain: "algorand", home: "0", decimals: 6, venue: "tinyman", isGas: true },
-  ].map((c) => Object.freeze({ isGas: false, ...c, copy: c.copy.toLowerCase() })),
+  ].map((c) => Object.freeze({ local: false, ...c, copy: c.copy.toLowerCase() })),
+);
+
+/// The coins Ethereum issues itself that the service buys on Ethereum, through UniswapX, rather than bridges in: the
+/// nine Ondo stocks Pyth prices at the token's own feed, which the keeper values and so delivers from stock (the other
+/// 343 Ondo legs it never values, `bot/config.mjs` SHARE_PRICED_IDS, RX-2, so stock of them would serve no fill). Few
+/// have a Uniswap pool; UniswapX's fillers, Ondo's minting desk among them, sell them for USDC. `copy` is the token
+/// itself, as the executor holds it, and `local` marks the coin: no home chain, no bridge, no sale; the treasury buys
+/// it and deposits it into the executor (`depositStock`), credited within the owner's restock allowance (RS-1).
+/// `test/unit/restock-coins.test.mjs` pins each against script/MainnetAddresses.sol and script/PythIds.sol; symbol and
+/// decimals were read on chain.
+export const LOCAL_COINS = Object.freeze(
+  [
+    { symbol: "NVDAON", name: "NVDAON", copy: "0x2D1F7226Bd1F780AF6B9A49DCC0aE00E8Df4bDEE" },
+    { symbol: "AAPLON", name: "AAPLON", copy: "0x14c3abF95Cb9C93a8b82C1CdCB76D72Cb87b2d4c" },
+    { symbol: "GOOGLON", name: "GOOGLON", copy: "0xbA47214eDd2bb43099611b208f75E4b42FDcfEDc" },
+    { symbol: "MSFTON", name: "MSFTON", copy: "0xB812837b81a3a6b81d7CD74CfB19A7f2784555E5" },
+    { symbol: "TSLAON", name: "TSLAON", copy: "0xf6b1117ec07684D3958caD8BEb1b302bfD21103f" },
+    { symbol: "HOODON", name: "HOODON", copy: "0x998f02A9E343EF6E3E6f28700d5A20F839fD74E6" },
+    { symbol: "MSTRON", name: "MSTRON", copy: "0xCabD955322dfbf94C084929ac5E9Eca3fEB5556F" },
+    { symbol: "COINON", name: "COINON", copy: "0xF042cfa86cf1D598a75Bdb55c3507a1F39f9493b" },
+    { symbol: "CRCLON", name: "CRCLON", copy: "0x3632DEa96A953C11dac2f00b4A05a32CD1063fAE" },
+  ].map((c) =>
+    Object.freeze({ ...c, copy: c.copy.toLowerCase(), home: c.copy.toLowerCase(), chain: "ethereum", decimals: 18, venue: "uniswapx", local: true }),
+  ),
 );
 
 /// Each coin's Pyth feed, which the restock prices every trade against (the ids `script/PythIds.sol` lists the copies
-/// with, so a copy is priced as the coin it wraps).
+/// with, so a copy is priced as the coin it wraps, and each Ondo stock at its token's own feed).
 export const PRICE_IDS = Object.freeze({
-  XRP: "0xec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8",
-  ADA: "0x2a01deaec9e51a579277b34b122399984d0bbf57e2458a7e42fecd2829867a0d",
-  LTC: "0x6e3f3fa8253588df9326580180233eb791e03b443a3ba7a1d892e73874e19a54",
-  DOT: "0xca3eed9b267293f6595901c734c7525ce8ef49adafe8284606ceb307afa2ca5b",
-  ATOM: "0xb00b60f88b03a6a625a8d1c048c3f66653edf217439983d037e7222c4e612819",
-  BNB: "0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f",
   AVAX: "0x93da3352f9f1d105fdfe4971cfa80e9dd777bfc5d0f683ebb6e1294b92137bb7",
   OP: "0x385f64d993f7b77d8182ed5003d97c60aa3361f3cecfe711544d2d59165e9bdf",
   AERO: "0x9db37f4d5654aad3e37e2e14ffd8d53265fb3026d1d8f91146539eebaa2ef45f",
-  JUP: "0x0a0408d619e9380abad35060f9192039ed5042fa6f82301d0e48bb52be830996",
-  PYTH: "0x0bbf28e9a841a1cc788f6a361b17ca072d0ea3098a1e5df1c3922d06719579ff",
-  SUI: "0x23d7315113f5b1d3ba7a83604c44b94d79f4fd69af77f804fc7f920a6dc65744",
-  APT: "0x03ae4db29ed4ae33d323568895aa00337e658e348b37509f5372ae51f0af00d5",
-  ALGO: "0xfa17ceaf30d19ba51112fdcc750cc83454776f47fb0112e4af07f15f4bb1ebc0",
+  NVDAON: "0x207ddea2a443d30b7e13a7c88a9e3f106765deb97049afc65a18cede50fffc82",
+  AAPLON: "0xe6734de88a83d9d2fb33072adab319004700aefd069653aba30ba9e3cac056f2",
+  GOOGLON: "0xad79b3487bef87ff8f8ab31c0b779ad08d931fdfa5436f7e92a234bb82bff7e4",
+  MSFTON: "0x29b228e9fd72bbd306bcca3b10c165d8dba5d535ef8d5aab6c6e4bc18912d150",
+  TSLAON: "0xc09ef687ed07091c047da444f1499f2da52cdc1c085104643ec565a9eb1af514",
+  HOODON: "0x8d61af9bd7c39d9503d7d99b7e9e59cc7b0bd707341ecc3ed3e3eda1a411f4de",
+  MSTRON: "0x89a131faf74b5298981e3d25bbce60a25c6f452004da31ddd3c5805cdaa9b6ab",
+  COINON: "0x8c56635a4257942fabf7ce5dd861dbe91375c370e6b5feac3fb8ba7206a30e46",
+  CRCLON: "0x25edf380836977c4fea6d1e8df3567192c4e11deeeb566c8e0bd8022068860df",
 });
 
-/// The coins served when `RESTOCK_COINS` is unset: those whose chain has an adapter and whose home market can take a
-/// restock within the loss bound. ATOM is left out, the owner's call of 2026-10-20: Binance-Peg ATOM, the only source its
-/// copy redeems for, has almost no market on BNB Chain (read on 2026-10-19: selling $500 lost 305 bps on PancakeSwap
-/// v3). JUP, PYTH, SUI, APT and ALGO, whose chains' adapters have never run end to end, left Ethereum's list on
-/// 2026-11-18 (the owner's call, design/2026-11-18-bridged-coins-in-a-rebalance.md); they stay in the table, and their
-/// signers in their folders, for a relisting once a run has proven them. XRP, ADA, LTC, DOT and BNB, served until
-/// 2026-11-13, are no longer on Ethereum's list (the owner's call: BNB Chain's deployment holds those coins in kind),
-/// so nothing on Ethereum needs their copies; they stay in the table above, as their addresses stay in
-/// `MainnetAddresses`, for a relisting, and `RESTOCK_COINS` can still name one.
-export const DEFAULT_COINS = Object.freeze(["AVAX", "OP", "AERO"]);
+/// The coins served when `RESTOCK_COINS` is unset: those whose home market can take a restock within the loss bound.
+/// OP is off Ethereum's list by the owner's decision: no route bought it on Optimism within
+/// ROUTE_MAX_LOSS_BPS, its deepest Uniswap v3 pool there holding about $35,000 of USDC. It stays in the table, as its
+/// address stays in `MainnetAddresses`, for a relisting, and `RESTOCK_COINS` can still name it. The copies of XRP, ADA,
+/// LTC, DOT, ATOM, BNB, JUP, PYTH, SUI, APT and ALGO, which left the list, went from the
+/// table (audits/retired/non-evm-restock.md). AERO's copy left too (the owner's
+/// call): it is a copy of Aerodrome's AERO, which Aero replaced with a token of its own, so its home token's depth is
+/// leaving and its conversion is Aero's to end. It stays in the table, as OP does, and `RESTOCK_COINS` can name it.
+export const DEFAULT_COINS = Object.freeze(["AVAX"]);
 
-/// The coins of `symbols` (`DEFAULT_COINS` when null), refusing a symbol the table does not know.
-export function coinsOf(symbols) {
-  if (symbols === null) return COINS.filter((c) => DEFAULT_COINS.includes(c.symbol));
-  const unknown = symbols.filter((s) => !COINS.some((c) => c.symbol === s));
+/// The coins of `symbols`, bridged or local, refusing a symbol neither table knows. When null: `DEFAULT_COINS`, and
+/// with `uniswapx` (the service has a UniswapX API key) every local coin too, since only UniswapX buys them.
+export function coinsOf(symbols, { uniswapx = false } = {}) {
+  const all = [...COINS, ...LOCAL_COINS];
+  if (symbols === null) return all.filter((c) => DEFAULT_COINS.includes(c.symbol) || (uniswapx && c.local));
+  const unknown = symbols.filter((s) => !all.some((c) => c.symbol === s));
   if (unknown.length) throw new Error(`unknown restock coins: ${unknown.join(", ")}`);
-  return COINS.filter((c) => symbols.includes(c.symbol));
+  return all.filter((c) => symbols.includes(c.symbol));
 }

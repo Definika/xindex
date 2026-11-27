@@ -21,8 +21,15 @@ interface IXindexErrors {
     /// @notice `to` cannot receive here: tokens sent to it would be stuck or would reach the wrong party.
     error InvalidRecipient(address to);
 
+    /// @notice The contract holds `balance` of `token`, below the `required` it already owes in it, as after the
+    ///         token's issuer burned part of what was held. A deposit would then pay the earlier holders, so it is
+    ///         refused until the balance is whole again. The hub's `issue` raises it for a leg below the backing of
+    ///         the shares already issued plus open claims (RX-8); MintRequests and the basket builder raise it for a
+    ///         token below their open escrows of it (CA-H2).
+    error Underbacked(address token, uint256 balance, uint256 required);
+
     /// @notice `token` is neither of the two stablecoins. USDC and USDT are the only currencies the zap, the basket
-    ///         builder and MintRequests take and pay (the owner's call of 2026-11-18).
+    ///         builder and MintRequests take and pay.
     error NotAStable(address token);
 
     // The swap errors the zap and the basket builder share, from the engine in `UniversalRouterSwaps` and around it.

@@ -11,14 +11,20 @@
 
 import { CHAINS } from "./coins.mjs";
 import { cctpFields } from "./attestations.mjs";
+import { EXPIRY_MARGIN_SECONDS } from "./uniswapx.mjs";
 
 /// How often a move asks Circle to sign its message again while the old signature does not verify.
 export const REATTEST_EVERY_SECONDS = 3600;
 
+/// What a move says when its completing transaction was mined and the other side still does not show it completed.
+/// The move stays where it was and is completed again at the next round (CA-M10).
+export const NOT_COMPLETED = "its completing transaction was mined, but the receiving side does not show it completed: tried again next round";
+
 /// `deps`: the journal; `eth` and `homes` (chain adapters, `restock/evm.mjs` and the signer homes); `wormholescan` and
-/// `iris`; `redeemIn(vaa, copy)`, the executor's `redeemBridged` sent by the treasury; `coinOf(symbol)`; `log`; and
-/// `now()`, the clock in seconds.
-export function createAdvance({ journal, eth, homes, wormholescan, iris, redeemIn, coinOf, log, now = () => Math.floor(Date.now() / 1000) }) {
+/// `iris`; `redeemIn(vaa, copy)`, the executor's `redeemBridged` sent by the treasury; `orders`, for a UniswapX order:
+/// `post(move)` sends its signed order to the API again, `filled(move)` reads whether Permit2 shows its nonce spent and
+/// `chainTime()` the latest block's time; `coinOf(symbol)`; `log`; and `now()`, the clock in seconds.
+export function createAdvance({ journal, eth, homes, wormholescan, iris, redeemIn, orders, coinOf, log, now = () => Math.floor(Date.now() / 1000) }) {
   const chainOf = (move) => (move.data.chain === "ethereum" ? eth : homes[move.data.chain]);
 
   /// Circle's attested message for CCTP move `move`, burned on `fromDomain` for `to`: `{message, attestation}` once
@@ -39,8 +45,34 @@ export function createAdvance({ journal, eth, homes, wormholescan, iris, redeemI
     return null;
   }
 
+  /// A UniswapX order: posted, then done once Permit2 shows its nonce spent, which only the reactor settling it with
+  /// the treasury's signature does. One whose deadline passed EXPIRY_MARGIN_SECONDS ago, by the chain's clock, with its
+  /// nonce unspent can no longer settle: it is dropped, and the USDC it could have taken never left. Its signature left
+  /// the service when it was posted, so nothing earlier drops it, a post the API refused included: a filler may have it.
+  async function advanceOrder(move) {
+    // Posted until the API takes it: a refusal or an outage leaves it to be posted again next round.
+    if (move.stage === "signed" || move.data.posted === false) {
+      const result = await orders.post(move).then(
+        () => ({ posted: true }),
+        (error) => ({ posted: false, postError: String(error?.message ?? error).slice(0, 300) }),
+      );
+      if (move.stage === "signed") journal.advance(move.id, "sent", result);
+      else journal.note(move.id, result);
+    }
+    if (await orders.filled(move)) {
+      journal.advance(move.id, "done");
+      return log(`move ${move.id}`, `UniswapX order for ${move.coin} filled`);
+    }
+    if ((await orders.chainTime()) > move.data.deadline + EXPIRY_MARGIN_SECONDS) {
+      journal.note(move.id, { status: "expired" });
+      journal.drop(move.id, "its order passed its deadline unfilled");
+      return log(`move ${move.id}`, `UniswapX order for ${move.coin} expired unfilled; dropped`);
+    }
+  }
+
   /// Takes `move` one step further, as far as its chains and the attestation services allow this round.
   return async function advance(move) {
+    if (move.kind === "order") return advanceOrder(move);
     if (move.stage === "signed") {
       const adapter = chainOf(move);
       if (!adapter) return log(`move ${move.id}`, `waits: ${move.data.chain} is not served now`);
@@ -52,7 +84,7 @@ export function createAdvance({ journal, eth, homes, wormholescan, iris, redeemI
       journal.drop(move.id, "its transaction reverted");
       return log(`move ${move.id}`, `${move.kind} reverted on ${move.data.chain}; dropped`);
     }
-    if (["buy", "sell", "draw", "repay"].includes(move.kind)) return journal.advance(move.id, "done");
+    if (["buy", "sell", "draw", "repay", "deposit"].includes(move.kind)) return journal.advance(move.id, "done");
 
     if (move.kind === "bridgeIn" || move.kind === "bridgeOut") {
       const into = move.kind === "bridgeIn";
@@ -79,6 +111,10 @@ export function createAdvance({ journal, eth, homes, wormholescan, iris, redeemI
         // was on its way is still redeemed (RZ-18).
         if (into) await redeemIn(vaa, move.copy ?? coinOf(move.coin).copy);
         else await to.redeem(vaa);
+        // A transaction was mined on the redeeming nonce; whether it completed this transfer is read back from the
+        // bridge. One that replaced the redeem, a cancel among them, is mined as well and completes nothing: taken
+        // for the redeem, it settled the move with its coins still at the bridge (CA-M10).
+        if (!(await to.transferCompleted(vaa))) throw new Error(NOT_COMPLETED);
       }
       journal.advance(move.id, "redeemed");
       return log(`move ${move.id}`, `${move.kind} of ${move.coin} landed`);
@@ -108,6 +144,7 @@ export function createAdvance({ journal, eth, homes, wormholescan, iris, redeemI
         signed = m;
       }
       await to.receive(signed.message, signed.attestation);
+      if (!(await to.cctpReceived(signed.message))) throw new Error(NOT_COMPLETED);
     }
     journal.advance(move.id, "received");
     log(`move ${move.id}`, `${move.kind} of ${Number(move.amount) / 1e6} USDC landed on ${funding ? move.chain : "ethereum"}`);

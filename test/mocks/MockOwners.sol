@@ -23,6 +23,21 @@ contract MockSafeOwner {
     }
 }
 
+/// @notice A multisig whose `getOwners` announces five owners and returns none of them: an answer cut short, as a
+///         proxy with a bounded return buffer gives. `CheckToken` must not print the announced length as a count
+///         (CA-R2-18).
+contract MockTruncatedSafeOwner {
+    uint256 public constant getThreshold = 3;
+
+    function getOwners() external pure {
+        bytes memory cut = abi.encode(uint256(0x20), uint256(5));
+        // forge-lint: disable-next-line(inline-assembly)
+        assembly ("memory-safe") {
+            return(add(cut, 0x20), mload(cut))
+        }
+    }
+}
+
 /// @notice OpenZeppelin's TimelockController as `CheckToken` reads one: its minimum delay.
 contract MockTimelockOwner {
     uint256 public getMinDelay;

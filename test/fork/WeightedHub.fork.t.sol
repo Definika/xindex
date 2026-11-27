@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
+import {WeightedMath} from "../../src/WeightedMath.sol";
 import {Test, console2} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
@@ -22,6 +23,7 @@ import {MainnetAddresses as M} from "../../script/MainnetAddresses.sol";
 import {ISwapRouter02} from "../mocks/ISwapRouter02.sol";
 import {ForkAddresses as A} from "./ForkAddresses.sol";
 import {WeightedExecutorV3} from "./WeightedExecutorV3.sol";
+import {LocalVenues} from "../LocalVenues.sol";
 
 interface IQuoterV2Weighted {
     function quoteExactInput(bytes memory path, uint256 amountIn)
@@ -95,7 +97,7 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
             vm.skip(true);
             return;
         }
-        uint256 forkBlock = vm.envOr("FORK_BLOCK", A.FORK_BLOCK);
+        uint256 forkBlock = vm.envOr("FORK_BLOCK", A.LIST_FORK_BLOCK);
         try vm.createSelectFork(url, forkBlock) returns (uint256) {}
         catch {
             revert(
@@ -107,9 +109,11 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
             );
         }
 
-        factory = new WeightedIndexFactory(address(this), guardian);
+        factory = new WeightedIndexFactory(address(this), guardian, address(0), address(new WeightedMath()), address(0));
         factory.setApprovedCreator(creator, true);
-        zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER), A.USDC, A.USDT);
+        zap = new IndexZap(
+            IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER), LocalVenues.none(), A.USDC, A.USDT
+        );
 
         address[] memory tokens = Listings.all();
         for (uint256 i = 0; i < tokens.length; ++i) {
@@ -145,7 +149,7 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
                 (uint256 smallOut, bool priced) = _quote(c.route, small);
                 // A live route that prices a coin at nothing means a quote failed, not that the coin is worthless.
                 // Pricing it at the smallest unit instead once gave VIRTUAL 10^-8 USD and units past MAX_UNITS, when the
-                // public RPC dropped its pool's storage reads (2026-10-06): refuse with the reason rather than misprice.
+                // public RPC dropped its pool's storage reads: refuse with the reason rather than misprice.
                 require(
                     priced && smallOut != 0,
                     string.concat(
@@ -314,8 +318,31 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         for (uint256 i = 0; i < tokens.length; ++i) {
             IERC20(tokens[i]).forceApprove(address(index), need[i]);
         }
-        index.issue(shares, who);
         vm.stopPrank();
+        _cool(index, tokens);
+        uint256 gasBefore = gasleft();
+        vm.prank(who);
+        index.issue(shares, who);
+        _fitsATransaction("issue", tokens.length, gasBefore - gasleft());
+    }
+
+    /// @dev EIP-7825's cap on a transaction's gas.
+    uint256 constant TX_GAS_CAP = 1 << 24;
+
+    /// @dev Marks `index`, its factory and its tokens cold, as a transaction of its own finds them.
+    function _cool(WeightedHub index, address[] memory tokens) internal {
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            vm.cool(tokens[i]);
+        }
+        vm.cool(address(index));
+        vm.cool(address(factory));
+    }
+
+    /// @dev An in-kind path over `legs` real tokens must fit one transaction: a mock transfers for less than the
+    ///      listed tokens do, a proxied stock token above all, so the unit suite's figures at MAX_COMPONENTS are a floor.
+    function _fitsATransaction(string memory path, uint256 legs, uint256 used) internal pure {
+        console2.log(path, "of real tokens, legs and gas:", legs, used);
+        assertLt(used, TX_GAS_CAP, path);
     }
 
     function _assertBacked(WeightedHub index) internal view {
@@ -377,12 +404,27 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
     }
 
     /// @dev As the test's own executor: it brings what the index needs from inventory, as a market maker would.
+    /// @dev The executor's callback: pays the index what it asks, dealing itself only what it lacks (a test funds it
+    ///      first with `_prefund`, since `deal` searches a proxied token's storage at length, and two hundred searches
+    ///      inside one fill outrun its gas).
     function onXindexRebalance(uint256[] calldata, uint256[] calldata amountsIn, bytes calldata) external {
         address[] memory tokens = IWeightedHub(msg.sender).componentTokens();
         for (uint256 i = 0; i < tokens.length; ++i) {
             if (amountsIn[i] == 0) continue;
-            deal(tokens[i], address(this), IERC20(tokens[i]).balanceOf(address(this)) + amountsIn[i]);
+            uint256 have = IERC20(tokens[i]).balanceOf(address(this));
+            if (have < amountsIn[i]) deal(tokens[i], address(this), amountsIn[i]);
             IERC20(tokens[i]).safeTransfer(msg.sender, amountsIn[i]);
+        }
+    }
+
+    /// @dev Funds this executor with what the fill of `newUnits` will ask of each token, before the fill.
+    function _prefund(WeightedHub index, uint256[] memory newUnits) internal {
+        (,,, uint256[] memory amountsIn) = index.previewRebalance(newUnits);
+        address[] memory tokens = index.componentTokens();
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            if (amountsIn[i] != 0) {
+                deal(tokens[i], address(this), IERC20(tokens[i]).balanceOf(address(this)) + amountsIn[i]);
+            }
         }
     }
 
@@ -395,6 +437,15 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         uint256 k = 0;
         for (uint256 i = 0; i < coins.length; ++i) {
             if (keep(coins[i])) picked[k++] = coins[i];
+        }
+    }
+
+    /// @dev The first `n` of `all`, or all of them when there are no more.
+    function _first(Coin[] memory all, uint256 n) internal pure returns (Coin[] memory some) {
+        if (all.length <= n) return all;
+        some = new Coin[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            some[i] = all[i];
         }
     }
 
@@ -422,7 +473,9 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
     function testFork_everyCoinIssuesRebalancesAndRedeems() public {
         _discover(Listings.COUNT);
         _report();
-        Coin[] memory picked = _pick(_dealable);
+        // the list holds more than one index may (its Ondo stocks and ETFs): the first MAX_COMPONENTS
+        // that `deal` can fund, every coin among them
+        Coin[] memory picked = _first(_pick(_dealable), factory.MAX_COMPONENTS());
         console2.log("coins in the index:", picked.length, "of", coins.length);
         assertGe(picked.length, 25, "most of the list can be funded on the fork");
 
@@ -437,6 +490,7 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         }
         _openAuction(index, 0, index.AUCTION_DURATION() / 2);
         uint256[] memory fill = _fillUnits(index, picked, moves, 0);
+        _prefund(index, fill);
         uint256 gasBefore = gasleft();
         index.executeRebalance(fill, "");
         console2.log("gas for a fill of", picked.length, "real tokens:", gasBefore - gasleft());
@@ -462,8 +516,11 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         // Alice leaves in kind, every token arriving.
         address[] memory tokens = index.componentTokens();
         uint256[] memory expected = index.previewRedeem(5e18);
+        _cool(index, tokens);
+        uint256 redeemGas = gasleft();
         vm.prank(alice);
         index.redeem(5e18, alice);
+        _fitsATransaction("redeem", tokens.length, redeemGas - gasleft());
         for (uint256 i = 0; i < tokens.length; ++i) {
             assertGe(IERC20(tokens[i]).balanceOf(alice), expected[i], "every real token redeemed");
         }
@@ -495,7 +552,9 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         // Alice mints two tokens, 2 * VALUE dollars at the pools, with USDC.
         IUniversalRouterSwaps.MintLeg[] memory legs = new IUniversalRouterSwaps.MintLeg[](picked.length);
         for (uint256 i = 0; i < picked.length; ++i) {
-            legs[i] = IUniversalRouterSwaps.MintLeg({v3Path: picked[i].route, v4Path: new PathKey[](0), maxAmountIn: 0});
+            legs[i] = IUniversalRouterSwaps.MintLeg({
+                localRoute: "", v3Path: picked[i].route, v4Path: new PathKey[](0), maxAmountIn: 0
+            });
         }
         deal(A.USDC, alice, 3 * VALUE * 1e6);
         vm.startPrank(alice);
@@ -537,8 +596,9 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         // Alice burns both tokens to USDC.
         IUniversalRouterSwaps.BurnLeg[] memory burnLegs = new IUniversalRouterSwaps.BurnLeg[](picked.length);
         for (uint256 i = 0; i < picked.length; ++i) {
-            burnLegs[i] =
-                IUniversalRouterSwaps.BurnLeg({v3Path: picked[i].route, v4Path: new PathKey[](0), minAmountOut: 0});
+            burnLegs[i] = IUniversalRouterSwaps.BurnLeg({
+                localRoute: "", v3Path: picked[i].route, v4Path: new PathKey[](0), minAmountOut: 0
+            });
         }
         vm.startPrank(alice);
         index.approve(address(zap), 2e18);
@@ -577,8 +637,10 @@ contract WeightedHubForkTest is Test, IRebalanceExecutor {
         vm.prank(wbtc.owner());
         wbtc.pause();
 
+        // WBTC's pause reverts with no data, and the hub relays it as it is: the redeem stops on WBTC's own refusal and
+        // nothing else (XA-34, where a bare expectRevert took any revert, an unrelated one included).
         vm.prank(alice);
-        vm.expectRevert();
+        vm.expectRevert(bytes(""));
         index.redeem(1e18, alice);
         vm.prank(alice);
         index.redeemSkipping(1e18, alice, 2); // WBTC is component 1

@@ -1,7 +1,9 @@
 // End-to-end test of the keeper on an anvil fork of Ethereum: real tokens and Uniswap V3 pools, the protocol's own
-// factory and hubs, which read no price, KeeperExecutor, and keeper.mjs running as its own process against a fake
-// Hermes this file serves. The keeper's prices are its own: it has the real Pyth contract confirm each one, against
-// five keys this test installs (see pnau.mjs).
+// factory and hubs, KeeperExecutor, and keeper.mjs running as its own process against a fake Hermes this file serves.
+// The factory is deployed with Pyth's real contract, so a creation must sit on its weights at Pyth's prices and every
+// fill must also bring in, at them, what the auction's tolerance asks; the keeper posts Pyth's update with each fill.
+// Every price, the keeper's own and the ones the hubs read, comes from updates Pyth's contract verifies against five
+// keys this test installs (see pnau.mjs).
 //
 // Opt-in, like the repo's fork suites: needs an archive RPC.
 //   forge build && forge build --root keeper        # at the repo root
@@ -22,6 +24,10 @@
 //        keep counts at what that pool pays, not at the keeper's price (XS-5), so the auction never pays and is never
 //        started.
 // One fill is mined a slot late on purpose: it must revert cheaply (Expired) and be sent again.
+//
+// Then requests, on LQ: a buyer escrows USDC for shares and a seller shares for USDC, each bound to the basket it
+// priced (CA-M1). The keeper fills both in one batch, the seller's shares passed to the buyer and one basket bought
+// for the rest, each at exactly its limit and each named by the hash of the request the keeper priced (CA-M6).
 
 import { execFileSync, spawn } from "node:child_process";
 import http from "node:http";
@@ -39,6 +45,7 @@ import {
   numberToHex,
   parseAbi,
   toHex,
+  zeroAddress,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { mainnet } from "viem/chains";
@@ -61,6 +68,11 @@ const V3_FACTORY = "0x1F98431c8aD98523631AE4a59f267346ea31F984";
 const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
 const TOKEN_BRIDGE = "0x3ee18B2214AFF97000D974cf647E7C347E8fa585";
 const USDT = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
+const PYTH = "0x4305FB66699C3B2702D4d05CF36551390A4c69C6"; // Pyth's price contract on Ethereum (script/MainnetAddresses.sol)
+const pythAbi = parseAbi([
+  "function getUpdateFee(bytes[] updateData) view returns (uint256)",
+  "function updatePriceFeeds(bytes[] updateData) payable",
+]);
 const T = {
   WETH: { a: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", id: "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace", d: 18 },
   WBTC: { a: "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599", id: "0xc9d8b075a5c69303365ae23633d4e085199bf5c520a3b90fed1322a0342ffc33", d: 8 },
@@ -121,13 +133,27 @@ process.on("uncaughtException", (error) => {
 });
 
 const chain = { ...mainnet, rpcUrls: { default: { http: [RPC] } } };
-const pub = createPublicClient({ chain, transport: transport(RPC, { timeout: 120_000 }) });
-const test = createTestClient({ chain, mode: "anvil", transport: transport(RPC, { timeout: 120_000 }) });
-const wallet = createWalletClient({ chain, transport: transport(RPC, { timeout: 120_000 }) });
+const pub = createPublicClient({ chain, transport: transport(RPC, { timeout: 600_000 }) });
+const test = createTestClient({ chain, mode: "anvil", transport: transport(RPC, { timeout: 600_000 }) });
+const wallet = createWalletClient({ chain, transport: transport(RPC, { timeout: 600_000 }) });
+
+/// The receipt of `hash`, asked for until the local chain has it. viem's own wait reads a receipt again only when
+/// the block number moves, every four seconds at best; a chain that mines each transaction as it arrives moves it
+/// once, so a receipt not there at that one look was never asked for again, and the wait ran out on a transaction
+/// that had been mined. This asks ten times a second, which also takes the setup's two hundred transactions from
+/// a quarter of an hour to seconds.
+async function receiptOf(hash, timeoutMs = 180_000) {
+  for (const end = Date.now() + timeoutMs; ; ) {
+    const receipt = await pub.getTransactionReceipt({ hash }).catch(() => null);
+    if (receipt) return receipt;
+    if (Date.now() > end) throw new Error(`no receipt for ${hash} in ${timeoutMs / 1000} s`);
+    await sleep(100);
+  }
+}
 
 async function send(from, address, abi, functionName, args = []) {
   const hash = await wallet.writeContract({ account: from, address, abi, functionName, args, chain, gas: 16_000_000n });
-  const receipt = await pub.waitForTransactionReceipt({ hash });
+  const receipt = await receiptOf(hash);
   if (receipt.status !== "success") throw new Error(`${functionName} on ${address} reverted (${hash})`);
   return receipt;
 }
@@ -157,15 +183,26 @@ const EXECUTOR = json(`${KEEPER_DIR}out/KeeperExecutor.sol/KeeperExecutor.json`)
 const REQUESTS = json(`${ROOT}out/MintRequests.sol/MintRequests.json`);
 
 step("anvil fork");
+// A chain already answering on this port is another run's, left behind when that run was killed: this run's own
+// anvil would fail to bind, and every check below would be made against the stale one.
+if (await pub.getChainId().then(() => true, () => false)) {
+  console.log(`  FAIL something already answers on port ${PORT}: stop it first (lsof -ti tcp:${PORT})`);
+  process.exit(1);
+}
 const head = await createPublicClient({ transport: transport(UPSTREAM) }).getBlockNumber();
 const forkBlock = process.env.FORK_BLOCK ?? String(head - 8n);
 const anvil = spawn(
   "anvil",
-  ["--fork-url", UPSTREAM, "--fork-block-number", forkBlock, "--port", String(PORT), "--auto-impersonate", "--silent"],
+  // E2E_ANVIL_LOG=1 lets anvil say what it does with each request, for a run that stalls.
+  ["--fork-url", UPSTREAM, "--fork-block-number", forkBlock, "--port", String(PORT), "--auto-impersonate", ...(process.env.E2E_ANVIL_LOG ? [] : ["--silent"])],
   { stdio: ["ignore", "inherit", "inherit"] },
 );
 children.push(anvil);
+anvil.on("exit", (code) => {
+  if (code !== null && code !== 0) console.log(`  anvil exited with ${code}`);
+});
 for (let i = 0; ; i++) {
+  if (anvil.exitCode !== null) throw new Error("anvil did not start");
   try {
     await pub.getChainId();
     break;
@@ -253,27 +290,69 @@ hermesServer = http
 // ---------------------------------------------------------------------
 
 step("protocol");
+// The settlement arithmetic is a contract of its own, which the factory's implementation calls. The factory is given
+// Pyth's contract, and deploys the price reader its hubs value fills through (`PythPrices`).
+const MATH = json(`${ROOT}out/WeightedMath.sol/WeightedMath.json`);
+const mathHash = await wallet.deployContract({ account: deployer, abi: MATH.abi, bytecode: MATH.bytecode.object, chain });
+const math = (await receiptOf(mathHash)).contractAddress;
 const factoryHash = await wallet.deployContract({
   account: deployer,
   abi: FACTORY.abi,
   bytecode: FACTORY.bytecode.object,
-  args: [owner, guardian],
+  // Ondo's SyntheticSharesOracle on Ethereum, from which the reader takes an Ondo leg's sValue.
+  args: [owner, guardian, PYTH, math, "0x9BC39DB6fbB44B91a48b8D5A6C208B82B1741bE6"],
   chain,
 });
-const factory = (await pub.waitForTransactionReceipt({ hash: factoryHash })).contractAddress;
-for (const c of Object.values(T)) await send(owner, factory, FACTORY.abi, "proposeListing", [c.a]);
+const factory = (await receiptOf(factoryHash)).contractAddress;
+ok((await read(factory, FACTORY.abi, "PRICES")) !== zeroAddress, "the factory has a price reader on Pyth's contract");
+// Every coin is listed, and given its Pyth feed, a plain token's (`FeedKind.Token`), both behind LISTING_DELAY.
+const TOKEN_FEED = 1;
+for (const c of Object.values(T)) {
+  await send(owner, factory, FACTORY.abi, "proposeListing", [c.a]);
+  await send(owner, factory, FACTORY.abi, "proposePriceFeed", [c.a, { id: c.id, kind: TOKEN_FEED }]);
+}
 await test.setNextBlockTimestamp({ timestamp: (await now()) + 2n * 86_400n + 1n });
 await test.mine({ blocks: 1 });
-for (const c of Object.values(T)) await send(owner, factory, FACTORY.abi, "executeListing", [c.a]);
+for (const c of Object.values(T)) {
+  await send(owner, factory, FACTORY.abi, "executeListing", [c.a]);
+  await send(owner, factory, FACTORY.abi, "executePriceFeed", [c.a]);
+}
 await send(owner, factory, FACTORY.abi, "setApprovedCreator", [creator, true]);
+
+/// Posts Pyth's update of `coins` at the test's prices, published now, as a creation or a fill must have it: the hubs
+/// read a price no older than MAX_PRICE_AGE. Anyone may post one, for Pyth's fee.
+async function postPrices(coins) {
+  const t = Number(await now());
+  const feeds = coins.map((c) => ({ id: c.id, ...prices.get(c.id.slice(2).toLowerCase()) }));
+  const update = [await encodeUpdate(feeds, t)];
+  const fee = await read(PYTH, pythAbi, "getUpdateFee", [update]);
+  const hash = await wallet.writeContract({ account: deployer, address: PYTH, abi: pythAbi, functionName: "updatePriceFeeds", args: [update], value: fee, chain });
+  if ((await receiptOf(hash)).status !== "success") throw new Error("Pyth refused the test's update");
+}
+
+/// The units of `coins` at `weights` (bps) for a share worth `value` dollars, at the test's prices.
+const unitsAt = (coins, weights, value) =>
+  coins.map((c, i) => BigInt(Math.max(10_000, Math.ceil(((weights[i] / 1e4) * value * 10 ** c.d) / usdOf(c)))));
+
+// A creation off its weights at Pyth's prices is refused: 90/10 by value for an index of 50/50 (OffWeights).
+{
+  const offUnits = unitsAt([T.WETH, T.UNI], [9000, 1000], 1000);
+  await postPrices([T.WETH, T.UNI]);
+  const specs = [T.WETH, T.UNI].map((c, i) => ({ token: c.a, weight: 5000n, units: offUnits[i] }));
+  const params = { creatorFeeBps: 0, creatorStreamingBps: 0, maxPlatformFeeBps: 25, maxPlatformStreamingBps: 100, rebalanceInterval: 7 * 24 * 3600, gated: false, listed: true };
+  const refused = await pub
+    .simulateContract({ account: creator, address: factory, abi: FACTORY.abi, functionName: "createIndex", args: ["OFF", "OFF", specs, params] })
+    .then(() => null, (error) => error);
+  const why = refused === null ? "it was accepted" : String(refused.cause?.data?.errorName ?? refused.shortMessage ?? refused.message ?? refused);
+  ok(/OffWeights/.test(why) || /OffWeights/.test(String(refused?.message ?? "")), `a creation off its weights at Pyth's prices is refused (OffWeights; got: ${why.split("\n")[0]})`);
+}
 
 /// An index of `coins` with `weights` (bps), `shares` of it issued in kind, each share worth `value` dollars.
 async function createIndex(name, coins, weights, value, shares) {
-  const specs = coins.map((c, i) => ({
-    token: c.a,
-    weight: BigInt(weights[i]),
-    units: BigInt(Math.max(10_000, Math.ceil(((weights[i] / 1e4) * value * 10 ** c.d) / usdOf(c)))),
-  }));
+  const units = unitsAt(coins, weights, value);
+  const specs = coins.map((c, i) => ({ token: c.a, weight: BigInt(weights[i]), units: units[i] }));
+  // The creation reads every coin's price: on its weights within MAX_WEIGHT_DEVIATION, or refused.
+  await postPrices(coins);
   // No creator fee, any platform fee the policy charges, the shortest interval, open and listed.
   const params = {
     creatorFeeBps: 0,
@@ -317,15 +396,16 @@ const requestsHash = await wallet.deployContract({
   args: [factory, USDC, USDT],
   chain,
 });
-const requests = (await pub.waitForTransactionReceipt({ hash: requestsHash })).contractAddress;
+const requests = (await receiptOf(requestsHash)).contractAddress;
 const exHash = await wallet.deployContract({
   account: deployer,
   abi: EXECUTOR.abi,
   bytecode: EXECUTOR.bytecode.object,
-  args: [SWAP_ROUTER02, USDC, factory, requests, TOKEN_BRIDGE, execOwner, keeperAccount.address],
+  // No venue beside Uniswap on Ethereum: the chain's own DEX router is zero, of kind `None`.
+  args: [SWAP_ROUTER02, USDC, factory, requests, TOKEN_BRIDGE, execOwner, keeperAccount.address, zeroAddress, 0],
   chain,
 });
-const executor = (await pub.waitForTransactionReceipt({ hash: exHash })).contractAddress;
+const executor = (await receiptOf(exHash)).contractAddress;
 await deal(USDC, executor, 200_000n * 10n ** 6n);
 
 /// Pushes LINK's own pool up by `factor`, and the keeper's price of LINK with it.
@@ -376,10 +456,12 @@ const keeper = spawn(process.execPath, ["keeper.mjs"], {
     MIN_PROFIT_USD: "1",
     MIN_TVL_USD: "1000",
     KEEPER_DEBUG: "1",
+    // A fork with a cold cache fetches every new slot from upstream: slower than any RPC the keeper meets live.
+    RPC_TIMEOUT_MS: "120000",
     NEEDS_FILE,
-    // JUP's and APT's copies left the list, and the keeper's catalogue, on 2026-11-18; they stay this test's coins with
-    // no pool, priced as an operator prices a coin the catalogue does not hold.
-    PRICE_IDS: `${T.JUP.a}=${T.JUP.id},${T.APT.a}=${T.APT.id}`,
+    // JUP's and APT's copies are off the list and the keeper's catalogue, and Ondo's NVDAon is priced at a feed
+    // of its own; they stay this test's coins, priced as an operator prices a coin the catalogue does not hold.
+    PRICE_IDS: `${T.JUP.a}=${T.JUP.id},${T.APT.a}=${T.APT.id},${T.NVDAON.a}=${T.NVDAON.id}`,
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -404,7 +486,8 @@ keeper.on("exit", (code) => {
 });
 
 /// Waits until the keeper has handled the chain's head, including any block its own transactions mined.
-async function settle(timeoutMs = 240_000) {
+// A cold fork answers the first rounds slowly: each is waited for up to fifteen minutes.
+async function settle(timeoutMs = 900_000) {
   const end = Date.now() + timeoutMs;
   for (;;) {
     const at = await pub.getBlockNumber({ cacheTime: 0 });
@@ -431,8 +514,17 @@ const proposals = async (index) => read(index, HUB, "proposalCount");
 const nonceOf = async (index) => read(index, HUB, "rebalanceNonce");
 const logged = (text) => logLines.some((l) => l.includes(text));
 /// Whether the board asks for `coin` under `index`'s proposal `proposal`, reported at `source`.
+/// A board not written yet, before the keeper's first round that looked at everything, asks for nothing.
+const board = () => {
+  try {
+    return JSON.parse(readFileSync(NEEDS_FILE, "utf8"));
+  } catch (error) {
+    if (error.code === "ENOENT") return { needs: [] };
+    throw error;
+  }
+};
 const onBoard = (index, proposal, source, coin) =>
-  JSON.parse(readFileSync(NEEDS_FILE, "utf8")).needs.some(
+  board().needs.some(
     (n) => n.key.toLowerCase() === `${index}:${proposal}`.toLowerCase() && n.source === source && n.token === coin.a.toLowerCase() && BigInt(n.amount) > 0n,
   );
 
@@ -459,7 +551,7 @@ await deal(T.NVDAON.a, executor, nvdaStock);
 await send(execOwner, executor, EXECUTOR.abi, "setStockAllowance", [T.NVDAON.a, nvdaStock]);
 // What request fills may turn of the float into stock (RX-1, RX-9): the whole float, for this rehearsal.
 await send(execOwner, executor, EXECUTOR.abi, "setRequestUsdcAllowance", [2n ** 256n - 1n]);
-for (let round = 0; round < 4; round++) await mineBlocks(25);
+for (let round = 0; round < 5; round++) await mineBlocks(25);
 ok((await proposals(LQ)) === 1n, "LQ started");
 ok((await proposals(SHR)) === 1n, "SHR started: its sold JUP is kept, its WETH bought");
 ok((await proposals(MIX)) === 1n, "MIX started from stock");
@@ -490,7 +582,7 @@ let lateHash = null;
 const filled = new Set();
 // Ten-minute steps through the 4-hour auctions: the bar halves every twelve minutes, and each index is filled at the
 // first step where clearing it pays.
-for (let t = firstEta; t <= firstEta + 5n * 3600n && filled.size < 3; t += 600n) {
+for (let t = firstEta; t <= firstEta + 5n * 3600n && filled.size < 4; t += 600n) {
   await mineAt(t);
   // A transaction of the keeper's waits in the pool: mine it, the first fill one slot late.
   for (;;) {
@@ -509,6 +601,10 @@ await test.request({ method: "evm_setAutomine", params: [true] });
 
 const late = lateHash && (await pub.getTransactionReceipt({ hash: lateHash }));
 ok(late && late.status === "reverted" && late.gasUsed < 150_000n, `a fill mined a slot late reverts early (${late?.gasUsed} gas)`);
+ok(
+  logged("mined past its deadline and reverted on it: not counted against it") && !logged("reverted on chain after its simulation passed (1 of 3)"),
+  "and the keeper counts no strike for it: it reverted on its own deadline, which says nothing of the auction (RZ-15)",
+);
 for (const index of [LQ, MIX, SHR]) ok((await nonceOf(index)) === 1n, `${names[index]} filled`);
 ok((await nonceOf(DRY)) === 0n && (await proposals(DRY)) === 0n, "DRY never started");
 ok((await proposals(ADV)) === 0n, "ADV never started: a coin trading under its feed is not booked at the feed");
@@ -518,7 +614,7 @@ async function settlement(index) {
   const logs = await pub.getContractEvents({ address: index, abi: HUB, eventName: "Rebalanced", fromBlock: BigInt(forkBlock) + 1n });
   const event = logs[logs.length - 1];
   const tx = await pub.getTransaction({ hash: event.transactionHash });
-  return { ...event.args, from: tx.from, call: decodeFunctionData({ abi: EXECUTOR.abi, data: tx.input }) };
+  return { ...event.args, from: tx.from, value: tx.value, call: decodeFunctionData({ abi: EXECUTOR.abi, data: tx.input }) };
 }
 for (const index of [LQ, MIX, SHR]) {
   const s = await settlement(index);
@@ -526,9 +622,16 @@ for (const index of [LQ, MIX, SHR]) {
     s.from.toLowerCase() === keeperAccount.address.toLowerCase() && s.gain >= s.bar && s.bar < 10n ** 16n,
     `${names[index]} filled by the keeper at a bar of ${Number(s.bar) / 1e18}, its gain ${Number(s.gain) / 1e18}`,
   );
+  // The hub valued the fill at Pyth's prices, read in the same transaction from the update the keeper posted.
+  const update = s.call.functionName === "fill" ? s.call.args[0].pythUpdate : [];
+  ok(update.length > 0, `${names[index]}'s fill carried Pyth's update (${update.length} of them)`);
+  // Pyth's fee is its contract's own: zero on Ethereum, BNB Chain and Base when read, whatever it is then.
+  const fee = update.length ? await read(PYTH, pythAbi, "getUpdateFee", [update]) : -1n;
+  ok(s.value === fee, `and paid exactly Pyth's fee for it (${s.value} wei of ${fee})`);
 }
 const lq = await settlement(LQ);
-const [, , routes] = lq.call.args;
+// `fill(AuctionFill)`, since the keeper posts Pyth's update with it: one struct, its routes a field.
+const { routes } = lq.call.args[0];
 ok(
   routes.some((r, i) => lq.amountsIn[i] > 0n && (r.length - 2) / 2 === 66),
   "LQ's fill bought a coin along a two-hop route",
@@ -578,6 +681,57 @@ const unitsAfter = await read(LQ, HUB, "recordedUnits");
 ok((await nonceOf(LQ)) === 2n, "the keeper filled the guardian's auction");
 ok(unitsAfter[3] === unitsBefore[3], "UNI's units are exactly what they were");
 ok(unitsAfter[2] < unitsBefore[2], "LINK, which rose, was sold");
+
+// ---------------------------------------------------------------------
+// Requests
+// ---------------------------------------------------------------------
+
+step("requests: a buyer and a seller of LQ, filled by the keeper in one batch");
+const buyer = addr("buyer");
+await test.setBalance({ address: buyer, value: 10n ** 21n });
+const lqNonce = await nonceOf(LQ);
+const SHARE = 10n ** 18n;
+// What a share of LQ is worth now, at the prices the keeper is served. The buyer pays 3% over it for five shares, the
+// seller takes 3% under it for three: what is left over a basket of two shares pays the keeper's swaps, its gas and
+// MIN_PROFIT_USD.
+const [, lqUnits] = await read(LQ, HUB, "components");
+const lqShareUsd = [T.WETH, T.WBTC, T.LINK, T.UNI].reduce((sum, c, i) => sum + (Number(lqUnits[i]) / 10 ** c.d) * usdOf(c), 0);
+const usdc = (dollars) => BigInt(Math.round(dollars * 1e6));
+const [pay, want, sell, ask] = [usdc(5 * lqShareUsd * 1.03), 5n * SHARE, 3n * SHARE, usdc(3 * lqShareUsd * 0.97)];
+console.log(`  a share of LQ is worth ${lqShareUsd.toFixed(2)} USD: the buyer pays ${Number(pay) / 1e6} for five, the seller asks ${Number(ask) / 1e6} for three`);
+const until = (await now()) + 3_600n;
+await deal(USDC, buyer, pay);
+await send(buyer, USDC, erc20, "approve", [requests, pay]);
+await send(buyer, requests, REQUESTS.abi, "requestMint", [LQ, USDC, pay, want, until, lqNonce]);
+await send(creator, LQ, erc20, "approve", [requests, sell]);
+await send(creator, requests, REQUESTS.abi, "requestRedeem", [LQ, sell, USDC, ask, until, lqNonce]);
+const firstId = (await read(requests, REQUESTS.abi, "requestCount")) - 1n;
+const [buyShares0, sellUsdc0, float0] = await Promise.all([
+  read(LQ, erc20, "balanceOf", [buyer]),
+  read(USDC, erc20, "balanceOf", [creator]),
+  read(USDC, erc20, "balanceOf", [executor]),
+]);
+const stillOpen = async () => (await Promise.all([firstId, firstId + 1n].map((id) => read(requests, REQUESTS.abi, "getRequest", [id])))).filter((r) => r.open).length;
+// The filler reads new requests every 25 blocks, and fills in the block after it priced them.
+for (let round = 0; round < 6 && (await stillOpen()) > 0; round++) await mineBlocks(25);
+ok((await stillOpen()) === 0, "both requests are filled");
+ok((await read(LQ, erc20, "balanceOf", [buyer])) - buyShares0 === want, "the buyer holds exactly the shares it asked for");
+ok((await read(USDC, erc20, "balanceOf", [creator])) - sellUsdc0 === ask, "the seller was paid exactly the USDC it asked for");
+const fills = await pub.getContractEvents({ address: requests, abi: REQUESTS.abi, eventName: "RequestFilled", fromBlock: BigInt(forkBlock) + 1n });
+const fillTxs = await Promise.all([...new Set(fills.map((f) => f.transactionHash))].map((hash) => pub.getTransaction({ hash })));
+const fillCalls = fillTxs.map((tx) => decodeFunctionData({ abi: EXECUTOR.abi, data: tx.input }));
+ok(
+  fills.length === 2 && fillTxs.length === 1 && fillTxs[0].from.toLowerCase() === keeperAccount.address.toLowerCase() && fillCalls[0].functionName === "fillBatch",
+  `the keeper filled them in one batch (${fillCalls.map((c) => c.functionName).join(", ")})`,
+);
+const batch = fillCalls[0]?.args[0];
+ok(batch?.issue === want - sell && batch?.redeem === 0n, "the seller's three shares went to the buyer, and two more were issued from one basket");
+// The executor refuses a batch whose requests are not the ones its keeper priced: the hash it carried is the fold
+// of the two requests as MintRequests hashes them (CA-M6).
+const hashes = await Promise.all([firstId + 1n, firstId].map((id) => read(requests, REQUESTS.abi, "requestHash", [id])));
+ok(/^0x[0-9a-f]{64}$/.test(batch?.expected ?? "") && batch.expected !== `0x${"00".repeat(32)}` && hashes.every((h) => h !== batch.expected), "the batch named its requests by one hash");
+const float1 = await read(USDC, erc20, "balanceOf", [executor]);
+ok(float1 > float0, `the fill paid: the float went from ${Number(float0) / 1e6} to ${Number(float1) / 1e6}`);
 
 step(`done: ${passed} passed, ${failed} failed`);
 shutdown(failed === 0 ? 0 : 1);

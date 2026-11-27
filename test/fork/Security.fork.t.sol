@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
+import {WeightedMath} from "../../src/WeightedMath.sol";
 import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -10,6 +11,7 @@ import {IIndexFactory} from "../../src/interfaces/IIndexFactory.sol";
 import {IWeightedIndexFactory} from "../../src/interfaces/IWeightedIndexFactory.sol";
 import {IndexZap} from "../../src/IndexZap.sol";
 import {MintRequests} from "../../src/MintRequests.sol";
+import {BasketBuilder} from "../../src/BasketBuilder.sol";
 import {IMintRequests} from "../../src/interfaces/IMintRequests.sol";
 import {IIndexZap} from "../../src/interfaces/IIndexZap.sol";
 import {IUniversalRouterSwaps} from "../../src/interfaces/IUniversalRouterSwaps.sol";
@@ -19,6 +21,7 @@ import {PathKey} from "../../src/libraries/UniswapV4Types.sol";
 import {ForkAddresses as A} from "./ForkAddresses.sol";
 import {DeployWeighted} from "../../script/DeployWeighted.s.sol";
 import {DeployChecks} from "../../script/DeployChecks.sol";
+import {LocalVenues} from "../LocalVenues.sol";
 
 interface IWbtcAdmin {
     function owner() external view returns (address);
@@ -31,6 +34,7 @@ interface IUsdtAdmin {
     function setParams(uint256 newBasisPoints, uint256 newMaxFee) external;
     function addBlackList(address user) external;
     function removeBlackList(address user) external;
+    function destroyBlackFunds(address user) external;
 }
 
 interface ISafeProxyFactory {
@@ -128,9 +132,12 @@ contract SecurityForkTest is Test {
                 )
             );
         }
-        factory = new WeightedIndexFactory(address(this), address(0));
+        factory =
+            new WeightedIndexFactory(address(this), address(0), address(0), address(new WeightedMath()), address(0));
         factory.setApprovedCreator(address(this), true);
-        zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER), A.USDC, A.USDT);
+        zap = new IndexZap(
+            IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER), LocalVenues.none(), A.USDC, A.USDT
+        );
 
         factory.proposeListing(A.WBTC);
         factory.proposeListing(A.WETH);
@@ -218,10 +225,13 @@ contract SecurityForkTest is Test {
 
         IUniversalRouterSwaps.BurnLeg[] memory burnLegs = new IUniversalRouterSwaps.BurnLeg[](2);
         burnLegs[0] = IUniversalRouterSwaps.BurnLeg({
-            v3Path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDT), v4Path: new PathKey[](0), minAmountOut: 0
+            localRoute: "",
+            v3Path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDT),
+            v4Path: new PathKey[](0),
+            minAmountOut: 0
         });
         burnLegs[1] = IUniversalRouterSwaps.BurnLeg({
-            v3Path: abi.encodePacked(A.WETH, F500, A.USDT), v4Path: new PathKey[](0), minAmountOut: 0
+            localRoute: "", v3Path: abi.encodePacked(A.WETH, F500, A.USDT), v4Path: new PathKey[](0), minAmountOut: 0
         });
         vm.startPrank(user);
         idx.approve(address(zap), 1e18);
@@ -246,10 +256,13 @@ contract SecurityForkTest is Test {
         deal(A.USDT, user, 100e6);
         IUniversalRouterSwaps.MintLeg[] memory mintLegs = new IUniversalRouterSwaps.MintLeg[](2);
         mintLegs[0] = IUniversalRouterSwaps.MintLeg({
-            v3Path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDT), v4Path: new PathKey[](0), maxAmountIn: 0
+            localRoute: "",
+            v3Path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDT),
+            v4Path: new PathKey[](0),
+            maxAmountIn: 0
         });
         mintLegs[1] = IUniversalRouterSwaps.MintLeg({
-            v3Path: abi.encodePacked(A.WETH, F500, A.USDT), v4Path: new PathKey[](0), maxAmountIn: 0
+            localRoute: "", v3Path: abi.encodePacked(A.WETH, F500, A.USDT), v4Path: new PathKey[](0), maxAmountIn: 0
         });
         vm.startPrank(user);
         IERC20(A.USDT).forceApprove(address(zap), 100e6);
@@ -270,15 +283,21 @@ contract SecurityForkTest is Test {
         vm.stopPrank();
     }
 
-    /// @dev Paid in USDC through WETH, the zap's only currencies being the two stablecoins since 2026-11-18.
+    /// @dev Paid in USDC through WETH, the zap's only currencies being the two stablecoins.
     function test_I03_strayRouterEthIsRefundedNotLocked() public {
         WeightedHub idx = _create(A.WBTC, A.LINK);
         IUniversalRouterSwaps.MintLeg[] memory legs = new IUniversalRouterSwaps.MintLeg[](2);
         legs[0] = IUniversalRouterSwaps.MintLeg({
-            v3Path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDC), v4Path: new PathKey[](0), maxAmountIn: 0
+            localRoute: "",
+            v3Path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDC),
+            v4Path: new PathKey[](0),
+            maxAmountIn: 0
         });
         legs[1] = IUniversalRouterSwaps.MintLeg({
-            v3Path: abi.encodePacked(A.LINK, F3000, A.WETH, F500, A.USDC), v4Path: new PathKey[](0), maxAmountIn: 0
+            localRoute: "",
+            v3Path: abi.encodePacked(A.LINK, F3000, A.WETH, F500, A.USDC),
+            v4Path: new PathKey[](0),
+            maxAmountIn: 0
         });
 
         vm.deal(A.UNIVERSAL_ROUTER, 10 ether); // stray ether sitting in the router
@@ -316,10 +335,13 @@ contract SecurityForkTest is Test {
 
         IUniversalRouterSwaps.BurnLeg[] memory legs = new IUniversalRouterSwaps.BurnLeg[](2);
         legs[0] = IUniversalRouterSwaps.BurnLeg({
-            v3Path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDC), v4Path: new PathKey[](0), minAmountOut: 0
+            localRoute: "",
+            v3Path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDC),
+            v4Path: new PathKey[](0),
+            minAmountOut: 0
         });
         legs[1] = IUniversalRouterSwaps.BurnLeg({
-            v3Path: abi.encodePacked(A.WETH, F500, A.USDC), v4Path: new PathKey[](0), minAmountOut: 0
+            localRoute: "", v3Path: abi.encodePacked(A.WETH, F500, A.USDC), v4Path: new PathKey[](0), minAmountOut: 0
         });
 
         vm.deal(A.UNIVERSAL_ROUTER, 10 ether); // a griefer, or a careless user, leaves ether in the router
@@ -376,10 +398,13 @@ contract SecurityForkTest is Test {
         _issue(idx, 1e18);
         IUniversalRouterSwaps.BurnLeg[] memory legs = new IUniversalRouterSwaps.BurnLeg[](2);
         legs[0] = IUniversalRouterSwaps.BurnLeg({
-            v3Path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDC), v4Path: new PathKey[](0), minAmountOut: 0
+            localRoute: "",
+            v3Path: abi.encodePacked(A.WBTC, F500, A.WETH, F500, A.USDC),
+            v4Path: new PathKey[](0),
+            minAmountOut: 0
         });
         legs[1] = IUniversalRouterSwaps.BurnLeg({
-            v3Path: abi.encodePacked(A.WETH, F500, A.USDC), v4Path: new PathKey[](0), minAmountOut: 0
+            localRoute: "", v3Path: abi.encodePacked(A.WETH, F500, A.USDC), v4Path: new PathKey[](0), minAmountOut: 0
         });
 
         // A griefer, or a user's slip, leaves a whole WETH in the router: far more than the WBTC leg's WETH hop sells.
@@ -403,9 +428,9 @@ contract SecurityForkTest is Test {
             PathKey({intermediateCurrency: address(0), fee: F3000, tickSpacing: 60, hooks: address(0), hookData: ""});
         route[1] = PathKey({intermediateCurrency: A.USDC, fee: F500, tickSpacing: 10, hooks: address(0), hookData: ""});
         IUniversalRouterSwaps.BurnLeg[] memory legs = new IUniversalRouterSwaps.BurnLeg[](2);
-        legs[0] = IUniversalRouterSwaps.BurnLeg({v3Path: "", v4Path: route, minAmountOut: 0});
+        legs[0] = IUniversalRouterSwaps.BurnLeg({localRoute: "", v3Path: "", v4Path: route, minAmountOut: 0});
         legs[1] = IUniversalRouterSwaps.BurnLeg({
-            v3Path: abi.encodePacked(A.WETH, F500, A.USDC), v4Path: new PathKey[](0), minAmountOut: 0
+            localRoute: "", v3Path: abi.encodePacked(A.WETH, F500, A.USDC), v4Path: new PathKey[](0), minAmountOut: 0
         });
 
         deal(A.LINK, A.UNIVERSAL_ROUTER, 3e18);
@@ -467,6 +492,111 @@ contract SecurityForkTest is Test {
         assertEq(idx.balanceOf(user), 2e18, "the filler holds the shares it sold and got back");
     }
 
+    /// @dev Tether's owner blacklists `holder`, destroys its USDT and lifts the blacklist: the one way a balance of
+    ///      USDT falls without a transfer.
+    function _tetherDestroys(address holder) internal {
+        address tether = IUsdtAdmin(A.USDT).owner();
+        vm.startPrank(tether);
+        IUsdtAdmin(A.USDT).addBlackList(holder);
+        IUsdtAdmin(A.USDT).destroyBlackFunds(holder);
+        IUsdtAdmin(A.USDT).removeBlackList(holder);
+        vm.stopPrank();
+    }
+
+    /// @dev CA-H2 and CA-M1 against mainnet Tether. A request bound to the basket it priced opens only at that nonce.
+    ///      Once Tether has destroyed the escrow of an open request, no newcomer's USDT is taken to stand in for it:
+    ///      the request reverts Underbacked on the real token, the first requester's cancel cannot be paid, USDC is
+    ///      another balance and still takes requests, and making the balance whole reopens USDT, each request then
+    ///      refunded from an escrow of its own.
+    function test_CAH2_CAM1_noRequestPaysForAnEscrowTetherDestroyed() public {
+        MintRequests requests = new MintRequests(address(factory), A.USDC, A.USDT);
+        WeightedHub idx = _create(A.WBTC, A.WETH);
+        address requester = makeAddr("requester");
+        address newcomer = makeAddr("newcomer");
+        uint256 nonce = idx.rebalanceNonce();
+        uint256 deadline = block.timestamp + 1 days;
+
+        deal(A.USDT, requester, 1_000e6);
+        vm.startPrank(requester);
+        IERC20(A.USDT).forceApprove(address(requests), 1_000e6);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.StaleRebalanceNonce.selector, nonce + 1, nonce));
+        requests.requestMint(address(idx), A.USDT, 1_000e6, 1e18, deadline, nonce + 1);
+        uint256 first = requests.requestMint(address(idx), A.USDT, 1_000e6, 1e18, deadline, nonce);
+        vm.stopPrank();
+        assertEq(requests.totalEscrow(A.USDT), 1_000e6);
+
+        _tetherDestroys(address(requests));
+        assertEq(IERC20(A.USDT).balanceOf(address(requests)), 0, "Tether took the escrow");
+        assertEq(requests.totalEscrow(A.USDT), 1_000e6, "which the request still records");
+
+        deal(A.USDT, newcomer, 1_000e6);
+        deal(A.USDC, newcomer, 500e6);
+        vm.startPrank(newcomer);
+        IERC20(A.USDT).forceApprove(address(requests), 1_000e6);
+        IERC20(A.USDC).forceApprove(address(requests), 500e6);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Underbacked.selector, A.USDT, 0, 1_000e6));
+        requests.requestMint(address(idx), A.USDT, 1_000e6, 1e18, deadline, nonce);
+        requests.requestMint(address(idx), A.USDC, 500e6, 1e18, deadline, nonce);
+        vm.stopPrank();
+        assertEq(IERC20(A.USDT).balanceOf(newcomer), 1_000e6, "the newcomer keeps its USDT");
+
+        // The request the burn caught is refunded whole or not at all.
+        vm.prank(requester);
+        (bool refunded,) = address(requests).call(abi.encodeCall(IMintRequests.cancel, (first)));
+        assertFalse(refunded, "nothing is left to refund it from");
+        assertTrue(requests.getRequest(first).open);
+
+        // Anyone makes the balance whole, and USDT takes requests again.
+        address donor = makeAddr("donor");
+        deal(A.USDT, donor, 1_000e6);
+        vm.prank(donor);
+        IERC20(A.USDT).safeTransfer(address(requests), 1_000e6);
+        vm.prank(newcomer);
+        uint256 second = requests.requestMint(address(idx), A.USDT, 1_000e6, 1e18, deadline, nonce);
+        vm.prank(requester);
+        requests.cancel(first);
+        vm.prank(newcomer);
+        requests.cancel(second);
+        assertEq(IERC20(A.USDT).balanceOf(requester), 1_000e6, "the first request is refunded from its own escrow");
+        assertEq(IERC20(A.USDT).balanceOf(newcomer), 1_000e6, "and the newcomer from its own");
+        assertEq(requests.totalEscrow(A.USDT), 0);
+    }
+
+    /// @dev CA-H2 against mainnet Tether, on the basket builder: after Tether destroyed the builder's USDT, a deposit
+    ///      of USDT is refused while the escrows it would pay for are uncovered, and taken again once they are whole.
+    function test_CAH2_noDepositPaysForAnEscrowTetherDestroyed() public {
+        BasketBuilder builder = new BasketBuilder(
+            IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER), LocalVenues.none(), A.USDC, A.USDT
+        );
+        address newcomer = makeAddr("newcomer");
+        deal(A.USDT, user, 500e6);
+        vm.startPrank(user);
+        IERC20(A.USDT).forceApprove(address(builder), 500e6);
+        builder.deposit(A.USDT, 500e6);
+        vm.stopPrank();
+        assertEq(builder.escrowOf(user, A.USDT), 500e6);
+
+        _tetherDestroys(address(builder));
+        deal(A.USDT, newcomer, 600e6);
+        vm.startPrank(newcomer);
+        IERC20(A.USDT).forceApprove(address(builder), 600e6);
+        // The builder checks once the deposit has arrived: it would hold 300 USDT against escrows of 800.
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Underbacked.selector, A.USDT, 300e6, 800e6));
+        builder.deposit(A.USDT, 300e6);
+        vm.stopPrank();
+
+        address donor = makeAddr("donor");
+        deal(A.USDT, donor, 500e6);
+        vm.prank(donor);
+        IERC20(A.USDT).safeTransfer(address(builder), 500e6);
+        vm.prank(newcomer);
+        builder.deposit(A.USDT, 300e6);
+        vm.prank(user);
+        builder.withdraw(A.USDT, 500e6, user);
+        assertEq(IERC20(A.USDT).balanceOf(user), 500e6, "the first escrow leaves whole");
+        assertEq(builder.totalEscrow(A.USDT), 300e6);
+    }
+
     /// @dev SA-01 against mainnet Tether. Tether checks only the sender of a transfer and `from` of a transferFrom,
     ///      which is what the mock copies: a requester it has blacklisted is still paid by a fill, and a MintRequests it
     ///      has blacklisted would still take a USDT deposit it could never pay out, so a mint request refuses one.
@@ -515,7 +645,7 @@ contract SecurityForkTest is Test {
     ///      only learned to honour `start` in this review, so the real Safe is the proof: a 3-of-3 Safe without modules
     ///      is accepted as an owner, and the same Safe with one module enabled is refused, on 1.3.0, which answers any
     ///      other start with an empty page, and on 1.4.1, which refuses one. A real 2-of-3 is refused outright, since
-    ///      the owner needs at least three signatures (the owner's call on 2026-09-30).
+    ///      the owner needs at least three signatures.
     function test_XA07_CRI36_aRealSafeWithAModuleIsRefused() public {
         DeployWeighted deployer = new DeployWeighted();
         address module = makeAddr("module");

@@ -10,9 +10,10 @@
     "harness": "node --test test/harness/*.test.mjs",
     "e2e": "node test/e2e/run.mjs",
     "e2e:restock": "node test/e2e/restock.mjs",
+    "e2e:uniswapx": "node test/e2e/uniswapx.mjs",
     "invariants": "node invariants.mjs"
   },
   "dependencies": {
-    "viem": "2.21.54"
+    "viem": "2.57.7"
   }
 }

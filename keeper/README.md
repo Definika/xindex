@@ -1,18 +1,20 @@
 # Xindex keeper
 
-Starts and fills `WeightedHub` auctions on Ethereum, and fills `MintRequests` requests, through its own executor,
-`src/KeeperExecutor.sol`. It holds **no role in the protocol**: starting a rebalance, filling an auction and filling a
-request are open to anyone, and anyone may run a keeper. Its key is the keeper's own hot key, not the owner's or the
-guardian's. A second process, the restock service (`restock.mjs`, see [Restock](#restock)), keeps the executor stocked
-with the coins Ethereum has only as Wormhole copies, buying them on their home chains. A third, the invariant checker
-(`invariants.mjs`, see [Invariant checker](#invariant-checker)), holds no key and watches that the contracts' properties
-hold on chain.
+Starts and fills `WeightedHub` auctions on Ethereum, BNB Chain and Base, and fills `MintRequests` requests, through
+its own executor, `src/KeeperExecutor.sol`. It holds **no role in the protocol**: starting a rebalance, filling an
+auction and filling a request are open to anyone, and anyone may run a keeper. Its key is the keeper's own hot key,
+not the owner's or the guardian's. A second process, the restock service (`restock.mjs`, see [Restock](#restock)),
+keeps the executor stocked with the coins Ethereum has only as Wormhole copies, buying them on their home chains, and
+with nine of Ondo's stocks. A third, the invariant checker (`invariants.mjs`, see
+[Invariant checker](#invariant-checker)), holds no key and watches that the contracts' properties hold on chain.
 
 ## What it does
 
-No contract reads a price (since 2026-11-10). A fill names the units the index settles at, and the index accepts them
+No issue, redeem or claim reads a price. A fill names the units the index settles at, and the index accepts them
 when every leg is inside its unit caps and a weighted gain in units clears the auction's bar, which starts at a half
-and halves every twelve minutes for four hours (`design/2026-11-10-oracle-free-rebalance.md`). So the keeper prices its
+and halves every twelve minutes for four hours (`docs/design/rebalance.md`). On a factory with an
+oracle the index then checks the fill against Pyth's prices of the last fifteen seconds, a check that can only refuse
+(`docs/design/pyth-check.md`); the keeper's fill posts those prices itself, below. So the keeper prices its
 own trades, off chain: Pyth's prices from Hermes, each kept only where Pyth's contract confirms the signed update that
 carries it, through the keeper's own catalogue of each coin's Pyth id (`bot/price-ids.mjs`, and `PRICE_IDS`).
 
@@ -27,6 +29,22 @@ Every block L, with T = L's timestamp + 12 (the one block a fill sent now can la
      word and replayed against the contracts' vectors, before anything is asked of the chain.
    - When the owner or guardian posted a quote with the proposal (`rebalanceQuote()`), the units named must hold it
      too: the bot gives the index as much more as the quote asks, and names nothing it would have to give away.
+   - On a factory with an oracle (`PRICES()` on the index is not zero) the fill must also hold Pyth's check: what
+     it brings in, at Pyth's prices, covers what it takes less a tolerance that rises from nothing to 2% over the
+     auction. A price reaches Pyth's contract only when someone posts it, so the fill carries Pyth's signed update
+     for the feeds the factory names (`priceFeedOf`) and the executor posts it first, in the same transaction, for
+     Pyth's fee, which the transaction carries exactly (`WrongPythFee`) and which is counted with the gas. Before
+     naming units the bot asks the hub's reader what each leg is worth once that update is posted, for a leg that
+     leaves and for one that arrives (one `eth_call` through Multicall3: the update, then the questions), and names
+     only units that hold the check at the tolerance of second T (`oracleOf`, replayed against the contracts' 85
+     oracle vectors). The hub's preview is asked the same way, after the update. A leg without a feed, or one the
+     reader cannot value even then, keeps its units. Anyone can post a newer Pyth update ahead of the fill, at prices
+     a hair off the ones simulated, so the bot names its units at the tolerance of twelve minutes earlier
+     (`ORACLE_LAG`), a tenth of a percent inside the check; a fill that reverts all the same counts as a strike
+     against its auction, as any reverted fill does, and is simulated again once its back-off ends. The index's
+     weights are read every round: its creator may change them behind a notice. The step that builds the update
+     and reads the values is `bot/pyth.mjs`, tested on its own (`test/unit/pyth.test.mjs`); the calls around it
+     run in the end-to-end test, against Pyth's real contract on a mainnet fork (45 of 45 when last run).
    - A leg it cannot value keeps its units: a kept leg, a coin outside the catalogue, a share-priced Ondo leg
      (RX-2), and a coin whose price is not the signed one, is older than a minute or carries a confidence interval
      wider than 2% (RX-1, RX-9). A leg within `TRADE_COST_BPS` of its weight is not traded for its own sake.
@@ -43,10 +61,13 @@ Every block L, with T = L's timestamp + 12 (the one block a fill sent now can la
      distance. An index on its weights never pays: clearing any bar from there is a gift.
    - A fill that reverts on chain all the same, after its simulation passed, holds its auction off for 5 blocks, then
      10, and after the third this bot leaves that auction until the strikes lapse, 300 blocks after the last (RX-26);
-     its routes are searched again. The chosen fill is simulated again with the gas limit it will carry before it is
+     its routes are searched again. A fill mined after the block it was sent for reverts on its own deadline, which
+     says nothing of the auction, and is no strike (RZ-15); one whose receipt the node could not be asked for stays
+     in flight until it can (RZ-6). The chosen fill is simulated again with the gas limit it will carry before it is
      sent (RX-21), and a fill below zero profit, which only a negative `MIN_PROFIT_USD` allows, is sent only within
-     `SUBSIDY_BUDGET_USD` a day (RX-16). An auction the bot is backed off from does not take one of the 8 check
-     slots (RX-24).
+     `SUBSIDY_BUDGET_USD` a day (RX-16), counted at what the fill pays if its float ends at the floor it is sent
+     with, not at its simulation, and only once it has gone out (RZ-9, RZ-16). An auction the bot is backed off
+     from does not take one of the 8 check slots (RX-24).
 2. **Starts.** Every 25 blocks, for each index anyone may restart, it simulates the auction at its last second, where
    the bar is lowest (by overriding the hub's pending slot), and starts it only when a fill then would pay after the
    start's own gas, the index is worth `MIN_TVL_USD`, and the executor can deliver every coin that fill asks for. A
@@ -57,7 +78,9 @@ Every block L, with T = L's timestamp + 12 (the one block a fill sent now can la
    them like any other auction and names a kept leg's units unchanged.
 3. **Requests.** With `FILL_REQUESTS` on and nothing else to send, the open `MintRequests` requests on the indexes it
    serves are read every 25 blocks, with each index's gate and a Hermes value of one of its shares; a request whose read
-   fails is kept as it was and read again. A request is skipped before any simulation when its escrow at Pyth is worth
+   fails is kept as it was and read again. A scan reads at most 1,000 requests, the new ones from the last id read and
+   the known open ones in turn, so a stranger's one-unit requests delay the reading of the others by a few scans and
+   no more (RZ-10). A request is skipped before any simulation when its escrow at Pyth is worth
    less than its limit plus `MIN_PROFIT_USD`, since no fill of it could pay (RY-8), or when it is a mint on an index
    whose gate would not issue to the executor. Of the rest, the 8
    largest in dollars are simulated per block, at most 4 of them on one side while the other side has requests, and a
@@ -79,7 +102,7 @@ Every block L, with T = L's timestamp + 12 (the one block a fill sent now can la
    - A fill that reverts on chain strikes the request, its requester and its index, so new request ids do not start
      over (RX-10); a request a check keeps declining without a revert is checked again 2, 4, 8... blocks later, at most
      200 (RX-24).
-   - **Batches** (`fillBatch`, `design/2026-11-11-batch-fills.md`). Before the single fills, the open requests of
+   - **Batches** (`fillBatch`, `docs/design/batch-fills.md`). Before the single fills, the open requests of
      each index in each stablecoin are planned as one fill, up to 16 of them: every request at exactly its limit, the
      shares the redeem requests escrowed passed to the mint requests, and one basket bought or sold for the
      difference. A request joins a batch when its escrow is worth at least its limit; it need not pay
@@ -95,6 +118,8 @@ Every block L, with T = L's timestamp + 12 (the one block a fill sent now can la
    that nonce is mined; after the tenth it only waits, and logs it. A nonce left pending by an earlier run is cleared
    the same way at startup, at most 4 of them, and so is one whose send failed with its outcome unknown; a pending
    nonce the RPC reports beyond those is logged and left alone, so an RPC cannot make the bot cancel every block.
+   Nothing is sent over such a nonce either: the bot sends again once it is mined, and says once why it waits, where a
+   fill signed on it replaced it or was refused as underpriced block after block (RZ-8).
 
 ## Inventory
 
@@ -102,12 +127,19 @@ The executor swaps through Uniswap V3 (SwapRouter02) along a route per coin, cho
 `token→USDC` and `token→WETH→USDC` pool at the leg's own size; a route losing more than `ROUTE_MAX_LOSS_BPS` against
 Pyth is not used. A coin without a usable route (Wormhole copies, Ondo stocks, Tether Gold) is served from the
 executor's **stock**: a coin the index sells is kept, and a coin it needs is delivered from stock, which the restock
-service keeps filled for the Wormhole copies it serves ([Restock](#restock)), and the operator for the rest. A coin
-leaves stock only within the **stock allowance** `OWNER` sets for it (`setStockAllowance(token, amount)`), and what the
-restock service bridges in adds to, which every delivery from stock spends; with none, nothing is served from stock.
+service keeps filled for the Wormhole copies it serves and the nine Ondo stocks the keeper values ([Restock](#restock)),
+and the operator for the rest. A coin leaves stock only within the **stock allowance** `OWNER` sets for it
+(`setStockAllowance(token, amount)`), and what the restock service bridges in or deposits adds to, which every delivery
+from stock spends; with none, nothing is served from stock.
 With `NEEDS_FILE` set, the keeper writes there every coin a fill, a start or a request delivers from stock, with the
 whole of it that fill needs, for the restock service to bring in and then keep: a coin stays on the board while its
-fill waits, covered or not, so stock that has just arrived is not sent home before the fill uses it (RZ-3). Only a
+fill waits, covered or not, so stock that has just arrived is not sent home before the fill uses it (RZ-3). The board
+is dated by the keeper's last block that looked at everything it reports on, not by its last write: while the
+keeper's blocks fail, or stop behind a transaction of its own, the date stands still, and after fifteen minutes the
+restock reads the board as unknown and moves no coin, where a board dated by its last write read as "nothing is
+needed" and sent the stock home (CA-R2-02). A request is on the board once, under its batch while it is in one
+(CA-M8); one short of stock is checked again within ten minutes, so its need does not lapse while the coins are on
+their way; and one its index has settled a rebalance since asks for nothing, since it can never be filled. Only a
 fill that could pay `MIN_PROFIT_USD` at its best price is on the board (RY-8): an auction's, when its settlement at
 its last second, where the bar is lowest, sends out that much more than it takes in at the keeper's prices, before
 routes and gas; a request's,
@@ -116,14 +148,14 @@ cost the restock its swaps and bridge fees, there and back. A holder who makes a
 fill can still cause that, within the restock's daily and per-coin bounds.
 
 **Ahead of the auction.** The board carries an auction before it opens, so the stock its fill wants has arrived by
-then (2026-11-18). Every 25 blocks, beside the start checks, the keeper looks at the richest four indexes whose
+then. Every 25 blocks, beside the start checks, the keeper looks at the richest four indexes whose
 auction is coming: a proposal waiting out its two-hour notice, and an index it may start within
 `PRESTOCK_LEAD_SECONDS`, a day by default, or one past its interval that a cancel or an expiry holds off strangers. Each
 is simulated as a start is, at its auction's last second, where the bar is lowest, and what stock would serve goes on
 the board under the key its fill will carry, if that fill could pay `MIN_PROFIT_USD` (RY-8). So one entry stands from
-a day before the start to the fill, refreshed every five minutes, where it once stood only while the index could be
-started and while its auction was open: during the notice, which no check read, it lapsed after `NEEDS_MAX_AGE_SECONDS`
-and the restock could send the stock home before the auction opened. An index on its weights names no units that clear
+a day before the start to the fill, refreshed every five minutes, the notice included: an entry left to lapse after
+`NEEDS_MAX_AGE_SECONDS` during the notice would let the restock send the stock home before the auction opened. An
+index on its weights names no units that clear
 the bar and puts nothing on the board, so stock is brought in for the drift there is, at the keeper's prices of the
 moment, and the restock's buffer (`RESTOCK_BUFFER_BPS`) covers what the market does by the fill. A proposal's quote is
 left out of the simulation, as the restock's question about any fill leaves it out. Nothing is sent: the start is
@@ -131,8 +163,8 @@ still sent only once the index can be started and the fill pays.
 
 **Stock carries the coin's price.** Every coin the executor holds, kept from a fill, brought in ahead of an auction or
 left by the restock's keep, rises and falls with that coin until a fill delivers it or the restock sells it at home.
-That risk is the operator's, as the share stock's is, and nothing hedges it: at launch sizes it is accepted (the owner's
-call of 2026-11-18). What bounds it is what bounds the stock: the restock buys only for the needs on the board and their
+That risk is the operator's, as the share stock's is, and nothing hedges it: at launch sizes the owner accepts it.
+What bounds it is what bounds the stock: the restock buys only for the needs on the board and their
 buffer, within the owner's restock allowance per coin and `RESTOCK_DAILY_USD`, and keeps at most `RESTOCK_KEEP_USD` of
 a coin nobody needs; a shorter `PRESTOCK_LEAD_SECONDS` holds it for less time. A hedge, such as a short position in the coin sized to the stock, is
 for when the stock grows past what the operator will carry.
@@ -148,10 +180,19 @@ held move with the index: that risk is the operator's, and the default holds non
 demand; an operator who wants some sends the executor shares. An index holding a share-priced Ondo leg has shares the
 bot cannot value, so it keeps and delivers none of them.
 
-The twelve Ondo legs priced at their share's feed (AMZNon, TSMon, SPCXon, METAon, AVGOon, SKHYon, MUon, LLYon, AMDon,
-JPMon, WMTon, Von; `SHARE_PRICED_IDS` in `bot/config.mjs`) are worth sValue shares, which the bot cannot read. Keep
-their stock allowance at **zero**: the bot refuses any fill that would deliver them from stock, and counts any it keeps
-as worth nothing (RX-2). After a split or a reverse split the share's feed is off by the ratio. The bot logs `restock <coins>` and does not start or fill an
+The 344 Ondo legs priced at their share's feed (every listed Ondo stock and ETF but the 9 Pyth prices directly, NVDA,
+AAPL, GOOGL, MSFT, TSLA, HOOD, MSTR, COIN and CRCL; `SHARE_PRICED_IDS` in `bot/config.mjs`) are worth sValue
+shares. The bot reads each one's sValue from Ondo's `SyntheticSharesOracle` on its chain
+(`bot/svalues.mjs`, `ondoOracle` in the chain table) and values the leg at the share's price times it, as Ondo's own
+notes on the oracle say to, once the sValue is settled: Ondo's oracle holds it, no corporate action is scheduled or
+under way (Ondo pauses the asset for one, and an operator of theirs lifts the pause), and it last changed at least
+`SVALUE_SETTLE_SECONDS` (twenty minutes) ago. Such a leg is valued like any other: named units, delivered from stock,
+counted as stock. When last read, BNB Chain's oracle held 349 of the list's 353 Ondo tokens, with multipliers
+from 0.10 (SOXSon, a reverse split) to 10.04 (KLACon; NFLXon and PPLTon are 10), and Ethereum's 10, so on Ethereum
+336 legs are left alone until Ondo registers them. A leg without a settled sValue is share-priced as before. Keep its
+stock allowance at
+**zero**: the bot refuses any fill that would deliver it from stock, and counts any it keeps as worth nothing (RX-2).
+Base has no Ondo oracle. The bot logs `restock <coins>` and does not start or fill an
 auction its usable stock (the lower of the balance and the allowance) cannot cover. Usable stock comes first for a
 routed coin too; only the rest is bought. The executor's address must be able to hold and send every coin it stocks.
 
@@ -167,7 +208,12 @@ routed coin too; only the rest is bought. The executor's address must be able to
   the shares of an index that exists, or request a mint of one, so that check does not keep the stock from an index the
   key's thief holds (CF-1):
   what bounds the stock a stolen key can move is the allowance `OWNER` left, which a request fill spends like an
-  auction fill, so keep each allowance to what the next fills need. The key can also trade the USDC float badly within
+  auction fill, so keep each allowance to what the next fills need. A batch spends the share stock's allowance on a
+  count of the shares it is to hand over and bring in, made before anything moves; after its last step that count is
+  held against the shares the executor holds, and the batch reverts `ShareStockShort` if more left than was spent.
+  Without that check, a batch that named a redeem request and paid it nothing, which is never filled, could take
+  the whole share stock with the allowance at zero (CA-H1). Every fill also carries the hash of
+  the request, or requests, its keeper priced, and stops if another stands behind an id, as after a re-org (CA-M6). The key can also trade the USDC float badly within
   the floor it sets itself: keep the float to what fills need, and the key's ETH to a few days of gas.
 - **Kept coins are adverse selection.** A coin no route takes is kept as stock, and the worse its pools pay against
   Pyth, the surer no route takes it. The bot values a kept coin at the lower of Pyth and the best quote its route
@@ -180,7 +226,8 @@ routed coin too; only the rest is bought. The executor's address must be able to
   make the bot buy its other legs with the float; an index an approved creator built still can, up to the auction's
   turnover cap each interval, and a redeem request up to the request allowance. Keep the float and that
   allowance to what fills need, and serve such coins (`INDEXES`) only where the operator has a market for them. A kept
-  coin's quote is the block's own (RX-13); the pools a coin can use are read again every 25 blocks, so one created
+  coin's quote is the block's own (RX-13), and a chosen route is quoted again whenever its leg grows, so a purchase's
+  bound covers the larger amount (RZ-11); the pools a coin can use are read again every 25 blocks, so one created
   after a depeg counts (RX-17), and a pool nobody initialized is no market, so it cannot zero a coin's value (RX-14).
   An initialized pool whose liquidity is gone still quotes nothing, as XS-5 intends.
 - Fills go through the public mempool: anyone can see a fill and the units it names before it lands. The floor bounds
@@ -197,22 +244,27 @@ routed coin too; only the rest is bought. The executor's address must be able to
 
 `restock.mjs` keeps the executor stocked with the Wormhole copies no Ethereum pool sells, without anyone stepping in:
 it buys each on its home chain, bridges it to the executor through Wormhole's Token Bridge, and brings home and sells
-what nobody needs. It is a separate process with its own key, the **treasury**, a hot key `OWNER` pins
+what nobody needs. It also keeps it stocked with the nine Ondo stocks the keeper values, which Ethereum issues and few
+pools sell: it buys them on Ethereum through UniswapX and deposits them ("Ondo stocks through UniswapX", below). It is a separate process with its own key, the **treasury**, a hot key `OWNER` pins
 (`setTreasury`), and its own loop, every `RESTOCK_INTERVAL_SECONDS`:
 
 1. Every move in its journal (`JOURNAL_FILE`) goes one step further: a transaction mined, a transfer signed by
    Wormhole's guardians (fetched from Wormholescan) or a CCTP burn attested by Circle (from Iris), then redeemed or
    received on the other side. A move is recorded signed, the journal flushed to the disk, before it is broadcast, so
    a restart, or a power cut, sends the same transaction again rather than a second one; an empty or unreadable journal
-   stops the service rather than starting it afresh (RS-13). Redeeming and receiving are counted once by the contracts
+   stops the service rather than starting it afresh (RS-13). One process holds the journal at a time, by a lock file
+   beside it: a second, a restart overlapping the one it replaces or a `--once` run beside the service, stops at
+   start, where each would erase the other's moves (CA-M12). A transfer is settled only once the receiving side
+   shows it completed, read back after the completing transaction is mined: a cancel mined on that nonce completes
+   nothing (CA-M10). Redeeming and receiving are counted once by the contracts
    that do them, and a signed transfer or an attestation is stored for a move only when it is the move's own and the
    receiving chain's contract accepts it, so a wrong answer is fetched again rather than kept (RS-14). A signed move
    whose nonce another transaction took is dropped only when a look a minute after the first still finds no receipt,
    and a receipt lookup that fails is never taken for a missing receipt (RS-5). A signature that goes stale while a
    move waits is renewed: Circle is asked, at most hourly, to sign again a message whose expiry passed, and a VAA a
    replaced guardian set signed is fetched again (PD-10). A round resumes every signed move before any other step, so
-   no signer builds over a transaction it may have in flight (PD-9). Each CCTP burn allows the route's standard fee from
-   Iris's table, zero today, and refuses a rate over 10 bps (PD-12).
+   no move is built over a transaction that may be in flight (PD-9). Each CCTP burn allows the route's standard fee from
+   Iris's table, zero when read, and refuses a rate over 10 bps (PD-12).
 2. It reads the keeper's `NEEDS_FILE`, the executor's stock and allowances, the treasury's USDC, each home wallet's
    coins, float and gas, and Pyth's prices, kept only where Pyth's contract on Ethereum, parsing the signed update Hermes
    served with them, returns the same price (RX-9, RY-6), and plans (`restock/plan.mjs`). A board that is missing, unreadable or not
@@ -223,7 +275,10 @@ what nobody needs. It is a separate process with its own key, the **treasury**, 
      already at home cover the needs (RS-3), and bridged in. The executor's `redeemBridged` completes the transfer,
      which carries a payload so that only the executor can complete it, and adds what arrived to the coin's allowance
      as far as the owner's restock allowance for the coin goes (`setRestockAllowance`), which the credit spends
-     (RS-1). A coin whose restock allowance is spent is neither bought nor brought in, and the service names the call;
+     (RS-1). A coin whose restock allowance is spent is neither bought nor brought in, and the service names the call.
+     Stock the executor holds beyond its stock allowance counts as held: nothing is bought for it, and the service
+     asks the owner for `setStockAllowance` instead (RZ-20). Coins at home worth less than `RESTOCK_MIN_USD` wait,
+     in a round that buys, for the buy's coins, and come in with them in one transfer (RZ-21);
    - a covered coin's coins at home first top the stock up to the needs and the buffer, as far as the restock
      allowance goes, and only the rest is sold (RS-10); stock the executor holds beyond the needs, the buffer and
      `RESTOCK_KEEP_USD`, not counting what is on its way (RS-9), is bridged out to the treasury's wallet on its home
@@ -237,7 +292,8 @@ what nobody needs. It is a separate process with its own key, the **treasury**, 
 3. Every trade is priced against Pyth through the route search the keeper uses (`bot/routes.mjs`, on each chain's
    Uniswap V3 fork), and refused beyond `ROUTE_MAX_LOSS_BPS`; a buy too large for the pool is halved until it fits or
    falls below `RESTOCK_MIN_USD`, so a thin pool restocks in batches. Buys stop at `RESTOCK_DAILY_USD` a day, the last
-   one cut to what is left of it (RS-7), and each trade or cross-chain transfer, CCTP's sweeps included (RS-11), at
+   one cut to what is left of it (RS-7): the figure bounds what the buys may cost, each counted at its worth at Pyth
+   and the `ROUTE_MAX_LOSS_BPS` its swap may lose on top (CA-M13), and each trade or cross-chain transfer, CCTP's sweeps included (RS-11), at
    `RESTOCK_MAX_TRANSFER_USD`, under Wormhole's Governor's large-transfer delay.
 4. It sends one transaction at a time on each chain: nothing is signed while one of the treasury's is pending there,
    each may pay twice the base fee and the tip, as the keeper's, so it stays includable through six full blocks of
@@ -248,61 +304,70 @@ what nobody needs. It is a separate process with its own key, the **treasury**, 
 
 The coins, their chains and their venues (`restock/coins.mjs`, whose copies, home tokens and feeds
 `test/unit/restock-coins.test.mjs` pins against `script/MainnetAddresses.sol` and `script/PythIds.sol`); every home
-address was read on its chain on 2026-10-19:
+address was read on its chain:
 
 | Home chain | Coins | Venue | Float |
 |---|---|---|---|
-| BNB Chain | XRP, ADA, LTC, DOT, BNB (as WBNB): off Ethereum's list since 2026-11-13, so served only when `RESTOCK_COINS` names one | PancakeSwap v3 | USDT, topped up by hand (CCTP mints no USDC there) |
 | Avalanche | AVAX (WAVAX) | Uniswap v3 | USDC, by CCTP |
-| Optimism | OP | Uniswap v3 | USDC, by CCTP |
-| Base | AERO | Uniswap v3 | USDC, by CCTP |
+| Optimism | OP: off Ethereum's list, so served only when `RESTOCK_COINS` names it | Uniswap v3 | USDC, by CCTP |
+| Base | AERO: off Ethereum's list, so served only when `RESTOCK_COINS` names it | Uniswap v3 | USDC, by CCTP |
 
-Depth read on 2026-10-19, selling $3,000: LTC 88 bps, DOT 73, OP 88; selling $10,000: XRP 26, ADA 102, AVAX 19,
-AERO 46. **ATOM is not served** (the owner's call of 2026-10-20): Binance-Peg ATOM, the only source its copy redeems
-for, has almost no market on BNB Chain (selling $500 lost 305 bps on PancakeSwap v3, $1,000 lost 22% on v2), and
-Ethereum's other ATOM tokens, Gravity Bridge's and Axelar's, are other bridges with no Uniswap market. An index holding
-ATOM fills only from stock the operator adds, within its stock allowance.
+The restock's end-to-end test, when last run, did not buy OP: with OP near $0.07, Uniswap v3's deepest OP pool on
+Optimism held about $35,000 of USDC, and a purchase of $1,430 cost 4.7% over the pools' price, so no route passed
+`ROUTE_MAX_LOSS_BPS`, at that size or at any the halving reached (block 159,839,933; the test's buy step and what
+follows it failed for that, 17 of its 29 checks passing). So OP's copy is off Ethereum's list; it stays in the table
+for a relisting once the pools deepen or the restock is given another venue there. Base and Avalanche passed the
+same run, 29 of 29 each.
 
-**JUP and PYTH (Solana), SUI, APT and ALGO** (opt-in, named in `RESTOCK_COINS`; `design/2026-11-01-non-evm-restock.md`).
-None of the five is on Ethereum's list since 2026-11-18 (the owner's call,
-`design/2026-11-18-bridged-coins-in-a-rebalance.md`): their signers have never run end to end, and with no Ethereum
-pool an index holding one could rebalance only from stock they bring in. The code stays for a relisting once a run
-has proven it. Each chain's libraries and key live in a process of their own, its signer (`restock/solana/`, `restock/sui/`,
-`restock/aptos/`, `restock/algorand/`, each with its own `package.json` and lockfile: run `npm ci --ignore-scripts` in
-each one served),
-which the service starts with an environment naming only that chain's RPC, its key and its venue's key, never the
-treasury's (`signer-home.mjs`). Bridging goes through Wormhole's own SDK, the float through CCTP V2 (Circle's programs
-on Solana, its scripts on Sui and Aptos; Algorand has no CCTP, so its USDC float is topped up by hand, as BNB Chain's
-is), and swaps through Jupiter's Swap V2 (Solana), Cetus's aggregator (Sui), Panora (Aptos) and Tinyman v2's USDC/ALGO
-pool (Algorand), each with its on-chain minimum at the plan's floor or above. A signer builds and signs each move and
-first checks it by simulation: the wallet's coins may move only as the move says, and on Solana no delegate or close
-authority may be left on its token accounts and a swap may call only Jupiter's program. The service journals the signed
-move before asking the signer to send it, has it sent again while it may still land, and drops it once it cannot:
-Solana's blockhash expired at finalized height, Sui's gas coin moved without it or its epoch ended, Aptos's sequence
-number passed or its expiry reached, Algorand's last valid round passed. Sui's, Aptos's and Algorand's signers keep one
-transaction in flight at a time, and re-send by themselves only the steps that complete a move. Solana's bridge pays a
-token account, so the executor pins, for JUP and PYTH, the wallet's associated token account for each mint; Sui's,
-Aptos's and Algorand's pay the wallet itself. The service prints each missing pin at startup. Each wallet needs its
-chain's gas coin, and on Solana the rent of the accounts its moves open, which a burn's event account returns five days
-on.
+Depth as read for the table, selling $3,000: OP 88 bps; selling $10,000: AVAX 19, AERO 46.
+
+The service's home chains are these three. It serves no copy wrapped from BNB Chain, Solana, Sui, Aptos or Algorand:
+those copies are off Ethereum's list (`audits/retired/non-evm-restock.md`).
+
+**Ondo stocks through UniswapX** (`docs/design/uniswapx-restock.md`). Ondo's stocks and ETFs trade on Ethereum
+through UniswapX: a swapper signs an order, and fillers compete to
+settle it through UniswapX's V2 Dutch order reactor, Ondo's own minting desk among them (when read: ten fills
+of AAPLon and NVDAon in 9,000 blocks, the filler minting the coin it paid). The service serves the nine whose Pyth feed
+prices the token itself (NVDAon, AAPLon, GOOGLon, MSFTon, TSLAon, HOODon, MSTRon, COINon, CRCLon): these are the ones
+the keeper values on every chain; the other 344 it values only where Ondo's oracle holds a settled sValue. For a
+short one it asks Uniswap's Trading API for an
+order spending an exact amount of the treasury's USDC on the coin, and signs it only if every field the signature
+commits to is what the plan allows (`restock/uniswapx.mjs`): UniswapX's V2 reactor, the treasury as swapper and as the
+one output's recipient, USDC in at no more than the plan's amount, the coin out at no less than its worth at Pyth less
+`ROUTE_MAX_LOSS_BPS` at any point of the order's decay, no validation contract, a deadline 30 s to 15 minutes away and
+an unspent Permit2 nonce. It signs typed data it builds from those checked fields, never the API's, so an order the
+API changed afterwards fails its signature on chain; the order's cosigner may only improve the amounts. Permit2 may
+take exactly what the open orders may spend. The order is journalled before it is posted, posted again until the API
+takes it, done once Permit2's nonce bitmap shows it spent, which the API is not asked, and dropped only 15 minutes past
+its deadline by the chain's clock, Ethereum's finality, since a filler may hold a signature the API refused. While one
+is open the treasury plans no other order, draw, repayment or funding. What it bought goes into the executor
+(`depositStock`), credited within the owner's restock allowance as a bridged arrival is (RS-1); nothing sells it or
+takes it out but the owner's `withdraw`. A coin's feed is fresh only while Pyth publishes it, so no order is placed
+while the market's feed is quiet. Not run against Uniswap's live API: the end-to-end test (`npm run e2e:uniswapx`)
+fakes the API, its cosigner and its filler, and settles the signed order through the real reactor on a fork. Ondo's
+stocks are offered through it to eligible users only, never US persons, so the operator and the treasury must be
+eligible; and the API may route an order under about 300 USDC to the pools, a route the service does not sign.
 
 **Setup, once, by `OWNER`:** deploy the executor with Wormhole's Token Bridge; `setTreasury(<treasury address>)`;
-`setHomeRecipient(<Wormhole chain id>, <copy>, <treasury address, left-padded to 32 bytes>)` for each coin served (BNB
-Chain 4: XRP, ADA, LTC, DOT, BNB; Avalanche 6: AVAX; Optimism 24: OP; Base 30: AERO): the treasury's key is the same on
-every EVM chain, and the executor pins a recipient per coin because Solana's bridge pays a token account per mint; `setTreasuryUsdcAllowance`, the
+`setHomeRecipient(<Wormhole chain id>, <copy>, <treasury address, left-padded to 32 bytes>)` for each coin served
+(Avalanche 6: AVAX; Optimism 24: OP; Base 30: AERO): the treasury's key is the same on every chain; `setTreasuryUsdcAllowance`, the
 most USDC the treasury may hold off the float, what it holds counted; and `setRestockAllowance(<copy>, <amount>)` for
 each coin served, the restocking you allow until you next look: what arrives through the bridge earns the keeper stock
-allowance only within it (RS-1). Then send the treasury gas on each chain and Ethereum, and USDT to its
-BNB Chain wallet. The service checks every pin at startup and names the call that is missing.
+allowance only within it (RS-1), the nine Ondo stocks among them when served, whose deposits earn it the same way.
+Then send the treasury gas on each chain and Ethereum. The service checks every pin
+at startup and names the call that is missing, and, serving an Ondo stock, that the executor takes deposits and that
+UniswapX's reactor names Permit2.
 
 **What still needs a person:** gas on each chain (the service logs `gas below its minimum` and leaves that chain alone),
-the BNB Chain USDT float (`top up its USDT float by hand`), the owner's allowances, the restock allowance of each coin
+the owner's allowances, the restock allowance of each coin
 among them (the service logs `restock allowance ... is spent` and names the call), the keeper's `NEEDS_FILE` (`missing,
 unreadable or stale`), and a transaction stuck past a fee spike for good (`still pending`: cancel it). A stolen keeper
 key alone can deliver from stock only what the owner allowed, restocked coins included (CF-1, RS-1). A stolen treasury
 key can bridge stock only to the pinned recipients, which are its own wallets, and hold no more USDC off the float than
-the owner's figure (RS-2): with the keeper's key it can lose the working capital the owner handed both, the floats on
-each chain and the stock, and nothing beyond it.
+the owner's figure (RS-2), which a UniswapX order it signs spends like any of its USDC: with the keeper's key it can
+lose the working capital the owner handed both, the floats on each chain and the stock, and nothing beyond it. A
+deposit takes nothing out: the treasury has no path that takes stock from the executor but the bridge to its pinned
+home wallets.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -312,20 +377,14 @@ each chain and the stock, and nothing beyond it.
 | `PYTH_API_KEY` | required | Hermes' API key. |
 | `HERMES_URL` | `https://pyth.dourolabs.app/hermes` | |
 | `NEEDS_FILE` | required | The keeper's `NEEDS_FILE`, which the keeper must be set to write: missing or stale, nothing moves (RS-8). |
-| `JOURNAL_FILE` | required | Where the service keeps its moves, on the disk before each is sent. Keep it: it is what a restart resumes from, and the service refuses to start on one empty or unreadable (RS-13). |
-| `RESTOCK_COINS` | every coin | Comma-separated symbols to serve. |
-| `BSC_RPC_URL`, `AVALANCHE_RPC_URL`, `OPTIMISM_RPC_URL`, `BASE_RPC_URL` | required for their coins | Each home chain's JSON-RPC. |
-| `SOLANA_RPC_URL`, `SOLANA_KEY` | required for JUP, PYTH | Solana's JSON-RPC, and the service's Solana wallet, its 64-byte secret key in base58; both go to the signer alone. The RPC must keep transaction history: a move whose blockhash expired is dropped only on the word of a node caught up to the finalized slot that keeps the slots since it was built, and stays signed, reported unknown, otherwise (PD-8). A node that caps the accounts a simulation returns, as the public one does at 3, is asked in chunks (PD-1). |
-| `JUPITER_API_KEY` | required for JUP, PYTH | Jupiter's Swap API key (its portal), which every Swap V2 call needs. |
-| `JUPITER_URL`, `JUPITER_PROGRAMS`, `SOLANA_MAX_UNIT_PRICE` | `https://api.jup.ag`, none, `1000000` | Jupiter's API; more Jupiter program ids a swap may call; the most micro-lamports per compute unit a transaction bids. |
-| `SUI_RPC_URL`, `SUI_KEY` | required for SUI | A Sui gRPC fullnode (`https://fullnode.mainnet.sui.io:443`) and the wallet's `suiprivkey1...` key; both go to the Sui signer alone. |
-| `APTOS_RPC_URL`, `APTOS_KEY` | required for APT | An Aptos fullnode's REST API, through `/v1` (`https://api.mainnet.aptoslabs.com/v1`), and the wallet's 32-byte Ed25519 key in hex. A move whose sequence number was used is dropped only by a node at or past that version that keeps the versions since it was built (PD-4). |
-| `PANORA_API_KEY`, `PANORA_URL` | required for APT, `https://api.panora.exchange` | Panora's API key (its docs publish a public one) and its API. |
-| `ALGORAND_ALGOD_URL`, `ALGORAND_MNEMONIC` | required for ALGO | An algod (`https://mainnet-api.algonode.cloud`) and the wallet's 25-word mnemonic; the wallet must hold USDC (asset 31566704), opted in. |
-| `ALGORAND_INDEXER_URL` | `https://mainnet-idx.algonode.cloud` | The indexer that confirms a transaction algod no longer remembers (1000 rounds). |
+| `JOURNAL_FILE` | required | Where the service keeps its moves, on the disk before each is sent. Keep it: it is what a restart resumes from, and the service refuses to start on one empty or unreadable (RS-13), or held by another running process (`<file>.lock`, CA-M12). |
+| `RESTOCK_COINS` | AVAX, and the nine Ondo stocks when `UNISWAP_API_KEY` is set (OP and AERO, off Ethereum's list, only when named) | Comma-separated symbols to serve (an Ondo stock as `NVDAON`). |
+| `UNISWAP_API_KEY` | required for the Ondo stocks | Uniswap's Trading API key (its developer dashboard), for UniswapX's orders. |
+| `UNISWAP_API_URL` | `https://trade-api.gateway.uniswap.org/v1` | |
+| `AVALANCHE_RPC_URL`, `OPTIMISM_RPC_URL`, `BASE_RPC_URL` | required for their coins | Each home chain's JSON-RPC. |
 | `RESTOCK_BUFFER_BPS` | `1000` | How far above the needs a buy fills. |
 | `RESTOCK_MIN_USD` | `200` | Smallest trade or transfer worth its fees. |
-| `RESTOCK_DAILY_USD` | `20000` | Most the buys of a day may cost; the last one is cut to what is left (RS-7). |
+| `RESTOCK_DAILY_USD` | `20000` | Most the buys of a day may cost, each one's loss bound included (CA-M13), gas aside; the last one is cut to what is left (RS-7). |
 | `RESTOCK_KEEP_USD` | `1000` | Stock of each coin kept in the executor when nobody needs it. |
 | `RESTOCK_MAX_TRANSFER_USD` | `25000` | Largest single trade or cross-chain transfer, Wormhole's or CCTP's; at least `RESTOCK_MIN_USD`. Draws and repayments, between the executor and the treasury, are bounded by the owner's figure instead. |
 | `RESTOCK_FLOAT_TARGET_USD` | `5000` | Float kept on each home chain. |
@@ -340,7 +399,8 @@ From the repo root:
     forge build                          # the hub and factory ABIs come from abi/, the executor's from keeper/out
     forge build --root keeper
     # deploy src/KeeperExecutor.sol: (SwapRouter02, USDC, FACTORY, MintRequests, Wormhole's Token Bridge, OWNER, keeper
-    # address); send it a USDC float
+    # address, the chain's own DEX router and its kind, zero and 0 on Ethereum), each the chain's own from
+    # bot/config.mjs's CHAINS; send it a USDC float
 
 Then in `keeper/`:
 
@@ -349,15 +409,41 @@ Then in `keeper/`:
 
 The RPC must honour `eth_call` block overrides (Tenderly, publicnode and geth do; the bot checks at startup).
 
-To attest a token on Solana or Sui for its Wormhole copy on Ethereum (the owner's step before a copy can be listed,
-`design/2026-10-10-one-index-wormhole-legs.md`, section 2a), with the restock service's settings:
+**On BNB Chain and Base** (`CHAIN_ID=56` or `8453`) the same bot runs, one process and one
+executor per chain, each under its own keeper key and with its own float. What differs, all from the chain's entry in
+`bot/config.mjs`:
 
-    node restock.mjs --attest solana <mint>      # or: --attest sui <coin type>
+- **Prices.** A token's Pyth id is its feed as the factory records it (`priceFeedOf`), the very feed its hubs check a
+  fill against, not a catalogue of the bot's. A token's own price (`FeedKind.Token`) is valued, and an Ondo share's
+  (`FeedKind.SharesOracle`) where its id is one the bot knows as a share's, at the sValue it reads
+  itself: a multiplier token's feed (Coinbase's stock tokens on Base) prices a share the bot cannot turn into the
+  token's value, so such a leg keeps its units, as a share-priced Ondo leg without a settled sValue does (RX-2).
+  `PRICE_IDS` still sets or overrides a token's id.
+- **Venues.** Each leg is quoted on Uniswap V3 and on the chain's own DEX, and takes the better within
+  `ROUTE_MAX_LOSS_BPS` (`docs/design/keeper-chain-venues.md`): PancakeSwap's V3 pools through
+  its SmartRouter on BNB Chain, Aero's concentrated pools through its SwapRouter on Base, quoted by its Metaquoter pool
+  by pool. The executor is deployed with that DEX's router and kind (`LOCAL_ROUTER`, `LOCAL_KIND`: 1 PancakeSwap, 2
+  Aero), which the bot checks against its chain table at start, and a route through it is its path behind one byte,
+  `LOCAL_ROUTE`.
+- **Timing.** Blocks come every 450 ms on BNB Chain and 200 ms on Base, as measured, so a fill cannot aim at
+  the next block alone. It is priced at the earliest second it can land, which is where the bar is highest and Pyth's
+  tolerance narrowest, and carries a deadline three seconds on; it is replaced only once those seconds' blocks have
+  passed. The windows the bot keeps in blocks (its start and request rounds, re-quotes, back-offs) are Ethereum's
+  twelve-second blocks scaled to the chain, so they last the same time.
+- **Money.** BNB Chain's USDC and USDT have eighteen decimals; the bot reads both stablecoins' decimals from the
+  request escrow at startup and refuses a float whose decimals are not the table's. Gas is valued at the gas coin's
+  price, BNB's on BNB Chain, and on Base the L1 data fee is added at GasPriceOracle's upper bound for the
+  transaction's size. `MAX_FEE_GWEI` and `PRIORITY_FEE_GWEI` default to 1 and 0.1 on BNB Chain, 1 and 0.01 on Base.
+- **Uniswap and stock.** Uniswap V3 through SwapRouter02, as on Ethereum, with the wrapped gas coin as the routing
+  hub, beside the chain's own DEX above. A coin neither venue trades within `ROUTE_MAX_LOSS_BPS` is served from the
+  executor's stock, which the operator adds there (the restock serves Ethereum alone).
 
-The chain's signer attests the token, after a simulation in which no token of its wallet moves. The service then
-waits for the guardians' signature, checks it on Ethereum's core, and creates the copy from the treasury, or updates
-an existing copy's name and symbol (`updateWrapped`, as RAY's needs). It follows Wormhole's SDK route, the one Wormhole's
-docs now give; legacy Portal's own interface closed on 2026-06-30 (PD-7).
+`test/KeeperExecutor.chains.fork.t.sol` deploys the executor on each chain's real market, checks every address the
+table names against the chain, and fills a real mint request through Uniswap V3 (BNB_RPC_URL, BASE_RPC_URL).
+
+A Wormhole copy still to attest (the owner's step before a copy can be listed,
+`docs/design/wormhole-legs.md`, section 2a) is attested through Wormhole's own SDK, on the token's home
+chain; the service has no attestation tool.
 
 Before Glamsterdam reaches mainnet: under EIP-8037 a transaction's state gas comes from a reservoir the GAS opcode does
 not show, so the executor's `gasUsed` undercounts fills that write new slots. The bot already simulates every fill it
@@ -367,12 +453,13 @@ raising to what EIP-8037 allows (RX-36).
 | Variable | Default | Meaning |
 |---|---|---|
 | `RPC_URL` | required | The JSON-RPC of the chain `CHAIN_ID` names. |
+| `RPC_TIMEOUT_MS` | `15000` | How long one RPC request may take before the round it is in fails; longer for a slow but sound RPC, as the end-to-end test's cold fork is. |
 | `KEEPER_KEY` | required | The executor's keeper key (32-byte hex). |
 | `FACTORY` | required | The `WeightedIndexFactory`. |
 | `EXECUTOR` | required | This bot's `KeeperExecutor`. |
-| `PYTH_API_KEY` | required | Hermes' API key, sent as `Authorization: Bearer`: the keeper's own price source. No contract reads a price. |
-| `HERMES_URL` | `https://pyth.dourolabs.app/hermes` | Hermes since 2026-08-26. |
-| `PRICE_IDS` | none | `token=id` pairs, comma-separated: Pyth ids for coins the catalogue (`bot/price-ids.mjs`, the 80 listed coins) does not hold, a testnet's for instance, or another feed for one it does. A coin without an id is left alone. |
+| `PYTH_API_KEY` | required | Hermes' API key, sent as `Authorization: Bearer`: the keeper's own price source, and the source of the Pyth updates its fills post. No mint, redeem or claim reads a price. |
+| `HERMES_URL` | `https://pyth.dourolabs.app/hermes` | Pyth's Hermes, which needs `PYTH_API_KEY`. |
+| `PRICE_IDS` | none | `token=id` pairs, comma-separated: Pyth ids for coins the catalogue (`bot/price-ids.mjs`, the 414 listed coins) does not hold, a testnet's for instance, or another feed for one it does. A coin without an id is left alone. |
 | `TRADE_COST_BPS` | `30` | What trading a leg is taken to cost when the bot names a fill's units: a leg within this of its weight is not traded for its own sake. |
 | `INDEXES` | every index | Comma-separated indexes to serve. Only wallets the factory's owner approved create indexes, so the set is the team's; a list still caps the bot's work. |
 | `MIN_PROFIT_USD` | `5` | Least profit a fill or a start must promise; negative is a subsidy the operator accepts, for auctions only and within `SUBSIDY_BUDGET_USD`. |
@@ -381,11 +468,11 @@ raising to what EIP-8037 allows (RX-36).
 | `SLIPPAGE_BPS` | `30` | Room the floor leaves for the pools to move, on the volume the routes trade. |
 | `SUPPLY_TOLERANCE_BPS` | `10` | How much an issue may grow the index's supply, and with it the settlement, before the fill reverts, in its first lines. It is also the griefing threshold: an issue of more than this share of the supply ahead of a fill makes it revert, though cheaply, and the bot leaves an auction after three such reverts. |
 | `ROUTE_MAX_LOSS_BPS` | `100` | Most a route may lose against the keeper's price of the coin. |
-| `MAX_FEE_GWEI` | `100` | No transaction while the base fee and tip exceed this, and no replacement's fees above it. |
-| `PRIORITY_FEE_GWEI` | `2` | Tip. |
+| `MAX_FEE_GWEI` | `100` (`1` on BNB Chain and Base) | No transaction while the base fee and tip exceed this, and no replacement's fees above it. |
+| `PRIORITY_FEE_GWEI` | `2` (`0.1` on BNB Chain, `0.01` on Base) | Tip. |
 | `FILL_REQUESTS` | `1` | `1` fills `MintRequests` requests too, `0` serves auctions only. The escrow is the one the executor was built with. |
-| `FILL_AUCTIONS` | `1` | `1` starts and fills auctions, `0` serves requests only, as on Sepolia, whose hub predates this keeper's start and preview. |
-| `CHAIN_ID` | `1` | The chain whose market the bot trades: `1` Ethereum, `11155111` Sepolia's test deployment (`bot/config.mjs`, `docs/deployment.md`). The bot refuses an RPC on any other chain. |
+| `FILL_AUCTIONS` | `1` | `1` starts and fills auctions, `0` serves requests only. |
+| `CHAIN_ID` | `1` | The chain whose market the bot trades: `1` Ethereum, `56` BNB Chain, `8453` Base, `11155111` Sepolia's test deployment (`bot/config.mjs`, `docs/deployment.md`). The bot refuses an RPC on any other chain. |
 | `SHARE_STOCK_USD` | `0` | The dollars of each index's own shares the request filler aims to hold as stock: a batch keeps its sellers' shares up to this instead of redeeming them, and delivers them to buyers within the owner's stock allowance for that index. Zero keeps and delivers none. |
 | `NEEDS_FILE` | none | Where to write what fills deliver from stock, for the restock service. |
 | `PRESTOCK_LEAD_SECONDS` | `86400` | How long before an index may be started the stock its auction would need goes on `NEEDS_FILE`, so the restock brings it in before the auction rather than during it. Zero reports an auction only once it can be started. A proposal waiting out its notice is reported either way. |
@@ -401,18 +488,35 @@ runs one beside the keeper (the logic-hardening plan's step 6). Every `POLL_SECO
   (`HUB_STATE_SLOTS` in `bot/config.mjs`, pinned by `test_theCheckersHubSlotsAreTheHubs`), and evaluates nothing on an
   index whose storage does not reproduce `components()`, `componentTokens()`, `lastAccrual()` and
   `pendingStreamingFee()`. Then the rebalance state machine's I1 to I4
-  (`design/2026-10-29-rebalance-state-machine.md`, section 5) and the keep mask, and against its last round: the
+  (`docs/design/rebalance-state-machine.md`, section 5) and the keep mask, and against its last round: the
   components never change, the units move only at a fill, the scale only shrinks, the counters never go back.
 - **`MintRequests`**, when `REQUESTS` is set: its balance of each token covers the open requests' escrows.
 - **The `BasketBuilder`**, when `BUILDER` is set: its balance of each token covers its users' escrows, the pairs found
   from its credit events since `FROM_BLOCK`.
-- **The admin events monitors watch (RT-07):** a start with a keep mask, a cancel, and the factory's guardian, owner,
-  listing, whitelist and fee-policy events, printed as notices.
+- **The admin events monitors watch (RT-07):** every start, plain or with a keep mask, the quote posted with one, a
+  cancel, and the factory's guardian, owner, listing, whitelist, creator-approval and fee-policy events, printed as
+  notices (CA-L10).
 
 Each finding prints as one JSON line when it is raised and when it clears, not every round; breaches and reader
 findings (the checker could not trust a read) also go to `ALERT_WEBHOOK`. A component whose `balanceOf` reverts is a
 notice: that is what the keep mask and `redeemSkipping` exist for. `--once` runs one round and exits 1 if anything but
 a notice stands, for a cron job or CI.
+
+What it does when it cannot see (`audits/internal/consolidated-audit-ca.md`):
+- A finding on something a round could not read stands until a read shows it gone: a failed snapshot, or a component
+  that stops answering `balanceOf`, clears nothing (CA-M17). An escrow balance that could not be read is a reader
+  finding, not a balance of zero (CA-L9).
+- Requests and events are read forward, and a range is passed only once it has been read, so a failed read is made
+  again next round (CA-M16). `MintRequests` and the builder are read apart from the indexes: one failing does not
+  hide the others' findings.
+- An alert stays queued until the webhook answers with a success, in order, and is sent again every round; a round
+  the RPC could not serve is alerted once when the rounds start failing and once when they are served again (CA-M18).
+- A latest block older than `MAX_HEAD_AGE_SECONDS` is a reader finding: a node that stopped following the chain
+  answers every read from the same healthy block (CA-R2-14).
+- It refuses to start on an RPC that serves another chain than `CHAIN_ID`, or with a `REQUESTS` or `BUILDER` that
+  names another factory (CA-L12).
+- Not covered: a re-org that replaces an index or a builder event already read (CA-M19). It reads the latest block,
+  so run it beside a node you trust, and restart it after a deep re-org.
 
     npm install
     RPC_URL=... FACTORY=... REQUESTS=... BUILDER=... FROM_BLOCK=... ALERT_WEBHOOK=... npm run invariants
@@ -421,15 +525,16 @@ a notice stands, for a cron job or CI.
 |---|---|---|
 | `RPC_URL` | required | The JSON-RPC of the chain `CHAIN_ID` names; it must serve logs from `FROM_BLOCK` (publicnode prunes Sepolia's). |
 | `FACTORY` | required | The `WeightedIndexFactory`. |
-| `CHAIN_ID` | `1` | `1` Ethereum, `11155111` Sepolia. |
+| `CHAIN_ID` | `1` | `1` Ethereum, `56` BNB Chain, `8453` Base, `11155111` Sepolia. |
 | `REQUESTS` | none | `MintRequests`, whose escrows are checked when set. |
 | `BUILDER` | none | The `BasketBuilder`, whose escrows are checked when set; needs `FROM_BLOCK`. |
 | `FROM_BLOCK` | none | The deployment's first block: where the builder's events and the notices start. Unset, notices start now. |
 | `POLL_SECONDS` | `60` | How often it reads. |
-| `LOG_CHUNK` | `10000` | The widest block range one `eth_getLogs` asks for. |
+| `MAX_HEAD_AGE_SECONDS` | `180` | How old the RPC's latest block may be before the round counts as failed. |
+| `LOG_CHUNK` | `10000` | The widest block range one `eth_getLogs` asks for; public BNB Chain and Base nodes may want less. |
 | `ALERT_WEBHOOK` | none | A Slack or Discord incoming webhook. |
 
-Its first run, on 2026-11-01 against Sepolia's deployment (block 12,040,646): four indexes, no finding. On an anvil fork
+Its first run, against Sepolia's previous deployment at block 12,040,646: four indexes, no finding. On an anvil fork
 of it, with WETH9's balance slot of the first index set to 5 wei, the next round raised `backing` with the required
 123,264,984,283,783 wei, one below the index's real balance, and `--once` exited 1.
 
@@ -456,12 +561,12 @@ of it, with WETH9's balance slot of the first index set to 5 wei, the next round
   again, and a guardian's keep-mask start whose fill leaves the kept coin's units alone. On a cold RPC cache a start check can outlast
   the keeper's 15-second RPC timeout and the test then fails on timing; `FORK_BLOCK` at a block already run keeps the
   cache warm.
-- `MAINNET_RPC_URL=<archive> npm run e2e:restock` (in `keeper/`): anvil forks of Ethereum, BNB Chain, Base, Optimism and
+- `MAINNET_RPC_URL=<archive> npm run e2e:restock` (in `keeper/`): anvil forks of Ethereum, Base, Optimism and
   Avalanche with the real Wormhole bridges and cores, CCTP V2 contracts, pools and tokens; a test guardian and a test
   attester installed on each fork; fake Wormholescan, Iris and Hermes; and `restock.mjs` as its own process, round by
   round. For each chain's coin: bought, bridged in and redeemed for a need, then bridged out and sold once the need is
   gone; on the CCTP chains the float starts empty, so the treasury draws, funds by CCTP, sweeps back and repays; after
   each chain's flows no allowance is left standing (RS-12). Then a move signed but never broadcast is resumed once, and
-  one whose nonce went elsewhere is kept at the first look and dropped a minute later (RS-5). All four chains passed on
-  2026-10-20 (75 checks), before the review of 2026-10-25; after it, Base passed its 29 on 2026-10-25; and all four
-  again on 2026-11-01 (94 checks), after the red teams' fixes, on Tenderly's public archive and the public defaults.
+  one whose nonce went elsewhere is kept at the first look and dropped a minute later (RS-5). `RESTOCK_E2E_CHAINS`
+  runs fewer chains. When last run, Base and Avalanche passed their 29 checks each and Optimism 17 of 29, its buy
+  finding no route ([Restock](#restock)).

@@ -87,3 +87,22 @@ test("RX-24: a request that keeps being declined without a revert waits longer e
   assert.equal(b.blocked("request:1", 299), true, "at most 200 blocks");
   assert.equal(b.blocked("request:1", 300), false);
 });
+
+test("a request short of stock is checked again within the life of its report on the restock's board", async () => {
+  const { SHORT_RECHECK_BLOCKS, shortRequests } = await import("../../bot/backoff.mjs");
+  const { NEEDS_MAX_AGE_SECONDS } = await import("../../bot/needs.mjs");
+  const b = shortRequests();
+  let block = 100;
+  let longest = 0;
+  for (let k = 0; k < 12; k++) {
+    const { until, stopped } = b.fail("request:1", block);
+    assert.equal(stopped, false, "it is never given up: the coins may land");
+    longest = Math.max(longest, until - block);
+    block = until;
+  }
+  assert.equal(longest, SHORT_RECHECK_BLOCKS, "the wait doubles up to its cap");
+  // Twelve-second blocks: the report is renewed before it lapses, so the need never leaves the board while it waits.
+  assert.ok(SHORT_RECHECK_BLOCKS * 12 < NEEDS_MAX_AGE_SECONDS);
+  // The decline of a request that pays too little may wait far longer: it asks the restock for nothing it must keep.
+  assert.ok(skippedRequests().fail("request:1", 0).until < SHORT_RECHECK_BLOCKS);
+});

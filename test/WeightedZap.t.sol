@@ -15,6 +15,7 @@ import {WeightedTest} from "./WeightedTest.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockUniversalRouter} from "./mocks/MockUniversalRouter.sol";
 import {MockWeightedExecutor} from "./mocks/MockWeightedExecutor.sol";
+import {LocalVenues} from "./LocalVenues.sol";
 
 /// @notice v5 reuses `IndexZap` and `MintRequests` unchanged: deployed against the weighted factory, they mint, burn
 ///         and escrow weighted indexes through the functions those share with `IndexHub`, and the zap's nonce check
@@ -37,7 +38,7 @@ contract WeightedZapTest is WeightedTest {
         router = new MockUniversalRouter(makeAddr("poolManager"));
         usdc = new MockERC20("USD Coin", "USDC", 6);
         usdt = new MockERC20("Tether", "USDT", 6);
-        zap = new IndexZap(IIndexFactory(address(factory)), router, address(usdc), address(usdt));
+        zap = new IndexZap(IIndexFactory(address(factory)), router, LocalVenues.none(), address(usdc), address(usdt));
         requests = new MintRequests(address(factory), address(usdc), address(usdt));
 
         router.setPrice(address(eth), 2000e18, 18);
@@ -57,13 +58,13 @@ contract WeightedZapTest is WeightedTest {
     function _legs() internal view returns (IUniversalRouterSwaps.MintLeg[] memory legs) {
         legs = new IUniversalRouterSwaps.MintLeg[](3);
         legs[0] = IUniversalRouterSwaps.MintLeg({
-            v3Path: _path(address(eth), address(usdc)), v4Path: new PathKey[](0), maxAmountIn: 0
+            localRoute: "", v3Path: _path(address(eth), address(usdc)), v4Path: new PathKey[](0), maxAmountIn: 0
         });
         legs[1] = IUniversalRouterSwaps.MintLeg({
-            v3Path: _path(address(btc), address(usdc)), v4Path: new PathKey[](0), maxAmountIn: 0
+            localRoute: "", v3Path: _path(address(btc), address(usdc)), v4Path: new PathKey[](0), maxAmountIn: 0
         });
         legs[2] = IUniversalRouterSwaps.MintLeg({
-            v3Path: _path(address(usd), address(usdc)), v4Path: new PathKey[](0), maxAmountIn: 0
+            localRoute: "", v3Path: _path(address(usd), address(usdc)), v4Path: new PathKey[](0), maxAmountIn: 0
         });
     }
 
@@ -138,13 +139,13 @@ contract WeightedZapTest is WeightedTest {
 
         IUniversalRouterSwaps.BurnLeg[] memory legs = new IUniversalRouterSwaps.BurnLeg[](3);
         legs[0] = IUniversalRouterSwaps.BurnLeg({
-            v3Path: _path(address(eth), address(usdc)), v4Path: new PathKey[](0), minAmountOut: 0
+            localRoute: "", v3Path: _path(address(eth), address(usdc)), v4Path: new PathKey[](0), minAmountOut: 0
         });
         legs[1] = IUniversalRouterSwaps.BurnLeg({
-            v3Path: _path(address(btc), address(usdc)), v4Path: new PathKey[](0), minAmountOut: 0
+            localRoute: "", v3Path: _path(address(btc), address(usdc)), v4Path: new PathKey[](0), minAmountOut: 0
         });
         legs[2] = IUniversalRouterSwaps.BurnLeg({
-            v3Path: _path(address(usd), address(usdc)), v4Path: new PathKey[](0), minAmountOut: 0
+            localRoute: "", v3Path: _path(address(usd), address(usdc)), v4Path: new PathKey[](0), minAmountOut: 0
         });
         vm.startPrank(alice);
         index.approve(address(zap), 1e18);

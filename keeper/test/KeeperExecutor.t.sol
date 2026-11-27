@@ -5,16 +5,19 @@ import {IWeightedHub} from "xindex/src/interfaces/IWeightedHub.sol";
 import {IWeightedIndexFactory} from "xindex/src/interfaces/IWeightedIndexFactory.sol";
 import {WeightedHub} from "xindex/src/WeightedHub.sol";
 import {WeightedIndexFactory} from "xindex/src/WeightedIndexFactory.sol";
+import {WeightedMath} from "xindex/src/WeightedMath.sol";
 import {MintRequests} from "xindex/src/MintRequests.sol";
 import {IMintRequests} from "xindex/src/interfaces/IMintRequests.sol";
 import {stdError} from "forge-std/StdError.sol";
 import {WeightedTest} from "xindex/test/WeightedTest.sol";
 import {MockERC20} from "xindex/test/mocks/MockERC20.sol";
 import {MockSwapRouter} from "xindex/test/mocks/MockSwapRouter.sol";
+import {MockFeeToken} from "xindex/test/mocks/MockFeeToken.sol";
 import {KeeperExecutor} from "../src/KeeperExecutor.sol";
 import {IV3SwapRouter} from "../src/interfaces/IV3SwapRouter.sol";
 import {ITokenBridge} from "../src/interfaces/ITokenBridge.sol";
 import {MockTokenBridge} from "./mocks/MockTokenBridge.sol";
+import {MockAeroSwapRouter} from "./mocks/MockAeroSwapRouter.sol";
 
 /// @dev The executor against the real hub and factory and a fixed-price router. ETH rises 20% after creation, so a
 ///      fair fill sells ETH and buys BTC and USD. No contract reads a price: the keeper names the units, here the ones
@@ -72,7 +75,9 @@ contract KeeperExecutorTest is WeightedTest {
             IMintRequests(address(requests)),
             ITokenBridge(address(bridge)),
             execOwner,
-            keeper
+            keeper,
+            address(0),
+            KeeperExecutor.LocalKind.None
         );
     }
 
@@ -96,10 +101,15 @@ contract KeeperExecutorTest is WeightedTest {
             stableRoute: stableRoute,
             stableLimit: 0,
             expectedNonce: reqNonce,
+            expected: hashOf[id],
             minUsdcDelta: minUsdcDelta,
             deadline: deadline
         });
     }
+
+    /// @dev Each request's hash as it was made, which is what a keeper that priced it then names (CA-M6). Kept here
+    ///      so that building a fill makes no call, which would use up a prank.
+    mapping(uint256 id => bytes32 hash) hashOf;
 
     function _requestMint(address who, address stable, uint256 amount, uint256 minShares) internal returns (uint256) {
         MockERC20(stable).mint(who, amount);
@@ -107,6 +117,7 @@ contract KeeperExecutorTest is WeightedTest {
         MockERC20(stable).approve(address(requests), amount);
         uint256 id = requests.requestMint(address(index), stable, amount, minShares, block.timestamp + 1 days);
         vm.stopPrank();
+        hashOf[id] = requests.requestHash(id);
         return id;
     }
 
@@ -116,6 +127,7 @@ contract KeeperExecutorTest is WeightedTest {
         index.approve(address(requests), shares);
         uint256 id = requests.requestRedeem(address(index), shares, stable, minOut, block.timestamp + 1 days);
         vm.stopPrank();
+        hashOf[id] = requests.requestHash(id);
         return id;
     }
 
@@ -171,7 +183,29 @@ contract KeeperExecutorTest is WeightedTest {
         uint256[] memory units = _units();
         uint256 deadline = block.timestamp;
         vm.prank(keeper);
-        return ex.fill(index, units, routes, maxIn, ANY_SUPPLY, minDelta, deadline);
+        return ex.fill(_auction(index, units, routes, maxIn, ANY_SUPPLY, minDelta, deadline));
+    }
+
+    /// @dev An auction fill of `hub` that posts no Pyth update, as on this suite's factory, which has no oracle.
+    function _auction(
+        IWeightedHub hub,
+        uint256[] memory units,
+        bytes[] memory routes,
+        uint256[] memory maxIn,
+        uint256 maxSupply,
+        int256 minDelta,
+        uint256 deadline
+    ) internal pure returns (KeeperExecutor.AuctionFill memory) {
+        return KeeperExecutor.AuctionFill({
+            index: hub,
+            newUnits: units,
+            routes: routes,
+            maxAmountsIn: maxIn,
+            maxSupply: maxSupply,
+            minUsdcDelta: minDelta,
+            deadline: deadline,
+            pythUpdate: new bytes[](0)
+        });
     }
 
     function _int(uint256 x) internal pure returns (int256) {
@@ -235,7 +269,7 @@ contract KeeperExecutorTest is WeightedTest {
         bytes[] memory routes = _routes();
         uint256 deadline = block.timestamp;
         vm.prank(keeper);
-        (int256 delta,) = executor.fill(index, units, routes, in_, ANY_SUPPLY, type(int256).min, deadline);
+        (int256 delta,) = executor.fill(_auction(index, units, routes, in_, ANY_SUPPLY, type(int256).min, deadline));
         assertEq(delta, expected, "the float moves by the routes' quotes");
         assertGt(delta, 10e6, "three hundredths of the $500 the fair fill buys stays with the keeper");
     }
@@ -254,7 +288,7 @@ contract KeeperExecutorTest is WeightedTest {
         bytes[] memory routes = _routes();
         uint256 deadline = block.timestamp;
         vm.prank(keeper);
-        (int256 delta,) = executor.fill(index, units, routes, in_, ANY_SUPPLY, type(int256).min, deadline);
+        (int256 delta,) = executor.fill(_auction(index, units, routes, in_, ANY_SUPPLY, type(int256).min, deadline));
         assertEq(
             delta,
             -_int(router.quoteIn(address(usdc), address(eth), in_[0]))
@@ -273,7 +307,7 @@ contract KeeperExecutorTest is WeightedTest {
         uint256 deadline = block.timestamp;
         vm.expectPartialRevert(IWeightedHub.GainBelowBar.selector);
         vm.prank(keeper);
-        executor.fill(index, units, routes, new uint256[](0), ANY_SUPPLY, type(int256).min, deadline);
+        executor.fill(_auction(index, units, routes, new uint256[](0), ANY_SUPPLY, type(int256).min, deadline));
     }
 
     function test_minUsdcDeltaIsAFloor() public {
@@ -290,7 +324,7 @@ contract KeeperExecutorTest is WeightedTest {
         uint256 deadline = block.timestamp;
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.TooCostly.selector, expected, expected + 1));
         vm.prank(keeper);
-        executor.fill(index, units, routes, in_, ANY_SUPPLY, expected + 1, deadline);
+        executor.fill(_auction(index, units, routes, in_, ANY_SUPPLY, expected + 1, deadline));
     }
 
     function test_unroutedOutIsKeptAsInventory() public {
@@ -349,7 +383,7 @@ contract KeeperExecutorTest is WeightedTest {
         uint256 deadline = block.timestamp;
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NoRoute.selector, address(btc)));
         vm.prank(keeper);
-        executor.fill(index, units, routes, in_, ANY_SUPPLY, type(int256).min, deadline);
+        executor.fill(_auction(index, units, routes, in_, ANY_SUPPLY, type(int256).min, deadline));
     }
 
     function test_maxAmountsInBindsTheSettlement() public {
@@ -364,7 +398,7 @@ contract KeeperExecutorTest is WeightedTest {
             abi.encodeWithSelector(IWeightedHub.RebalanceMovedOn.selector, address(btc), in_[1], in_[1] - 1)
         );
         vm.prank(keeper);
-        executor.fill(index, units, routes, maxIn, ANY_SUPPLY, type(int256).min, deadline);
+        executor.fill(_auction(index, units, routes, maxIn, ANY_SUPPLY, type(int256).min, deadline));
     }
 
     /// @dev XS-4: the bot bounds the supply at its quote plus SUPPLY_TOLERANCE_BPS (10). A griefer's issue of 0.11% of
@@ -386,7 +420,7 @@ contract KeeperExecutorTest is WeightedTest {
         // Unmoved, the bounded fill settles.
         uint256 snapshot = vm.snapshotState();
         vm.prank(keeper);
-        executor.fill(index, units, routes, maxIn, maxSupply, type(int256).min, deadline);
+        executor.fill(_auction(index, units, routes, maxIn, maxSupply, type(int256).min, deadline));
         assertEq(index.rebalanceNonce(), 1, "a fill within its bounds settles");
         vm.revertToState(snapshot);
 
@@ -395,21 +429,34 @@ contract KeeperExecutorTest is WeightedTest {
         assertGt(griefed, maxSupply, "the issue is past the tolerance");
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.SupplyMovedOn.selector, griefed, maxSupply));
         vm.prank(keeper);
-        executor.fill(index, units, routes, maxIn, maxSupply, type(int256).min, deadline);
+        executor.fill(_auction(index, units, routes, maxIn, maxSupply, type(int256).min, deadline));
     }
 
-    /// @dev Nobody is paid for a price, so a fill takes no ether and the executor never holds any.
-    function test_aFillTakesNoEther() public {
+    /// @dev A fill carries ether only as Pyth's fee for an update it posts (`KeeperExecutorPythTest`). With no update
+    ///      it carries none, so the executor never comes to hold a fill's ether.
+    function test_aFillWithoutAnUpdateCarriesNoEther() public {
         _open(index.AUCTION_DURATION());
         (, uint256[] memory in_) = _preview();
-        bytes memory call = abi.encodeCall(
-            KeeperExecutor.fill, (index, _units(), _routes(), in_, ANY_SUPPLY, type(int256).min, block.timestamp)
-        );
+        KeeperExecutor.AuctionFill memory f =
+            _auction(index, _units(), _routes(), in_, ANY_SUPPLY, type(int256).min, block.timestamp);
         vm.deal(keeper, 1);
         vm.prank(keeper);
-        (bool sent,) = address(executor).call{value: 1}(call);
-        assertFalse(sent, "a fill sent with ether reverts");
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.WrongPythFee.selector, 1, 0));
+        executor.fill{value: 1}(f);
         assertEq(address(executor).balance, 0);
+    }
+
+    /// @dev This suite's factory has no oracle, so its indexes read no price and there is no Pyth contract to post
+    ///      an update to: a fill that carries one is refused by name, before any ether moves.
+    function test_anUpdateForAnIndexWithoutAnOracleIsRefused() public {
+        _open(index.AUCTION_DURATION());
+        (, uint256[] memory in_) = _preview();
+        KeeperExecutor.AuctionFill memory f =
+            _auction(index, _units(), _routes(), in_, ANY_SUPPLY, type(int256).min, block.timestamp);
+        f.pythUpdate = new bytes[](1);
+        vm.prank(keeper);
+        vm.expectRevert(KeeperExecutor.NoOracle.selector);
+        executor.fill(f);
     }
 
     // ---------------------------------------------------------------------
@@ -423,7 +470,7 @@ contract KeeperExecutorTest is WeightedTest {
         IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](2);
         specs[0] = _spec(address(eth), 1, 1e18);
         specs[1] = _spec(address(btc), 9999, factory.MIN_RAW_UNITS());
-        // Since 2026-11-10 only an approved wallet creates an index, so the exploit also needs the keeper key to be
+        // Only an approved wallet creates an index, so the exploit also needs the keeper key to be
         // one; the executor's allowance must hold even then.
         _approveCreator(keeper);
         vm.prank(keeper);
@@ -447,7 +494,7 @@ contract KeeperExecutorTest is WeightedTest {
         uint256 deadline = block.timestamp;
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NoRoute.selector, address(btc)));
         vm.prank(keeper);
-        executor.fill(own, units, routes, in_, ANY_SUPPLY, type(int256).min, deadline);
+        executor.fill(_auction(own, units, routes, in_, ANY_SUPPLY, type(int256).min, deadline));
         assertEq(btc.balanceOf(address(executor)), 1e8, "the stock stayed");
     }
 
@@ -548,7 +595,7 @@ contract KeeperExecutorTest is WeightedTest {
         routes[1] = abi.encodePacked(address(btc), uint24(3000), address(eth), uint24(500), address(usd));
         uint256 deadline = block.timestamp;
         vm.prank(keeper);
-        (int256 delta,) = ex.fill(index, units, routes, in_, ANY_SUPPLY, type(int256).min, deadline);
+        (int256 delta,) = ex.fill(_auction(index, units, routes, in_, ANY_SUPPLY, type(int256).min, deadline));
         assertEq(
             delta,
             _int(out[2]) - _int(router.quoteIn(address(usd), address(eth), in_[0]))
@@ -567,7 +614,7 @@ contract KeeperExecutorTest is WeightedTest {
         uint256 deadline = block.timestamp;
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.BadRoute.selector, address(usd)));
         vm.prank(keeper);
-        ex.fill(index, units, routes, in_, ANY_SUPPLY, type(int256).min, deadline);
+        ex.fill(_auction(index, units, routes, in_, ANY_SUPPLY, type(int256).min, deadline));
     }
 
     // ---------------------------------------------------------------------
@@ -585,7 +632,7 @@ contract KeeperExecutorTest is WeightedTest {
         uint256[] memory units = _units();
         vm.expectRevert(err);
         vm.prank(caller);
-        executor.fill(IWeightedHub(target), units, routes, in_, ANY_SUPPLY, type(int256).min, deadline);
+        executor.fill(_auction(IWeightedHub(target), units, routes, in_, ANY_SUPPLY, type(int256).min, deadline));
     }
 
     function test_onlyTheKeeperFills() public {
@@ -661,6 +708,155 @@ contract KeeperExecutorTest is WeightedTest {
     }
 
     // ---------------------------------------------------------------------
+    // The chain's own DEX
+    // ---------------------------------------------------------------------
+
+    /// @dev A second SwapRouter02 at the first's prices, holding liquidity of its own: the chain's own DEX.
+    function _localDex() internal returns (MockSwapRouter local) {
+        local = new MockSwapRouter();
+        local.setPrice(address(eth), 2400e18);
+        local.setPrice(address(btc), 60_000e18);
+        local.setPrice(address(usd), 1e18);
+        local.setPrice(address(usdc), 1e18);
+        local.setPrice(address(usdt), 1e18);
+        eth.mint(address(local), 1000e18);
+        btc.mint(address(local), 100e8);
+        usd.mint(address(local), 1e12);
+        usdc.mint(address(local), 1e12);
+        usdt.mint(address(local), 1e12);
+    }
+
+    /// @dev An executor that reaches `localRouter`, of `kind`, beside Uniswap, with the setUp's float and allowance.
+    function _withLocalDex(address localRouter, KeeperExecutor.LocalKind kind) internal returns (KeeperExecutor ex) {
+        ex = _executorWith(localRouter, kind);
+        usdc.mint(address(ex), 10_000e6);
+        vm.prank(execOwner);
+        ex.setRequestUsdcAllowance(type(uint256).max);
+    }
+
+    /// @dev An executor that reaches `localRouter`, of `kind`, beside Uniswap, and nothing more.
+    function _executorWith(address localRouter, KeeperExecutor.LocalKind kind) internal returns (KeeperExecutor) {
+        return new KeeperExecutor(
+            IV3SwapRouter(address(router)),
+            address(usdc),
+            IWeightedIndexFactory(address(factory)),
+            IMintRequests(address(requests)),
+            ITokenBridge(address(bridge)),
+            execOwner,
+            keeper,
+            localRouter,
+            kind
+        );
+    }
+
+    /// @dev `route` through the chain's own DEX: the same path, one byte `LOCAL_ROUTE` in front.
+    function _local(bytes memory route) internal view returns (bytes memory) {
+        return bytes.concat(executor.LOCAL_ROUTE(), route);
+    }
+
+    /// @dev A route one byte longer than a path, that byte `LOCAL_ROUTE`, swaps along the path after it through the
+    ///      chain's own DEX, a router of SwapRouter02's calls such as PancakeSwap's SmartRouter: ETH sold there and USD
+    ///      bought there, BTC through Uniswap, all at the same quotes. The local router keeps no approval of the float's
+    ///      after its purchase, and none of the coin it was sold.
+    function test_aLocalRouteSwapsThroughTheChainsOwnDex() public {
+        MockSwapRouter local = _localDex();
+        KeeperExecutor ex = _withLocalDex(address(local), KeeperExecutor.LocalKind.SwapRouter02);
+        assertEq(ex.LOCAL_ROUTER(), address(local));
+        assertEq(uint8(ex.LOCAL_KIND()), uint8(KeeperExecutor.LocalKind.SwapRouter02));
+        _open(index.AUCTION_DURATION());
+        (uint256[] memory out, uint256[] memory in_) = _preview();
+        bytes[] memory routes = _routes();
+        (routes[0], routes[2]) = (_local(routes[0]), _local(routes[2]));
+        (uint256 localEth, uint256 localUsd, uint256 uniBtc) =
+            (eth.balanceOf(address(local)), usd.balanceOf(address(local)), btc.balanceOf(address(router)));
+
+        (int256 delta,) = _fill(ex, routes, in_, type(int256).min);
+
+        assertEq(delta, _expected(out, in_), "the same quotes, through two venues");
+        assertEq(eth.balanceOf(address(local)) - localEth, out[0], "ETH sold on the chain's own DEX");
+        assertEq(localUsd - usd.balanceOf(address(local)), in_[2], "USD bought there");
+        assertEq(uniBtc - btc.balanceOf(address(router)), in_[1], "BTC bought through Uniswap");
+        assertEq(usdc.allowance(address(ex), address(local)), 0, "no approval of the float outlives its purchase");
+        assertEq(eth.allowance(address(ex), address(local)), 0, "nor of a coin sold");
+        assertEq(index.rebalanceNonce(), 1);
+    }
+
+    /// @dev Aero's router takes a deadline in each call, which the executor sets to the block it runs in; a request's
+    ///      stablecoin is sold and bought through it as a component is.
+    function test_aeroIsCalledAtTheBlocksOwnDeadline() public {
+        MockAeroSwapRouter aero = new MockAeroSwapRouter(_localDex());
+        usdt.mint(address(aero), 1e12);
+        usdc.mint(address(aero), 1e12);
+        eth.mint(address(aero), 1000e18);
+        btc.mint(address(aero), 100e8);
+        usd.mint(address(aero), 1e12);
+        KeeperExecutor ex = _withLocalDex(address(aero), KeeperExecutor.LocalKind.Aero);
+        bytes[] memory routes = _routes();
+        for (uint256 i = 0; i < routes.length; ++i) {
+            routes[i] = _local(routes[i]);
+        }
+        bytes memory stableRoute = _local(_stableRoute(address(usdt)));
+
+        uint256 id = _requestMint(stranger, address(usdt), 250e6, 2e18);
+        uint256 cost = _basketCost(2e18);
+        vm.warp(block.timestamp + 1 hours);
+        vm.prank(keeper);
+        (int256 delta,) = ex.fillMint(_req(id, 2e18, routes, stableRoute, type(int256).min, block.timestamp));
+        assertEq(delta, _int(router.quoteOut(address(usdt), address(usdc), 250e6)) - _int(cost), "the basket on Aero");
+        assertEq(aero.lastDeadline(), block.timestamp, "each call's deadline is its own block");
+        assertEq(usdc.allowance(address(ex), address(aero)), 0, "no approval of the float outlives a purchase");
+
+        uint256 rid = _requestRedeem(alice, 1e18, address(usdt), 1e6);
+        vm.prank(keeper);
+        ex.fillRedeem(_req(rid, 2e6, routes, stableRoute, type(int256).min, block.timestamp));
+        assertEq(usdt.balanceOf(alice), 2e6, "USDT bought on Aero for the redeemer");
+        assertEq(usdc.allowance(address(ex), address(aero)), 0);
+    }
+
+    /// @dev A local route is refused where the executor has no DEX beside Uniswap, and anywhere when its first byte is
+    ///      not `LOCAL_ROUTE` or the path after it does not run from the component to USDC.
+    function test_aLocalRouteNeedsALocalDexAndAWellFormedPath() public {
+        _open(index.AUCTION_DURATION());
+        bytes memory err = abi.encodeWithSelector(KeeperExecutor.BadRoute.selector, address(eth));
+        bytes[] memory routes = _routes();
+        routes[0] = _local(routes[0]);
+        _expectFillReverts(err, keeper, address(index), routes, block.timestamp);
+
+        KeeperExecutor ex = _withLocalDex(address(_localDex()), KeeperExecutor.LocalKind.SwapRouter02);
+        routes[0] = bytes.concat(bytes1(0x02), _routes()[0]);
+        uint256[] memory units = _units();
+        vm.prank(keeper);
+        vm.expectRevert(err);
+        ex.fill(_auction(index, units, routes, new uint256[](0), ANY_SUPPLY, type(int256).min, block.timestamp));
+        routes[0] = _local(abi.encodePacked(address(eth), uint24(500), address(usd)));
+        vm.prank(keeper);
+        vm.expectRevert(err);
+        ex.fill(_auction(index, units, routes, new uint256[](0), ANY_SUPPLY, type(int256).min, block.timestamp));
+
+        uint256 id = _requestMint(stranger, address(usdt), 250e6, 2e18);
+        KeeperExecutor.RequestFill memory f =
+            _req(id, 2e18, _routes(), _local(_stableRoute(address(usdt))), type(int256).min, block.timestamp);
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.BadRoute.selector, address(usdt)));
+        executor.fillMint(f);
+    }
+
+    /// @dev The chain's own DEX is named with its kind, or neither is named.
+    function test_theLocalDexIsNamedWithItsKind() public {
+        address local = address(_localDex());
+        vm.expectRevert(
+            abi.encodeWithSelector(KeeperExecutor.BadLocalRouter.selector, local, KeeperExecutor.LocalKind.None)
+        );
+        _executorWith(local, KeeperExecutor.LocalKind.None);
+        vm.expectRevert(
+            abi.encodeWithSelector(KeeperExecutor.BadLocalRouter.selector, address(0), KeeperExecutor.LocalKind.Aero)
+        );
+        _executorWith(address(0), KeeperExecutor.LocalKind.Aero);
+        assertEq(executor.LOCAL_ROUTER(), address(0));
+        assertEq(uint8(executor.LOCAL_KIND()), uint8(KeeperExecutor.LocalKind.None));
+    }
+
+    // ---------------------------------------------------------------------
     // The owner
     // ---------------------------------------------------------------------
 
@@ -693,7 +889,7 @@ contract KeeperExecutorTest is WeightedTest {
         bytes[] memory routes = _routes();
         uint256 deadline = block.timestamp;
         vm.prank(next);
-        executor.fill(index, units, routes, in_, ANY_SUPPLY, type(int256).min, deadline);
+        executor.fill(_auction(index, units, routes, in_, ANY_SUPPLY, type(int256).min, deadline));
         assertEq(index.rebalanceNonce(), 1, "the new keeper filled");
     }
 
@@ -727,25 +923,34 @@ contract KeeperExecutorTest is WeightedTest {
         ITokenBridge b = ITokenBridge(address(bridge));
         address u = address(usdc);
         vm.expectRevert(KeeperExecutor.ZeroAddress.selector);
-        new KeeperExecutor(IV3SwapRouter(address(0)), u, f, q, b, execOwner, keeper);
+        new KeeperExecutor(
+            IV3SwapRouter(address(0)), u, f, q, b, execOwner, keeper, address(0), KeeperExecutor.LocalKind.None
+        );
         vm.expectRevert(KeeperExecutor.ZeroAddress.selector);
-        new KeeperExecutor(r, address(0), f, q, b, execOwner, keeper);
+        new KeeperExecutor(r, address(0), f, q, b, execOwner, keeper, address(0), KeeperExecutor.LocalKind.None);
         vm.expectRevert(KeeperExecutor.ZeroAddress.selector);
-        new KeeperExecutor(r, u, IWeightedIndexFactory(address(0)), q, b, execOwner, keeper);
+        new KeeperExecutor(
+            r, u, IWeightedIndexFactory(address(0)), q, b, execOwner, keeper, address(0), KeeperExecutor.LocalKind.None
+        );
         vm.expectRevert(KeeperExecutor.ZeroAddress.selector);
-        new KeeperExecutor(r, u, f, IMintRequests(address(0)), b, execOwner, keeper);
+        new KeeperExecutor(
+            r, u, f, IMintRequests(address(0)), b, execOwner, keeper, address(0), KeeperExecutor.LocalKind.None
+        );
         vm.expectRevert(KeeperExecutor.ZeroAddress.selector);
-        new KeeperExecutor(r, u, f, q, ITokenBridge(address(0)), execOwner, keeper);
+        new KeeperExecutor(
+            r, u, f, q, ITokenBridge(address(0)), execOwner, keeper, address(0), KeeperExecutor.LocalKind.None
+        );
         vm.expectRevert(KeeperExecutor.ZeroAddress.selector);
-        new KeeperExecutor(r, u, f, q, b, address(0), keeper);
+        new KeeperExecutor(r, u, f, q, b, address(0), keeper, address(0), KeeperExecutor.LocalKind.None);
         vm.expectRevert(KeeperExecutor.ZeroAddress.selector);
-        new KeeperExecutor(r, u, f, q, b, execOwner, address(0));
+        new KeeperExecutor(r, u, f, q, b, execOwner, address(0), address(0), KeeperExecutor.LocalKind.None);
     }
 
     /// @dev A request escrow for another factory's indexes would let the keeper fill requests the factory check never
     ///      saw; the executor refuses it at construction.
     function test_constructorRefusesRequestsOnAnotherFactory() public {
-        WeightedIndexFactory other = new WeightedIndexFactory(owner, guardian);
+        WeightedIndexFactory other =
+            new WeightedIndexFactory(owner, guardian, address(0), address(new WeightedMath()), address(0));
         MintRequests elsewhere = new MintRequests(address(other), address(usdc), address(usdt));
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.RequestsMismatch.selector, address(elsewhere)));
         new KeeperExecutor(
@@ -755,7 +960,9 @@ contract KeeperExecutorTest is WeightedTest {
             IMintRequests(address(elsewhere)),
             ITokenBridge(address(bridge)),
             execOwner,
-            keeper
+            keeper,
+            address(0),
+            KeeperExecutor.LocalKind.None
         );
     }
 
@@ -1048,6 +1255,7 @@ contract KeeperExecutorTest is WeightedTest {
         vm.startPrank(stranger);
         usdc.approve(address(requests), 250e6);
         uint256 id = requests.requestMint(address(gated), address(usdc), 250e6, 2e18, block.timestamp + 1 days);
+        hashOf[id] = requests.requestHash(id);
         vm.stopPrank();
         bytes[] memory routes = _routes();
 
@@ -1128,7 +1336,9 @@ contract KeeperExecutorTest is WeightedTest {
             IMintRequests(address(own)),
             ITokenBridge(address(bridge)),
             execOwner,
-            keeper
+            keeper,
+            address(0),
+            KeeperExecutor.LocalKind.None
         );
         vm.prank(execOwner);
         ex.setRequestUsdcAllowance(type(uint256).max);
@@ -1138,6 +1348,7 @@ contract KeeperExecutorTest is WeightedTest {
         vm.startPrank(stranger);
         index.approve(address(own), 1e18);
         uint256 id = own.requestRedeem(address(index), 1e18, address(usd), 90e6, block.timestamp + 1 days);
+        hashOf[id] = own.requestHash(id);
         vm.stopPrank();
         uint256[] memory got = index.previewRedeem(1e18);
         assertLt(got[2], 90e6, "the USD leg redeems less than the payment");
@@ -1370,6 +1581,8 @@ contract KeeperExecutorTest is WeightedTest {
             executor.drawUsdc(0);
             vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NotTreasury.selector, others[i]));
             executor.repayUsdc(0);
+            vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NotTreasury.selector, others[i]));
+            executor.depositStock(address(btc), 0);
             vm.stopPrank();
         }
     }
@@ -1734,6 +1947,108 @@ contract KeeperExecutorTest is WeightedTest {
     }
 
     // ---------------------------------------------------------------------
+    // Deposited stock
+    // ---------------------------------------------------------------------
+
+    /// @dev `amount` of `token` the treasury bought on this chain, approved to the executor and deposited.
+    function _deposit(MockERC20 token, uint256 amount) internal returns (uint256 credited) {
+        token.mint(treasury, amount);
+        vm.startPrank(treasury);
+        token.approve(address(executor), amount);
+        credited = executor.depositStock(address(token), amount);
+        vm.stopPrank();
+    }
+
+    /// @dev RS-1, for a coin the treasury buys here (through UniswapX) rather than bridges in: what it deposits earns
+    ///      stock allowance only within the owner's restock allowance, which every credit spends, and what arrives
+    ///      beyond it is kept as stock the keeper cannot deliver.
+    function test_RS1_depositedStockEarnsAllowanceOnlyWithinTheOwnersRestockAllowance() public {
+        _treasury();
+        _restock(address(btc), 3e8);
+        btc.mint(treasury, 5e8);
+        vm.startPrank(treasury);
+        btc.approve(address(executor), 5e8);
+        vm.expectEmit(address(executor));
+        emit KeeperExecutor.StockDeposited(address(btc), 5e8, 3e8);
+        assertEq(executor.depositStock(address(btc), 5e8), 3e8, "credited up to the restock allowance");
+        vm.stopPrank();
+        assertEq(btc.balanceOf(address(executor)), 5e8, "all of it is here");
+        assertEq(btc.balanceOf(treasury), 0);
+        assertEq(executor.stockAllowance(address(btc)), 3e8);
+        assertEq(executor.restockAllowance(address(btc)), 0, "which the credit spent");
+
+        assertEq(_deposit(btc, 1e8), 0, "nothing more without the owner");
+        assertEq(executor.stockAllowance(address(btc)), 3e8);
+        assertEq(btc.balanceOf(address(executor)), 6e8);
+    }
+
+    /// @dev USDC is the float: the treasury repays it, which lowers what it holds off the float (RS-2); deposited as
+    ///      stock, it would raise a stock allowance no fill spends.
+    function test_aDepositOfUsdcIsRefused() public {
+        _treasury();
+        usdc.mint(treasury, 1e6);
+        vm.startPrank(treasury);
+        usdc.approve(address(executor), 1e6);
+        vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NotStock.selector, address(usdc)));
+        executor.depositStock(address(usdc), 1e6);
+        vm.stopPrank();
+    }
+
+    /// @dev A deposit credits what arrived, not what was asked: a token that charges for a transfer earns allowance
+    ///      only for what it delivered, so the keeper is never allowed stock the executor does not hold.
+    function test_aDepositCreditsWhatArrivedNotWhatWasAsked() public {
+        _treasury();
+        MockFeeToken fee = new MockFeeToken();
+        _restock(address(fee), 1000e18);
+        fee.mint(treasury, 100e18);
+        vm.startPrank(treasury);
+        fee.approve(address(executor), 100e18);
+        vm.expectEmit(address(executor));
+        emit KeeperExecutor.StockDeposited(address(fee), 99e18, 99e18);
+        assertEq(executor.depositStock(address(fee), 100e18), 99e18);
+        vm.stopPrank();
+        assertEq(fee.balanceOf(address(executor)), 99e18);
+        assertEq(executor.stockAllowance(address(fee)), 99e18, "what arrived, a percent short of what was asked");
+        assertEq(executor.restockAllowance(address(fee)), 1000e18 - 99e18);
+    }
+
+    /// @dev RS-6, for a deposit: a stock allowance at its most takes the credit it can still hold and leaves the rest
+    ///      of the restock allowance, and the coins still arrive.
+    function test_RS6_aStockAllowanceAtItsMostDoesNotBlockADeposit() public {
+        _treasury();
+        _restock(address(btc), 5e8);
+        vm.prank(execOwner);
+        executor.setStockAllowance(address(btc), type(uint256).max - 1e8);
+        assertEq(_deposit(btc, 3e8), 1e8, "the credit the allowance can still hold");
+        assertEq(executor.stockAllowance(address(btc)), type(uint256).max);
+        assertEq(executor.restockAllowance(address(btc)), 4e8);
+        assertEq(_deposit(btc, 2e8), 0, "a full allowance still takes the coins in");
+        assertEq(btc.balanceOf(address(executor)), 5e8);
+    }
+
+    /// @dev End to end: a coin with no route is delivered from stock the treasury deposited, once credited, and the
+    ///      fill spends that credit (CF-1); before the deposit the fill finds no way to the coin.
+    function test_depositedStockServesAFillWithinItsCredit() public {
+        _treasury();
+        _open(index.AUCTION_DURATION());
+        (, uint256[] memory in_) = _preview();
+        bytes[] memory routes = _routes();
+        routes[1] = "";
+        _expectFillReverts(
+            abi.encodeWithSelector(KeeperExecutor.NoRoute.selector, address(btc)),
+            keeper,
+            address(index),
+            routes,
+            block.timestamp
+        );
+        _restock(address(btc), in_[1]);
+        assertEq(_deposit(btc, in_[1]), in_[1]);
+        _fill(executor, routes, in_, type(int256).min);
+        assertEq(btc.balanceOf(address(executor)), 0, "delivered from what was deposited");
+        assertEq(executor.stockAllowance(address(btc)), 0, "spending its credit");
+    }
+
+    // ---------------------------------------------------------------------
     // Batches
     // ---------------------------------------------------------------------
 
@@ -1769,7 +2084,21 @@ contract KeeperExecutorTest is WeightedTest {
 
     function _fillBatch(KeeperExecutor.BatchFill memory f) internal returns (int256 delta, uint256 gasUsed) {
         vm.prank(keeper);
-        return executor.fillBatch(f);
+        return executor.fillBatch(_bound(f));
+    }
+
+    /// @dev `f`, naming the requests it lists as the keeper that priced them does: their hashes folded in the
+    ///      batch's order, the redeem requests first (CA-M6). It makes no call, so it can sit under a prank.
+    function _bound(KeeperExecutor.BatchFill memory f) internal view returns (KeeperExecutor.BatchFill memory) {
+        bytes32 priced = bytes32(0);
+        for (uint256 i = 0; i < f.redeemIds.length; ++i) {
+            priced = keccak256(abi.encode(priced, hashOf[f.redeemIds[i]]));
+        }
+        for (uint256 i = 0; i < f.mintIds.length; ++i) {
+            priced = keccak256(abi.encode(priced, hashOf[f.mintIds[i]]));
+        }
+        f.expected = priced;
+        return f;
     }
 
     /// @dev Three mint requests, one basket: the batch issues for all of them at once, each requester gets its
@@ -1907,7 +2236,7 @@ contract KeeperExecutorTest is WeightedTest {
         f.mintShares = _one(2e18);
         vm.prank(keeper);
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.OverStockAllowance.selector, address(index), 2e18, 0));
-        executor.fillBatch(f);
+        executor.fillBatch(_bound(f));
 
         _allow(address(index), 3e18);
         vm.mockCallRevert(address(router), bytes(""), bytes("a swap ran"));
@@ -1943,7 +2272,7 @@ contract KeeperExecutorTest is WeightedTest {
         f.issue = 4e18;
         vm.prank(keeper);
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.OverRequestAllowance.selector, cost, cost - 1));
-        executor.fillBatch(f);
+        executor.fillBatch(_bound(f));
 
         vm.prank(execOwner);
         executor.setRequestUsdcAllowance(cost + 7);
@@ -1957,14 +2286,14 @@ contract KeeperExecutorTest is WeightedTest {
         f.redeem = 4e18;
         vm.prank(keeper);
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.OverStockAllowance.selector, address(index), 4e18, 0));
-        executor.fillBatch(f);
+        executor.fillBatch(_bound(f));
 
         _allow(address(index), 4e18 - 1);
         vm.prank(keeper);
         vm.expectRevert(
             abi.encodeWithSelector(KeeperExecutor.OverStockAllowance.selector, address(index), 4e18, 4e18 - 1)
         );
-        executor.fillBatch(f);
+        executor.fillBatch(_bound(f));
 
         _allow(address(index), 5e18);
         uint256 proceeds = _basketProceeds(4e18);
@@ -1997,12 +2326,12 @@ contract KeeperExecutorTest is WeightedTest {
         f.stableMaxIn = paid - 1;
         vm.prank(keeper);
         vm.expectRevert("Too much requested");
-        executor.fillBatch(f);
+        executor.fillBatch(_bound(f));
         f.stableMaxIn = paid;
         f.stableMinOut = sold + 1;
         vm.prank(keeper);
         vm.expectRevert("Too little received");
-        executor.fillBatch(f);
+        executor.fillBatch(_bound(f));
 
         f.stableMinOut = sold;
         (int256 delta,) = _fillBatch(f);
@@ -2029,12 +2358,12 @@ contract KeeperExecutorTest is WeightedTest {
         f.stableRoute = "";
         vm.prank(keeper);
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.BadRoute.selector, address(usdt)));
-        executor.fillBatch(f);
+        executor.fillBatch(_bound(f));
         f = _batch();
         f.stableRoute = _stableRoute(address(usdt));
         vm.prank(keeper);
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.BadRoute.selector, address(usdc)));
-        executor.fillBatch(f);
+        executor.fillBatch(_bound(f));
     }
 
     /// @dev Each leg of a batch's issue and of its redeem carries its own bound (RX-10).
@@ -2049,7 +2378,7 @@ contract KeeperExecutorTest is WeightedTest {
         f.maxIn[1] = router.quoteIn(address(usdc), address(btc), need[1]) - 1;
         vm.prank(keeper);
         vm.expectRevert("Too much requested");
-        executor.fillBatch(f);
+        executor.fillBatch(_bound(f));
         f.maxIn[1] += 1;
         _fillBatch(f);
         assertEq(index.balanceOf(bob), 2e18, "at its bound the leg fills");
@@ -2064,7 +2393,7 @@ contract KeeperExecutorTest is WeightedTest {
         f.minOut[0] = router.quoteOut(address(eth), address(usdc), got[0]) + 1;
         vm.prank(keeper);
         vm.expectRevert("Too little received");
-        executor.fillBatch(f);
+        executor.fillBatch(_bound(f));
         f.minOut[0] -= 1;
         _fillBatch(f);
         assertEq(usdc.balanceOf(bob), 180e6);
@@ -2083,65 +2412,65 @@ contract KeeperExecutorTest is WeightedTest {
 
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NotKeeper.selector, stranger));
         vm.prank(stranger);
-        executor.fillBatch(f);
+        executor.fillBatch(_bound(f));
 
         f.deadline = block.timestamp - 1;
         vm.prank(keeper);
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.Expired.selector, block.timestamp - 1));
-        executor.fillBatch(f);
+        executor.fillBatch(_bound(f));
         f.deadline = block.timestamp;
 
         f.index = IWeightedHub(address(usdc));
         vm.prank(keeper);
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.NotIndex.selector, address(usdc)));
-        executor.fillBatch(f);
+        executor.fillBatch(_bound(f));
         f.index = IWeightedHub(address(index));
 
         f.expectedNonce = 1;
         vm.prank(keeper);
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.StaleRebalanceNonce.selector, 1, 0));
-        executor.fillBatch(f);
+        executor.fillBatch(_bound(f));
         f.expectedNonce = 0;
 
         // One route per component, and limits of that length or none.
         f.routes = new bytes[](2);
         vm.prank(keeper);
         vm.expectRevert(KeeperExecutor.LengthMismatch.selector);
-        executor.fillBatch(f);
+        executor.fillBatch(_bound(f));
         f.routes = _routes();
         f.maxIn = new uint256[](2);
         vm.prank(keeper);
         vm.expectRevert(KeeperExecutor.LengthMismatch.selector);
-        executor.fillBatch(f);
+        executor.fillBatch(_bound(f));
         f.maxIn = new uint256[](0);
         f.minOut = new uint256[](4);
         vm.prank(keeper);
         vm.expectRevert(KeeperExecutor.LengthMismatch.selector);
-        executor.fillBatch(f);
+        executor.fillBatch(_bound(f));
         f.minOut = new uint256[](0);
 
         // An amount for each request, on each side.
         f.mintShares = _two(2e18, 1);
         vm.prank(keeper);
         vm.expectRevert(KeeperExecutor.LengthMismatch.selector);
-        executor.fillBatch(f);
+        executor.fillBatch(_bound(f));
         f.mintShares = _one(2e18);
         f.redeemPay = new uint256[](0);
         vm.prank(keeper);
         vm.expectRevert(KeeperExecutor.LengthMismatch.selector);
-        executor.fillBatch(f);
+        executor.fillBatch(_bound(f));
         f.redeemPay = _one(90e6);
 
         // A request on the other side.
         f.redeemIds = _one(buy);
         vm.prank(keeper);
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.WrongSide.selector, buy));
-        executor.fillBatch(f);
+        executor.fillBatch(_bound(f));
         f.redeemIds = _one(sell);
         f.mintIds = _one(sell);
         vm.prank(keeper);
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.WrongSide.selector, sell));
-        executor.fillBatch(f);
+        executor.fillBatch(_bound(f));
         f.mintIds = _one(buy);
 
         // The floor binds.
@@ -2149,14 +2478,14 @@ contract KeeperExecutorTest is WeightedTest {
         f.minUsdcDelta = expected + 1;
         vm.prank(keeper);
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.TooCostly.selector, expected, expected + 1));
-        executor.fillBatch(f);
+        executor.fillBatch(_bound(f));
         f.minUsdcDelta = expected;
 
         // Below a request's limit, the escrow refuses the fill.
         f.redeemPay = _one(90e6 - 1);
         vm.prank(keeper);
         vm.expectRevert(abi.encodeWithSelector(IMintRequests.BelowLimit.selector, 90e6 - 1, 90e6));
-        executor.fillBatch(f);
+        executor.fillBatch(_bound(f));
         f.redeemPay = _one(90e6);
 
         (int256 delta,) = _fillBatch(f);
@@ -2174,6 +2503,7 @@ contract KeeperExecutorTest is WeightedTest {
         vm.startPrank(bob);
         usdc.approve(address(requests), 250e6);
         uint256 elsewhere = requests.requestMint(address(other), address(usdc), 250e6, 2e18, block.timestamp + 1 days);
+        hashOf[elsewhere] = requests.requestHash(elsewhere);
         vm.stopPrank();
         uint256 inUsdt = _requestMint(bob, address(usdt), 250e6, 2e18);
         uint256 here = _requestMint(bob, address(usdc), 250e6, 2e18);
@@ -2184,12 +2514,12 @@ contract KeeperExecutorTest is WeightedTest {
         f.mintShares = _two(2e18, 2e18);
         vm.prank(keeper);
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.WrongIndex.selector, elsewhere));
-        executor.fillBatch(f);
+        executor.fillBatch(_bound(f));
 
         f.mintIds = _two(here, inUsdt);
         vm.prank(keeper);
         vm.expectRevert(abi.encodeWithSelector(KeeperExecutor.WrongStable.selector, inUsdt));
-        executor.fillBatch(f);
+        executor.fillBatch(_bound(f));
     }
 
     /// @dev XS-6, for a batch: a request cancelled after the simulation, or past its deadline, stops the batch before
@@ -2216,7 +2546,7 @@ contract KeeperExecutorTest is WeightedTest {
         f.redeemPay = _two(90e6, 90e6);
         vm.prank(keeper);
         vm.expectRevert(abi.encodeWithSelector(IMintRequests.RequestNotOpen.selector, sell));
-        executor.fillBatch(f);
+        executor.fillBatch(_bound(f));
 
         f.redeemIds = _one(lateSell);
         f.redeemPay = _one(90e6);
@@ -2224,7 +2554,7 @@ contract KeeperExecutorTest is WeightedTest {
         f.mintShares = _two(2e18, 2e18);
         vm.prank(keeper);
         vm.expectRevert(abi.encodeWithSelector(IMintRequests.RequestNotOpen.selector, buy));
-        executor.fillBatch(f);
+        executor.fillBatch(_bound(f));
 
         f.mintIds = _one(lateBuy);
         f.mintShares = _one(2e18);
@@ -2232,12 +2562,12 @@ contract KeeperExecutorTest is WeightedTest {
         f.deadline = block.timestamp;
         vm.prank(keeper);
         vm.expectRevert(abi.encodeWithSelector(IMintRequests.RequestExpired.selector, lateSell, deadline));
-        executor.fillBatch(f);
+        executor.fillBatch(_bound(f));
         f.redeemIds = new uint256[](0);
         f.redeemPay = new uint256[](0);
         vm.prank(keeper);
         vm.expectRevert(abi.encodeWithSelector(IMintRequests.RequestExpired.selector, lateBuy, deadline));
-        executor.fillBatch(f);
+        executor.fillBatch(_bound(f));
     }
 
     /// @dev XS-6, the gate: a batch that issues on a gated index reads the gate before any swap. One that only passes
@@ -2253,12 +2583,15 @@ contract KeeperExecutorTest is WeightedTest {
         vm.startPrank(stranger);
         gated.approve(address(requests), 2e18);
         uint256 sell = requests.requestRedeem(address(gated), 2e18, address(usdc), 180e6, block.timestamp + 1 days);
+        hashOf[sell] = requests.requestHash(sell);
         vm.stopPrank();
         usdc.mint(bob, 500e6);
         vm.startPrank(bob);
         usdc.approve(address(requests), 500e6);
         uint256 buy = requests.requestMint(address(gated), address(usdc), 250e6, 2e18, block.timestamp + 1 days);
+        hashOf[buy] = requests.requestHash(buy);
         uint256 more = requests.requestMint(address(gated), address(usdc), 250e6, 2e18, block.timestamp + 1 days);
+        hashOf[more] = requests.requestHash(more);
         vm.stopPrank();
 
         KeeperExecutor.BatchFill memory f = _batch();
@@ -2269,7 +2602,7 @@ contract KeeperExecutorTest is WeightedTest {
         vm.mockCallRevert(address(router), bytes(""), bytes("a swap ran"));
         vm.prank(keeper);
         vm.expectRevert(abi.encodeWithSelector(IWeightedHub.NotAllowedMinter.selector, address(executor)));
-        executor.fillBatch(f);
+        executor.fillBatch(_bound(f));
 
         f.issue = 0;
         f.mintIds = _one(buy);
@@ -2278,5 +2611,133 @@ contract KeeperExecutorTest is WeightedTest {
         _fillBatch(f);
         vm.clearMockedCalls();
         assertEq(gated.balanceOf(bob), 2e18, "the seller's shares reach the buyer whatever the gate");
+    }
+
+    // ---------------------------------------------------------------------
+    // The consolidated audit (CA)
+    // ---------------------------------------------------------------------
+
+    /// @dev CA-H1: a batch counted the shares its redeem requests escrowed as brought in before it filled them, and a
+    ///      redeem side paid nothing is never filled. So a batch that named anyone's open redeem request and paid it
+    ///      zero handed the whole share stock to a mint request of the keeper key's own, or redeemed it and sold the
+    ///      basket, with the owner's allowance at zero. The count is now held against the shares themselves: after
+    ///      its last step a batch may have taken out of the stock what it spent of the allowance, and no more. Both
+    ///      batches are refused, whatever the allowance, and the same delivery without the request that was never
+    ///      to be filled spends the allowance it needs.
+    function test_CAH1_aRedeemSidePaidNothingBringsNoSharesIn() public {
+        _issue(index, address(executor), 4e18);
+        _issue(index, stranger, 4e18);
+        uint256 sell = _requestRedeem(stranger, 4e18, address(usdc), 360e6);
+        uint256 buy = _requestMint(bob, address(usdc), 1e6, 4e18);
+        bytes memory short = abi.encodeWithSelector(KeeperExecutor.ShareStockShort.selector, address(index), 4e18, 0);
+
+        KeeperExecutor.BatchFill memory delivered = _batch();
+        delivered.redeemIds = _one(sell);
+        delivered.redeemPay = _one(0);
+        delivered.mintIds = _one(buy);
+        delivered.mintShares = _one(4e18);
+        vm.prank(keeper);
+        vm.expectRevert(short);
+        executor.fillBatch(_bound(delivered));
+
+        KeeperExecutor.BatchFill memory redeemed = _batch();
+        redeemed.redeemIds = _one(sell);
+        redeemed.redeemPay = _one(0);
+        redeemed.redeem = 4e18;
+        vm.prank(keeper);
+        vm.expectRevert(short);
+        executor.fillBatch(_bound(redeemed));
+
+        // An allowance does not make the count true: the batch still names shares that never come in.
+        _allow(address(index), 5e18);
+        vm.prank(keeper);
+        vm.expectRevert(short);
+        executor.fillBatch(_bound(delivered));
+        assertEq(index.balanceOf(address(executor)), 4e18, "the stock is where it was");
+        assertEq(executor.stockAllowance(address(index)), 5e18, "and so is the allowance");
+        assertTrue(requests.getRequest(sell).open, "the request that was to cover for it is still open");
+
+        delivered.redeemIds = new uint256[](0);
+        delivered.redeemPay = new uint256[](0);
+        _fillBatch(delivered);
+        assertEq(index.balanceOf(bob), 4e18, "named as it is, a delivery from stock goes through");
+        assertEq(executor.stockAllowance(address(index)), 1e18, "and spends the allowance for every share that left");
+    }
+
+    /// @dev CA-M6: a fill named its request by id alone, and an id is only a counter. After a re-org another request
+    ///      can stand behind it, with another escrow, which the keeper never priced: the float's floor catches what
+    ///      the routes sell, not stock the fill keeps. A fill now carries the hash of the request its keeper priced
+    ///      and is refused, before any swap, when the request behind the id is not that one.
+    function test_CAM6_aFillRefusesARequestItsKeeperDidNotPrice() public {
+        uint256 priced = _requestMint(stranger, address(usdc), 250e6, 2e18);
+        uint256 behind = _requestMint(bob, address(usdc), 240e6, 2e18);
+        _issue(index, stranger, 2e18);
+        uint256 pricedSale = _requestRedeem(stranger, 1e18, address(usdc), 90e6);
+        uint256 behindSale = _requestRedeem(stranger, 1e18, address(usdc), 80e6);
+
+        KeeperExecutor.RequestFill memory mint = _req(behind, 2e18, _routes(), "", type(int256).min, block.timestamp);
+        mint.expected = hashOf[priced];
+        KeeperExecutor.RequestFill memory sale =
+            _req(behindSale, 90e6, _routes(), "", type(int256).min, block.timestamp);
+        sale.expected = hashOf[pricedSale];
+        vm.mockCallRevert(address(router), bytes(""), bytes("a swap ran"));
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(IMintRequests.RequestChanged.selector, behind));
+        executor.fillMint(mint);
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(IMintRequests.RequestChanged.selector, behindSale));
+        executor.fillRedeem(sale);
+        vm.clearMockedCalls();
+
+        vm.prank(keeper);
+        executor.fillMint(_req(priced, 2e18, _routes(), "", type(int256).min, block.timestamp));
+        assertEq(index.balanceOf(stranger), 2e18, "named as it was priced, a request fills");
+        vm.prank(keeper);
+        executor.fillRedeem(_req(pricedSale, 90e6, _routes(), "", type(int256).min, block.timestamp));
+        assertFalse(requests.getRequest(pricedSale).open);
+    }
+
+    /// @dev CA-M6: a batch names its requests as one hash, folded in the batch's order. Another request in a priced
+    ///      one's place, the same requests in another order, or one left out, is not the batch its keeper priced,
+    ///      and stops before any swap.
+    function test_CAM6_aBatchRefusesRequestsItsKeeperDidNotPrice() public {
+        uint256 a = _requestMint(stranger, address(usdc), 250e6, 2e18);
+        uint256 b = _requestMint(alice, address(usdc), 250e6, 2e18);
+        uint256 c = _requestMint(bob, address(usdc), 250e6, 2e18);
+        _issue(index, stranger, 2e18);
+        uint256 sell = _requestRedeem(stranger, 2e18, address(usdc), 180e6);
+
+        KeeperExecutor.BatchFill memory f = _batch();
+        f.redeemIds = _one(sell);
+        f.redeemPay = _one(180e6);
+        f.mintIds = _two(a, b);
+        f.mintShares = _two(2e18, 2e18);
+        f.issue = 2e18;
+        f = _bound(f);
+
+        vm.mockCallRevert(address(router), bytes(""), bytes("a swap ran"));
+        f.mintIds = _two(a, c);
+        vm.prank(keeper);
+        vm.expectRevert(KeeperExecutor.RequestsChanged.selector);
+        executor.fillBatch(f);
+        f.mintIds = _two(b, a);
+        vm.prank(keeper);
+        vm.expectRevert(KeeperExecutor.RequestsChanged.selector);
+        executor.fillBatch(f);
+        f.mintIds = _two(a, b);
+        f.redeemIds = new uint256[](0);
+        f.redeemPay = new uint256[](0);
+        vm.prank(keeper);
+        vm.expectRevert(KeeperExecutor.RequestsChanged.selector);
+        executor.fillBatch(f);
+        vm.clearMockedCalls();
+
+        f.redeemIds = _one(sell);
+        f.redeemPay = _one(180e6);
+        vm.prank(keeper);
+        executor.fillBatch(f);
+        assertEq(index.balanceOf(stranger), 2e18, "as priced, the batch fills");
+        assertEq(index.balanceOf(alice), 100e18 + 2e18);
+        assertFalse(requests.getRequest(sell).open);
     }
 }

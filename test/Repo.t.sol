@@ -7,19 +7,20 @@ import {IndexZap} from "../src/IndexZap.sol";
 import {IIndexFactory} from "../src/interfaces/IIndexFactory.sol";
 import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
+import {LocalVenues} from "./LocalVenues.sol";
 
 /// @notice Repository facts that security-review findings rest on and that no contract test can reach: the pinned
 ///         compiler (v1 I10), the pinned CI toolchain and required fork RPC (I11), the dependency lock against
 ///         `.gitmodules` (L08 and FR04) and the documented known limitations (I09); from the whole-repo audit, the CI
 ///         gates (XA-10, XA-64), the ignored chain-1 broadcasts (XA-43), the committed ABIs (XA-44), the single copy
-///         of the agent instructions (XA-46) and the verification key (XA-58); from the logic review of 2026-09-18,
-///         the test linking mode that lets checks after an expected constructor revert run (LR-01); from the security
-///         audit of 2026-09-23, the ignored Sepolia-fork broadcasts (CR-I40). CI checks the submodule commits
+///         of the agent instructions (XA-46) and the verification key (XA-58); from the first logic review,
+///         the test linking mode that lets checks after an expected constructor revert run (LR-01); from the first security
+///         audit, the ignored Sepolia-fork broadcasts (CR-I40). CI checks the submodule commits
 ///         themselves, which needs git; these tests check everything a local run can.
 contract RepoTest is Test {
     /// @dev keccak256 of the files `test_A712_theCiConfigIsPinnedWhole` pins whole: CI's workflow and the two Foundry
     ///      configs it runs. A change to one fails that test, which prints the new hash, until it is pinned here.
-    bytes32 private constant WORKFLOW_HASH = 0x09ce789055c1ca709d8d787b287b123d2ab770852a87ba4e199f72fd05cfbbf8;
+    bytes32 private constant WORKFLOW_HASH = 0xc22104f4a647eb9f85fdd3f8f0e252a8ed9745b07a46000ce9c42f14448c24f7;
     bytes32 private constant FOUNDRY_TOML_HASH = 0xed56be1c9acc47165fe8a9303665b35391357ee7d85ef998f8c0c74761a0c3c4;
     bytes32 private constant KEEPER_FOUNDRY_TOML_HASH =
         0x5426d5180cca7c4ac15d7fb182272a805a3ce19a143d6c6f8c158f61765d7592;
@@ -98,7 +99,8 @@ contract RepoTest is Test {
                 "        run: forge test -vvv\n",
                 "        env:\n",
                 "          MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}\n",
-                "          BNB_RPC_URL: ${{ secrets.BNB_RPC_URL }}\n"
+                "          BNB_RPC_URL: ${{ secrets.BNB_RPC_URL }}\n",
+                "          BASE_RPC_URL: ${{ secrets.BASE_RPC_URL }}\n"
             ),
             "the fork-test RPCs are passed to the tests"
         );
@@ -143,16 +145,18 @@ contract RepoTest is Test {
     ///      keeps the old check green.
     function test_I09_XS17_theKnownLimitationsAreDocumented() public view {
         string memory section = _section(_read("docs/known-limitations.md"), "# Known limitations\n");
-        string[21] memory anchors = [
+        string[24] memory anchors = [
             "**A lone executor keeps the index's distance from its weights.**",
-            "**No contract reads a price.**",
+            "**No mint, redeem or claim reads a price.**",
             "**One fill may not land on the weights.**",
             "**Wrapped legs rest on Wormhole.**",
             "**A collapsing coin is still bought.**",
             "**An issuer's corporate action is not accounted for.**",
+            "**A Coinbase stock token is not one share.**",
             "**Rebalances clear only when the distance pays for the fill.**",
             "**An index one holder owns can be walked.**",
             "**An exit sent during the auction can be overtaken by the fill.**",
+            "**Minting can be paused; redeeming cannot.**",
             "**The guardian can stall rebalancing.**",
             "**Issuers can freeze components, and some can burn them.**",
             "**A request's surplus goes to the fastest filler.**",
@@ -164,7 +168,8 @@ contract RepoTest is Test {
             "**Airdrops, rewards and governance votes**",
             "**A hooked V4 pool cannot be routed through.**",
             "**A `tokenIn` that calls back into the zap is unsupported**",
-            "**Zap gas grows with components and hops, and nothing on chain bounds it.**"
+            "**Zap gas grows with components and hops, and nothing on chain bounds it.**",
+            "**The chain's own DEX adds its operators**"
         ];
         for (uint256 i = 0; i < anchors.length; ++i) {
             assertTrue(_contains(section, anchors[i]), anchors[i]);
@@ -260,7 +265,7 @@ contract RepoTest is Test {
                     "          import re\n",
                     "          import sys\n",
                     "\n",
-                    "          rows, short = 0, []\n",
+                    "          rows, short, cut = 0, [], []\n",
                     "          for line in open(\"coverage.txt\"):\n",
                     "              cells = [cell.strip() for cell in line.strip().strip(\"|\").split(\"|\")]\n",
                     "              if not re.match(r\"^(src|script|test)/\", cells[0]):\n",
@@ -268,11 +273,19 @@ contract RepoTest is Test {
                 ),
                 string.concat(
                     "              rows += 1\n",
-                    "              if any(hit != total for hit, total in re.findall(r\"\\((\\d+)/(\\d+)\\)\", line)):",
-                    "\n",
-                    "                  short.append(cells[0])\n",
+                    "              counts = re.findall(r\"\\((\\d+)/(\\d+)\\)\", line)\n",
+                    "              if len(counts) != 4:\n",
+                    "                  cut.append(cells[0])\n",
+                    "              elif any(hit != total for hit, total in counts):\n",
+                    "                  short.append(cells[0])\n"
+                ),
+                string.concat(
                     "          if rows == 0:\n",
                     "              print(\"::error::the coverage summary lists no files\")\n",
+                    "              sys.exit(1)\n",
+                    "          if cut:\n",
+                    "              print(\"::error::the coverage summary lacks one of the four counts for \" + \", \".join(cut))",
+                    "\n",
                     "              sys.exit(1)\n",
                     "          if short:\n",
                     "              print(\"::error::coverage is below 100% in \" + \", \".join(short))\n",
@@ -281,7 +294,7 @@ contract RepoTest is Test {
                     "          EOF\n"
                 )
             ),
-            "coverage below 100% on any file fails"
+            "coverage below 100% on any file fails, and so does a row without its four counts (CA-L11)"
         );
         assertEq(
             _step(workflow, "Run the Wake detectors on src"),
@@ -343,12 +356,12 @@ contract RepoTest is Test {
     /// @dev XA-44: the ABIs the web app decodes with are committed, and CI regenerates them and fails on a diff: the zap,
     ///      the basket builder, `MintRequests`, and the weighted factory and index. v4's market-cap factory and hub are
     ///      deleted, and their ABIs with them; so are Stage B's hybrid factory, hybrid index and vault
-    ///      (`audit/2026-10-07-stage-b-retirement.md`), and the guardian relay, which went with the price update its
-    ///      starts carried (`audit/2026-11-10-oracle-retirement.md`). A7-12: the step is pinned whole, so neither a
+    ///      (`audits/retired/stage-b.md`), and the guardian relay, which went with the price update its
+    ///      starts carried (`audits/retired/oracle.md`). A7-12: the step is pinned whole, so neither a
     ///      contract left out nor a diff that stops failing passes.
     function test_XA44_A712_theAbisAreCommittedAndChecked() public view {
-        string[5] memory contracts =
-            ["IndexZap", "BasketBuilder", "MintRequests", "WeightedIndexFactory", "WeightedHub"];
+        string[6] memory contracts =
+            ["IndexZap", "BasketBuilder", "MintRequests", "WeightedIndexFactory", "WeightedHub", "PythPrices"];
         for (uint256 i = 0; i < contracts.length; ++i) {
             assertTrue(
                 _contains(_read(string.concat("abi/", contracts[i], ".json")), '"type": "function"'),
@@ -360,7 +373,7 @@ contract RepoTest is Test {
             string.concat(
                 "        run: |\n",
                 "          set -euo pipefail\n",
-                "          for contract in IndexZap BasketBuilder MintRequests WeightedIndexFactory WeightedHub; do\n",
+                "          for contract in IndexZap BasketBuilder MintRequests WeightedIndexFactory WeightedHub PythPrices; do\n",
                 "            forge inspect \"$contract\" abi --json > \"abi/$contract.json\"\n",
                 "          done\n",
                 "          git diff --exit-code abi/\n"
@@ -389,7 +402,7 @@ contract RepoTest is Test {
     }
 
     /// @dev XA-46: the agent instructions have one copy. CLAUDE.md holds the sections itself and imports no other
-    ///      file: an imported file is a second copy to drift, as AGENTS.md was until 2026-11-10.
+    ///      file: an imported file is a second copy to drift, as AGENTS.md was.
     function test_XA46_theAgentInstructionsAreOneFile() public view {
         string memory claude = _read("CLAUDE.md");
         assertTrue(_contains(claude, "\n## Design rules that must not be broken\n"), "CLAUDE.md holds the rules");
@@ -472,8 +485,8 @@ contract RepoTest is Test {
     }
 
     /// @dev No committed file names a path on its author's machine: a home folder, a temporary folder, or the folder an
-    ///      agent names after a home folder and keeps its scratchpad in. Three audit records showed the author's user
-    ///      name so until 2026-10-25. CI greps every committed text file and fails on a match, and on a grep that could
+    ///      agent names after a home folder and keeps its scratchpad in. Three audit records once showed the author's user
+    ///      name so. CI greps every committed text file and fails on a match, and on a grep that could
     ///      not run, which would otherwise pass as a clean tree. The step is pinned whole, keys and script: a pin on a
     ///      few of its lines let an `if: false`, a `continue-on-error`, a commented-out `exit 1` and a dropped
     ///      `status=0` through (a match then leaves the status empty, which neither test catches). The brackets keep
@@ -667,7 +680,9 @@ contract RepoTest is Test {
     function test_LR01_checksAfterAnExpectedConstructorRevertStillRun() public {
         assertTrue(_contains(_read("foundry.toml"), "\ndynamic_test_linking = false\n"), "test linking stays static");
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new IndexZap(IIndexFactory(address(0)), IUniversalRouter(address(0)), address(0), address(0));
+        new IndexZap(
+            IIndexFactory(address(0)), IUniversalRouter(address(0)), LocalVenues.none(), address(0), address(0)
+        );
         vm.expectCall(address(this), abi.encodeCall(this.reachedAfterTheRevert, ()));
         this.reachedAfterTheRevert();
     }
@@ -676,8 +691,9 @@ contract RepoTest is Test {
 
     /// @dev No file in `src/` and no shipped ABI in `abi/` names a Chainlink feed, a pool's price or its oracle, and the
     ///      v3 price contracts are gone. Every file of both folders is read, Stage B's included, so a new file is covered
-    ///      without being listed. Nothing reads Pyth either (`test_V5I4_noContractNamesPyth`). A7-13: the words name the
-    ///      common ways to read a price
+    ///      without being listed; the price reader's own files alone are left out, when Pyth's check
+    ///      on a fill came in (`_isPriceReader`, `audits/retired/pyth-check.md`), and the scan holds them
+    ///      to Pyth alone (`test_onlyThePriceReaderReadsPyth`). A7-13: the words name the common ways to read a price
     ///      (`_priceWords`), not five of them, and `test_A713_theScanFindsEveryPriceWord` shows the scan finds each.
     function test_A713_noContractReadsAPrice() public view {
         string[47] memory priceWords = _priceWords();
@@ -774,27 +790,52 @@ contract RepoTest is Test {
         return "";
     }
 
-    /// @dev No contract reads a price since the oracle-free rebalance of 2026-11-10: a rebalance is judged on units
-    ///      alone (`design/2026-11-10-oracle-free-rebalance.md`). V5-I4 kept Pyth to the hub; now no file in `src/` and
-    ///      no shipped ABI names Pyth at all, by its name, its parse, its getters, its pushes or its price struct, and
-    ///      the vendored Pyth interfaces are gone. A new file is covered without being listed.
-    function test_V5I4_noContractNamesPyth() public view {
-        string[7] memory pythWords =
-            ["Pyth", "pyth", "PYTH", "parsePriceFeedUpdates", "getPrice", "updatePriceFeeds", "priceId"];
+    /// @dev The price reader's own files: the one contract that reads Pyth, its interface, Pyth's read declaration and
+    ///      the stock token's multiplier, which it reads too. Nothing else in `src/` or `abi/` may read a price.
+    function _isPriceReader(string memory path) internal pure returns (bool) {
+        string[5] memory reader = [
+            "src/PythPrices.sol",
+            "src/interfaces/IPythPrices.sol",
+            "src/interfaces/IPythReader.sol",
+            "src/interfaces/IMultiplierToken.sol",
+            "abi/PythPrices.json"
+        ];
+        for (uint256 i = 0; i < reader.length; ++i) {
+            if (_endsWith(path, reader[i])) return true;
+        }
+        return false;
+    }
+
+    /// @dev A rebalance fill is checked against Pyth's prices, and one contract reads them:
+    ///      `PythPrices`. Pyth's reads (its stored price, its parse, its pushes, whether it knows a feed) appear in
+    ///      its files alone: the factory does not ask whether a feed exists. The vendored Pyth interfaces stay
+    ///      gone: `IPythReader` is a declaration of our own. A new file is covered without being listed. V5-I4's test,
+    ///      which allowed Pyth nowhere, is retired (`audits/retired/pyth-check.md`).
+    function test_onlyThePriceReaderReadsPyth() public view {
+        string[6] memory reads = [
+            "getPriceUnsafe",
+            "getPriceNoOlderThan",
+            "getEmaPrice",
+            "parsePriceFeedUpdates",
+            "updatePriceFeeds",
+            "priceFeedExists"
+        ];
         uint256 read = 0;
         string[2] memory dirs = ["src", "abi"];
         for (uint256 d = 0; d < dirs.length; ++d) {
             VmSafe.DirEntry[] memory entries = vm.readDir(dirs[d], 8);
             for (uint256 i = 0; i < entries.length; ++i) {
-                if (entries[i].isDir || _isFinderMetadata(entries[i].path)) continue;
+                string memory path = entries[i].path;
+                if (entries[i].isDir || _isFinderMetadata(path) || _isPriceReader(path)) continue;
                 ++read;
-                string memory text = vm.readFile(entries[i].path);
-                for (uint256 j = 0; j < pythWords.length; ++j) {
-                    assertFalse(_contains(text, pythWords[j]), string.concat(entries[i].path, " names ", pythWords[j]));
+                string memory text = vm.readFile(path);
+                for (uint256 j = 0; j < reads.length; ++j) {
+                    assertFalse(_contains(text, reads[j]), string.concat(path, " names ", reads[j]));
                 }
             }
         }
         assertGt(read, 20, "every source and ABI file is read");
+        assertTrue(_contains(vm.readFile("src/PythPrices.sol"), "getPriceUnsafe"), "the reader is the one that reads");
         assertFalse(vm.exists("src/interfaces/pyth"), "the vendored Pyth interfaces are gone");
     }
 
@@ -819,7 +860,7 @@ contract RepoTest is Test {
     function _assertNoPriceIn(string memory dir, string[47] memory priceWords) internal view returns (uint256 read) {
         VmSafe.DirEntry[] memory entries = vm.readDir(dir, 8);
         for (uint256 i = 0; i < entries.length; ++i) {
-            if (entries[i].isDir || _isFinderMetadata(entries[i].path)) continue;
+            if (entries[i].isDir || _isFinderMetadata(entries[i].path) || _isPriceReader(entries[i].path)) continue;
             string memory found = _priceWordIn(vm.readFile(entries[i].path), priceWords);
             assertEq(found, "", string.concat(entries[i].path, " names ", found));
             ++read;

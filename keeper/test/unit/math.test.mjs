@@ -226,6 +226,8 @@ test("startStage: ready, in its notice, startable within the lead, or none", () 
 test("a fill costs its gas at the next block's base fee plus the tip, and nothing else", () => {
   const gwei = 10n ** 9n;
   assert.equal(M.fillCostUsd({ used: 1_000_000n, nextBase: 10n * gwei, tip: 2n * gwei, ethUsd: 3_000 }), 36);
+  // The ether a fill carries, Pyth's fee for the update it posts, is part of what it costs.
+  assert.equal(M.fillCostUsd({ used: 1_000_000n, nextBase: 10n * gwei, tip: 2n * gwei, ethUsd: 3_000, value: 10n ** 15n }), 39);
 });
 
 test("RX-9, RY-7: only prices Pyth's contract returned identically from the signed update are kept", () => {
@@ -261,4 +263,44 @@ test("RY-8: an auction asks for stock only when its settlement at its best price
   assert.ok(Math.abs(margin - (2_000 - 1_970 - 6)) < 1e-6, `margin ${margin}`);
   assert.equal(M.settlementMarginUsd({ out, need, decimals, prices: [price(2_000), price(1), null] }), 30, "a kept leg moves nothing");
   assert.ok(M.settlementMarginUsd({ out: [0n, 0n, 0n], need, decimals, prices }) < 0, "a settlement that only takes pays nothing");
+});
+
+test("RZ-16: a subsidised fill is charged what its floor lets it lose, not what it simulated", () => {
+  // A fill simulated at a float change of -40 USDC, with $30 of stock and $5 of gas: -$15. It trades $20,000 through
+  // routes at 30 bps of slippage, so its floor lets the float end $60 lower still.
+  const fill = { simDelta: -40_000_000n, gasUsd: 5, inventoryUsd: 30, routedVolumeUsdc: 20_000_000_000n, slippageBps: 30 };
+  assert.equal(M.profitUsd({ usdcDelta: fill.simDelta, inventoryUsd: 30, gasUsd: 5 }), -15);
+  // With a subsidy of up to $100 a fill the floor is the simulation less the slack, and the charge is $75.
+  assert.equal(M.worstProfitUsd({ ...fill, minProfitUsd: -100 }), -75);
+  // With one of up to $20 the decision's own least binds first: the fill cannot land below it.
+  assert.equal(M.worstProfitUsd({ ...fill, minProfitUsd: -20 }), -20);
+  // Without a subsidy no fill can land at a loss, so nothing is ever charged.
+  assert.ok(M.worstProfitUsd({ ...fill, simDelta: 10_000_000n, minProfitUsd: 5 }) >= 5);
+  // The budget is held to the worst case: three such fills pass a $200 day where their simulations, $45, would not.
+  const spent = [{ at: 100n, usd: 75 }, { at: 200n, usd: 75 }];
+  assert.equal(M.subsidyFits(spent, M.worstProfitUsd({ ...fill, minProfitUsd: -100 }), 300n, 200).ok, false);
+  assert.equal(M.subsidyFits(spent, -15, 300n, 200).ok, true);
+});
+
+test("RZ-15: a fill mined past its own deadline is late; one mined at it, or sent without one, is not", () => {
+  const deadline = 1_700_000_012n; // the next block's second: a fill is priced for that block alone
+  assert.equal(M.minedLate(deadline, deadline), false, "mined in the block it was priced for");
+  assert.equal(M.minedLate(deadline - 12n, deadline), false);
+  assert.equal(M.minedLate(deadline + 12n, deadline), true, "a block later, or the same block after a missed slot");
+  assert.equal(M.minedLate(deadline + 1n, deadline), true);
+  assert.equal(M.minedLate(Number(deadline) + 12, deadline), true, "whatever type the node returned its time in");
+  assert.equal(M.minedLate(deadline + 12n, null), false, "a start carries no deadline");
+  assert.equal(M.minedLate(deadline + 12n, undefined), false);
+});
+
+test("valuedFeedId: a token's own feed counts, an Ondo share's only where the bot prices it at its sValue", () => {
+  const share = "0x" + "ab".repeat(32);
+  const other = "0x" + "cd".repeat(32);
+  const ids = [share];
+  assert.equal(M.valuedFeedId({ id: share.toUpperCase().replace("0X", "0x"), kind: 1 }, ids), share, "a token's own, lowercased");
+  assert.equal(M.valuedFeedId({ id: share, kind: 4n }, ids), share, "an Ondo share's named by the share-priced ids");
+  assert.equal(M.valuedFeedId({ id: other, kind: 4 }, ids), null, "a share's the bot would value without its sValue");
+  assert.equal(M.valuedFeedId({ id: share, kind: 2 }, ids), null, "a vault's");
+  assert.equal(M.valuedFeedId({ id: share, kind: 3 }, ids), null, "a multiplier token's");
+  assert.equal(M.valuedFeedId({ id: "0x" + "00".repeat(32), kind: 0 }, ids), null, "none");
 });

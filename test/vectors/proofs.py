@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The proofs behind the oracle-free settlement, checked in exact rationals. Standard library only.
 
-The rule (`design/2026-11-10-oracle-free-rebalance.md`, section 3): a fill is accepted when every leg's relative
+The rule (`docs/design/rebalance.md`, section 3): a fill is accepted when every leg's relative
 change in units `x` lies in [-1/5, 1] and the weighted sum of `L(x) = x - x^2/2 + x^3/3 - 3x^4/10` clears a bar above
 zero. Its safety is one chain, and each link is checked here, exactly:
 

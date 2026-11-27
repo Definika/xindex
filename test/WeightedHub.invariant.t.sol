@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
+import {WeightedMath} from "../src/WeightedMath.sol";
 import {Test} from "forge-std/Test.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {WeightedIndexFactory} from "../src/WeightedIndexFactory.sol";
@@ -16,6 +17,7 @@ import {IBasketBuilder} from "../src/interfaces/IBasketBuilder.sol";
 import {IUniversalRouterSwaps} from "../src/interfaces/IUniversalRouterSwaps.sol";
 import {PathKey} from "../src/libraries/UniswapV4Types.sol";
 import {MockPausableToken} from "./mocks/MockPausableToken.sol";
+import {LocalVenues} from "./LocalVenues.sol";
 
 /// @dev What the handler drives besides the main index: the factory and its owner, the guardian, a second, gated
 ///      index and its creator, and the basket builder.
@@ -534,6 +536,7 @@ contract WeightedHandler is Test {
             bool passThrough = address(comps[i]) == address(payIn);
             budget += passThrough ? need[i] : router.quoteIn(address(payIn), address(comps[i]), need[i]) + 1;
             legs[i] = IUniversalRouterSwaps.MintLeg({
+                localRoute: "",
                 v3Path: passThrough ? bytes("") : _path(address(comps[i]), address(payIn)),
                 v4Path: new PathKey[](0),
                 maxAmountIn: 0
@@ -568,7 +571,7 @@ contract WeightedHandler is Test {
         tokens[0] = token;
         IUniversalRouterSwaps.BurnLeg[] memory legs = new IUniversalRouterSwaps.BurnLeg[](1);
         legs[0] = IUniversalRouterSwaps.BurnLeg({
-            v3Path: _path(token, address(usdc)), v4Path: new PathKey[](0), minAmountOut: 0
+            localRoute: "", v3Path: _path(token, address(usdc)), v4Path: new PathKey[](0), minAmountOut: 0
         });
         IBasketBuilder.SellParams memory p = IBasketBuilder.SellParams({
             tokenOut: address(usdc),
@@ -588,21 +591,25 @@ contract WeightedHandler is Test {
     // ---------------------------------------------------------------------
 
     /// @dev Tries a start a second early, which must fail, then warps to the first moment the caller may start, or up to
-    ///      three days later, and starts. The earliest moment is the model's: the index's 14-day interval after the
-    ///      last settlement, or only MIN_REBALANCE_INTERVAL after one with a keep mask (XS-3, RX-46).
+    ///      three days later, and starts. The earliest moment is the model's. For a stranger: the index's 14-day
+    ///      interval after the last settlement, or only MIN_REBALANCE_INTERVAL after one with a keep mask (XS-3,
+    ///      RX-46). For the guardian: MIN_REBALANCE_INTERVAL after any fill, and before the index's first fill the
+    ///      stranger's own wait.
     function startRebalance(uint256 seed, uint256 maskSeed, bool asGuardian) external {
         (uint256 eta,) = index.pendingRebalance();
         if (eta != 0 && block.timestamp <= eta + index.AUCTION_DURATION()) return;
         uint256 earliest = index.lastRebalance()
             + (lastFillMasked ? index.MIN_REBALANCE_INTERVAL() : index.config().rebalanceInterval);
         restartMisjudged = restartMisjudged || index.earliestRebalance() != earliest;
-        if (block.timestamp < earliest - 1) vm.warp(earliest - 1);
-        if (block.timestamp < earliest) {
-            vm.prank(guardian);
-            (bool early,) = address(index).call(abi.encodeWithSignature("startRebalance(uint256)", 0));
-            restartMisjudged = restartMisjudged || early;
-        }
-        if (!asGuardian) {
+        uint256 rolesEarliest =
+            index.rebalanceNonce() == 0 ? earliest : index.lastRebalance() + index.MIN_REBALANCE_INTERVAL();
+        if (block.timestamp < rolesEarliest - 1) vm.warp(rolesEarliest - 1);
+        if (block.timestamp < rolesEarliest) restartMisjudged = restartMisjudged || _startsEarly(guardian);
+        if (asGuardian) {
+            earliest = rolesEarliest;
+        } else {
+            if (block.timestamp < earliest - 1) vm.warp(earliest - 1);
+            if (block.timestamp < earliest) restartMisjudged = restartMisjudged || _startsEarly(_actor(seed));
             uint256 afterExpiry = eta == 0 ? 0 : eta + index.AUCTION_DURATION() + index.REBALANCE_DELAY();
             uint256 holdOff = Math.max(index.restartAllowedAt(), afterExpiry);
             // The hold-off's other side: the second before it ends, with the interval over, a stranger is refused and
@@ -629,6 +636,12 @@ contract WeightedHandler is Test {
         if (comps.length - kept < 2) mask = 0;
         vm.prank(asGuardian ? guardian : _actor(seed));
         index.startRebalance(mask);
+    }
+
+    /// @dev Whether a start by `who` goes through now, a second before the model lets it.
+    function _startsEarly(address who) internal returns (bool started) {
+        vm.prank(who);
+        (started,) = address(index).call(abi.encodeWithSignature("startRebalance(uint256)", 0));
     }
 
     function cancelRebalance() external {
@@ -855,7 +868,7 @@ contract WeightedHubInvariantTest is Test {
         vm.warp(1_800_000_000);
         address owner = makeAddr("owner");
         address guardian = makeAddr("guardian");
-        factory = new WeightedIndexFactory(owner, guardian);
+        factory = new WeightedIndexFactory(owner, guardian, address(0), address(new WeightedMath()), address(0));
         // This contract creates both indexes, then hands each creator role to an account that was never approved.
         vm.prank(owner);
         factory.setApprovedCreator(address(this), true);
@@ -941,7 +954,9 @@ contract WeightedHubInvariantTest is Test {
         // enough for any buy or sale the handler makes (RX-57).
         usdc = new MockERC20("USDC", "USDC", 6);
         // The builder's two stablecoins are USDC and the USD component, which a buy then passes through (RX-57).
-        builder = new BasketBuilder(IIndexFactory(address(factory)), router, address(usdc), address(comps[2]));
+        builder = new BasketBuilder(
+            IIndexFactory(address(factory)), router, LocalVenues.none(), address(usdc), address(comps[2])
+        );
         uint256[4] memory usd = [uint256(60_000e18), 2000e18, 1e18, 0.5e18];
         for (uint256 i = 0; i < comps.length; ++i) {
             router.setPrice(address(comps[i]), usd[i], comps[i].decimals());

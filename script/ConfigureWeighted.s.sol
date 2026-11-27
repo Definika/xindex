@@ -6,11 +6,16 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IWeightedIndexFactory} from "../src/interfaces/IWeightedIndexFactory.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
 import {BnbChainAddresses} from "./BnbChainAddresses.sol";
+import {BaseAddresses} from "./BaseAddresses.sol";
 import {Listings} from "./Listings.sol";
+import {ScriptLists} from "./ScriptLists.sol";
+import {PriceFeeds} from "./PriceFeeds.sol";
+import {IPythPrices} from "../src/interfaces/IPythPrices.sol";
 import {ScriptUtils} from "./ScriptUtils.sol";
 
-/// @notice Drives the listing flow on `WeightedIndexFactory`. A listing is a token and nothing else: no index reads a
-///         price, so no token carries a feed. The script never lists a token on its own: a token never listed gets a
+/// @notice Drives the listing flow on `WeightedIndexFactory`: each token's listing and, on a factory with an oracle,
+///         the Pyth feed `PriceFeeds` names for it, which `propose`, `safe` and `execute` handle in the same run. The
+///         script never lists a token on its own: a token never listed gets a
 ///         proposal only when named in V5_LIST, and a delisted one only when named in V5_RELIST, so a listing the
 ///         guardian cancelled is not proposed again by a routine run (RT-06). Execute mode never proposes.
 ///
@@ -29,7 +34,8 @@ import {ScriptUtils} from "./ScriptUtils.sol";
 ///   V5_MODE       `propose`, `safe`, `execute`, or `status` (read-only: what is listed and pending, per token).
 ///   V5_FACTORY    Deployed WeightedIndexFactory.
 ///   V5_WHITELIST  `default` for the first four of `Listings`, `wide` for the rest (both chain 1 only), `bnb` for the
-///                 BNB Chain list of `BnbChainAddresses` (chain 56 only), or comma-separated token addresses.
+///                 BNB Chain list of `BnbChainAddresses` (chain 56 only), `base` for the Base list of `BaseAddresses`
+///                 (chain 8453 only), or comma-separated token addresses.
 ///   V5_LIST       Optional. Tokens never listed that propose and safe mode may propose: comma-separated addresses, or
 ///                 `all` for every token of the list. Leave it unset on a routine run.
 ///   V5_RELIST     Optional. Comma-separated delisted tokens that propose and safe mode may list again.
@@ -51,20 +57,17 @@ contract ConfigureWeighted is Script {
     uint8 public constant MIN_DECIMALS = 6;
     uint8 public constant MAX_DECIMALS = 18;
     /// @notice How many of `Listings`' coins the `default` list takes, listed first there: WETH, WBTC, LINK and UNI.
-    uint256 public constant DEFAULT_COUNT = 4;
+    uint256 public constant DEFAULT_COUNT = ScriptLists.DEFAULT_COUNT;
 
     /// @notice V5_MODE is not one of the modes above.
     error UnknownMode(string mode);
-    /// @notice V5_WHITELIST names a chain's list on another chain: `default` or `wide` off chain 1, `bnb` off chain 56.
-    error ListOffItsChain(string list, uint256 chainId);
     /// @notice A broadcasting mode needs an owner that can sign, and this factory's owner is a contract (a Safe on
     ///         mainnet). Use `safe` and submit the calldata it logs from the owner.
     error OwnerIsContract(address owner);
-    /// @notice The list names `token` twice (RT-24).
-    error DuplicateEntry(address token);
-    /// @notice Off Ethereum and BNB Chain the mint currency `name` must be given: only the deployment knows it.
+    /// @notice Off Ethereum, BNB Chain and Base the mint currency `name` must be given: only the deployment knows it.
     error MintCurrencyRequired(string name);
-    /// @notice On Ethereum and BNB Chain the mint currencies are the chain's address book's; `name` named another.
+    /// @notice On Ethereum, BNB Chain and Base the mint currencies are the chain's address book's; `name` named
+    ///         another.
     error MintCurrencyOverride(string name, address given);
 
     /// @notice Reads the V5_ variables and runs the mode.
@@ -80,17 +83,18 @@ contract ConfigureWeighted is Script {
             address[2] memory currencies = _mintCurrencies();
             if (proposes) {
                 propose(factory, list, firstListings, relist, currencies);
+                proposeFeeds(factory, list);
                 return;
             }
             (bytes[] memory calls, string[] memory labels) =
                 safeCalldata(factory, list, firstListings, relist, currencies);
             console2.log("Safe transactions to the factory, value 0:", address(factory));
-            for (uint256 i = 0; i < calls.length; ++i) {
-                console2.log(labels[i]);
-                console2.logBytes(calls[i]);
-            }
+            _logCalls(calls, labels);
+            (calls, labels) = feedCalldata(factory, list);
+            _logCalls(calls, labels);
         } else if (ScriptUtils.same(mode, "execute")) {
             execute(factory, list);
+            executeFeeds(factory, list);
         } else if (ScriptUtils.same(mode, "status")) {
             status(factory, list);
         } else {
@@ -104,12 +108,12 @@ contract ConfigureWeighted is Script {
 
     /// @notice The first four of `Listings`: WETH, WBTC, LINK and UNI.
     function defaultMainnetList() public pure returns (address[] memory list) {
-        return _slice(0, DEFAULT_COUNT);
+        return ScriptLists.defaultMainnet();
     }
 
     /// @notice The rest of `Listings`: the wide list.
     function wideMainnetList() public pure returns (address[] memory list) {
-        return _slice(DEFAULT_COUNT, Listings.COUNT);
+        return ScriptLists.wideMainnet();
     }
 
     /// @notice The BNB Chain list, every coin of `BnbChainAddresses`.
@@ -117,38 +121,21 @@ contract ConfigureWeighted is Script {
         return BnbChainAddresses.all();
     }
 
-    function _slice(uint256 from, uint256 to) private pure returns (address[] memory list) {
-        address[] memory tokens = Listings.all();
-        list = new address[](to - from);
-        for (uint256 i = from; i < to; ++i) {
-            list[i - from] = tokens[i];
-        }
+    /// @notice The Base list, every coin of `BaseAddresses`.
+    function baseList() public pure returns (address[] memory list) {
+        return BaseAddresses.all();
     }
 
-    /// @notice `default` and `wide` on chain 1 only, `bnb` on chain 56 only; anything else is parsed as
-    ///         comma-separated token addresses. Reverts on a token named twice (RT-24).
+    /// @notice `default` and `wide` on chain 1 only, `bnb` on chain 56 only, `base` on chain 8453 only; anything else
+    ///         is parsed as comma-separated token addresses. Reverts on a token named twice (RT-24). The lists are
+    ///         `ScriptLists`', which the admission check resolves the same way.
     function resolveList(string memory raw) public view returns (address[] memory list) {
-        bool isDefault = ScriptUtils.same(raw, "default");
-        if (isDefault || ScriptUtils.same(raw, "wide")) {
-            if (block.chainid != 1) revert ListOffItsChain(raw, block.chainid);
-            list = isDefault ? defaultMainnetList() : wideMainnetList();
-        } else if (ScriptUtils.same(raw, "bnb")) {
-            if (block.chainid != BnbChainAddresses.CHAIN_ID) revert ListOffItsChain(raw, block.chainid);
-            list = bnbList();
-        } else {
-            list = parseAddresses(raw);
-        }
-        _requireUnique(list);
+        return ScriptLists.resolve(raw);
     }
 
     /// @notice Comma-separated addresses; an empty string is an empty list.
     function parseAddresses(string memory raw) public pure returns (address[] memory addresses) {
-        if (bytes(raw).length == 0) return addresses;
-        string[] memory parts = vm.split(raw, ",");
-        addresses = new address[](parts.length);
-        for (uint256 i = 0; i < parts.length; ++i) {
-            addresses[i] = vm.parseAddress(vm.trim(parts[i]));
-        }
+        return ScriptLists.parse(raw);
     }
 
     /// @notice V5_LIST: `all` names every token of the list; anything else is parsed as addresses (RT-06).
@@ -170,7 +157,7 @@ contract ConfigureWeighted is Script {
         address[] memory relist,
         address[2] memory currencies
     ) public {
-        _requireUnique(list);
+        ScriptLists.requireUnique(list);
         _requireSigningOwner(factory);
         vm.startBroadcast();
         for (uint256 i = 0; i < list.length; ++i) {
@@ -190,7 +177,7 @@ contract ConfigureWeighted is Script {
         address[] memory relist,
         address[2] memory currencies
     ) public view returns (bytes[] memory calls, string[] memory labels) {
-        _requireUnique(list);
+        ScriptLists.requireUnique(list);
         bool[] memory chosen = new bool[](list.length);
         uint256 count = 0;
         for (uint256 i = 0; i < list.length; ++i) {
@@ -210,10 +197,102 @@ contract ConfigureWeighted is Script {
         }
     }
 
-    /// @notice ` (<tier>)` for a token either chain's list records a tier for, and nothing for any other.
+    function _logCalls(bytes[] memory calls, string[] memory labels) private pure {
+        for (uint256 i = 0; i < calls.length; ++i) {
+            console2.log(labels[i]);
+            console2.logBytes(calls[i]);
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Price feeds
+    // ---------------------------------------------------------------------
+
+    /// @dev `feed`, the one this chain's `PriceFeeds` table names for `token`, and whether the factory should be asked
+    ///      to take it: the factory has an oracle, the table names a feed, the factory's is another, and no proposal is
+    ///      pending for it within its window.
+    function _toPropose(IWeightedIndexFactory factory, address token, IPythPrices.PriceFeed memory feed)
+        private
+        view
+        returns (IPythPrices.PriceFeed memory, bool proposes)
+    {
+        if (factory.PRICES() == address(0) || feed.kind == IPythPrices.FeedKind.None) return (feed, proposes);
+        IPythPrices.PriceFeed memory current = factory.priceFeedOf(token);
+        if (current.id == feed.id && current.kind == feed.kind) return (feed, proposes);
+        // forge-lint: disable-next-line(unused-return) the pending feed itself is replaced, only its eta matters
+        (, uint256 eta) = factory.pendingPriceFeed(token);
+        return (feed, eta == 0 || block.timestamp > eta + factory.PROPOSAL_WINDOW());
+    }
+
+    /// @notice Owner only. Proposes, for every token of the list, the feed this chain's `PriceFeeds` table names, where the factory should take it. Reverts
+    ///         OwnerIsContract when the owner cannot sign.
+    function proposeFeeds(IWeightedIndexFactory factory, address[] memory list) public {
+        _requireSigningOwner(factory);
+        (address[] memory tokens, IPythPrices.PriceFeed[] memory table) = PriceFeeds.table(block.chainid);
+        vm.startBroadcast();
+        for (uint256 i = 0; i < list.length; ++i) {
+            (IPythPrices.PriceFeed memory feed, bool proposes) =
+                _toPropose(factory, list[i], PriceFeeds.find(list[i], tokens, table));
+            if (!proposes) continue;
+            factory.proposePriceFeed(list[i], feed);
+            console2.log("proposed a price feed", list[i]);
+        }
+        vm.stopBroadcast();
+    }
+
+    /// @notice Any account, nothing broadcast. For a Safe owner: the `proposePriceFeed` calldata of every feed
+    ///         {proposeFeeds} would submit, each labelled with the token's symbol, its address and the feed's id.
+    function feedCalldata(IWeightedIndexFactory factory, address[] memory list)
+        public
+        view
+        returns (bytes[] memory calls, string[] memory labels)
+    {
+        (address[] memory tokens, IPythPrices.PriceFeed[] memory table) = PriceFeeds.table(block.chainid);
+        IPythPrices.PriceFeed[] memory feeds = new IPythPrices.PriceFeed[](list.length);
+        bool[] memory chosen = new bool[](list.length);
+        uint256 count = 0;
+        for (uint256 i = 0; i < list.length; ++i) {
+            (feeds[i], chosen[i]) = _toPropose(factory, list[i], PriceFeeds.find(list[i], tokens, table));
+            if (chosen[i]) ++count;
+        }
+        calls = new bytes[](count);
+        labels = new string[](count);
+        count = 0;
+        for (uint256 i = 0; i < list.length; ++i) {
+            if (!chosen[i]) continue;
+            calls[count] = abi.encodeCall(IWeightedIndexFactory.proposePriceFeed, (list[i], feeds[i]));
+            labels[count] = string.concat(
+                "proposePriceFeed ",
+                ScriptUtils.symbolOf(list[i]),
+                " ",
+                vm.toString(list[i]),
+                " ",
+                vm.toString(feeds[i].id)
+            );
+            ++count;
+        }
+    }
+
+    /// @notice Any account. Executes every due price feed of the list.
+    function executeFeeds(IWeightedIndexFactory factory, address[] memory list) public {
+        if (factory.PRICES() == address(0)) return;
+        uint256 window = factory.PROPOSAL_WINDOW();
+        vm.startBroadcast();
+        for (uint256 i = 0; i < list.length; ++i) {
+            // forge-lint: disable-next-line(unused-return) the factory executes the feed it holds; its eta decides
+            (, uint256 eta) = factory.pendingPriceFeed(list[i]);
+            if (eta == 0 || block.timestamp < eta || block.timestamp > eta + window) continue;
+            factory.executePriceFeed(list[i]);
+            console2.log("set a price feed", list[i]);
+        }
+        vm.stopBroadcast();
+    }
+
+    /// @notice ` (<tier>)` for a token a chain's list records a tier for, and nothing for any other.
     function tierLabel(address token) public pure returns (string memory) {
         Listings.Tier tier = Listings.tierOf(token);
         if (tier == Listings.Tier.Unrecorded) tier = BnbChainAddresses.tierOf(token);
+        if (tier == Listings.Tier.Unrecorded) tier = BaseAddresses.tierOf(token);
         return tier == Listings.Tier.Unrecorded ? "" : string.concat(" (", Listings.tierName(tier), ")");
     }
 
@@ -272,11 +351,12 @@ contract ConfigureWeighted is Script {
     }
 
     /// @dev The parts of the whitelist policy a script can check: a token with code and 6 to 18 decimals, and no mint
-    ///      currency as a component, neither the deployment's (`currencies`) nor Ethereum's or BNB Chain's.
+    ///      currency as a component, neither the deployment's (`currencies`) nor Ethereum's, BNB Chain's or Base's.
     function _followsPolicy(address token, address[2] memory currencies) private view returns (bool) {
         if (
             token == currencies[0] || token == currencies[1] || token == MainnetAddresses.USDC
                 || token == MainnetAddresses.USDT || token == BnbChainAddresses.USDC || token == BnbChainAddresses.USDT
+                || token == BaseAddresses.USDC || token == BaseAddresses.USDT
         ) {
             console2.log("skipped, a mint currency is not a component", token);
             return false;
@@ -286,6 +366,13 @@ contract ConfigureWeighted is Script {
             return false;
         }
         (bool answered, uint8 decimals) = ScriptUtils.decimalsOf(token);
+        // One of Coinbase's stock tokens answers no call in an EVM without Base's precompiles, this script's own
+        // under Foundry before v1.8.4: its decimals are then the address book's, which the fork suite reads from
+        // Base's node. The factory reads them from the token itself when the proposal lands.
+        if (!answered && block.chainid == BaseAddresses.CHAIN_ID && BaseAddresses.isStock(token)) {
+            answered = true;
+            decimals = BaseAddresses.STOCK_DECIMALS;
+        }
         if (!answered || decimals < MIN_DECIMALS || decimals > MAX_DECIMALS) {
             console2.log("skipped, the whitelist policy needs 6 to 18 decimals", token);
             return false;
@@ -299,12 +386,17 @@ contract ConfigureWeighted is Script {
     ///         both required.
     function mintCurrencies(address usdc, address usdt) public view returns (address[2] memory currencies) {
         bool bnb = block.chainid == BnbChainAddresses.CHAIN_ID;
-        currencies[0] = _mintCurrency("V5_USDC", usdc, bnb ? BnbChainAddresses.USDC : MainnetAddresses.USDC);
-        currencies[1] = _mintCurrency("V5_USDT", usdt, bnb ? BnbChainAddresses.USDT : MainnetAddresses.USDT);
+        bool base = block.chainid == BaseAddresses.CHAIN_ID;
+        address bookUsdc = base ? BaseAddresses.USDC : bnb ? BnbChainAddresses.USDC : MainnetAddresses.USDC;
+        address bookUsdt = base ? BaseAddresses.USDT : bnb ? BnbChainAddresses.USDT : MainnetAddresses.USDT;
+        currencies[0] = _mintCurrency("V5_USDC", usdc, bookUsdc);
+        currencies[1] = _mintCurrency("V5_USDT", usdt, bookUsdt);
     }
 
     function _mintCurrency(string memory name, address given, address pinned) private view returns (address) {
-        if (block.chainid == 1 || block.chainid == BnbChainAddresses.CHAIN_ID) {
+        if (
+            block.chainid == 1 || block.chainid == BnbChainAddresses.CHAIN_ID || block.chainid == BaseAddresses.CHAIN_ID
+        ) {
             if (given != address(0) && given != pinned) revert MintCurrencyOverride(name, given);
             return pinned;
         }
@@ -321,14 +413,6 @@ contract ConfigureWeighted is Script {
         address factoryOwner = Ownable(address(factory)).owner();
         bytes memory ownerCode = factoryOwner.code;
         if (ownerCode.length != 0 && !ScriptUtils.isDelegatedAccount(ownerCode)) revert OwnerIsContract(factoryOwner);
-    }
-
-    function _requireUnique(address[] memory list) private pure {
-        for (uint256 i = 1; i < list.length; ++i) {
-            for (uint256 j = 0; j < i; ++j) {
-                if (list[j] == list[i]) revert DuplicateEntry(list[i]);
-            }
-        }
     }
 
     // ---------------------------------------------------------------------

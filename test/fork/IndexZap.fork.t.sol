@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
+import {WeightedMath} from "../../src/WeightedMath.sol";
 import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
@@ -16,6 +17,7 @@ import {IXindexErrors} from "../../src/interfaces/IXindexErrors.sol";
 import {IUniversalRouter} from "../../src/interfaces/IUniversalRouter.sol";
 import {PathKey} from "../../src/libraries/UniswapV4Types.sol";
 import {ForkAddresses as A} from "./ForkAddresses.sol";
+import {LocalVenues} from "../LocalVenues.sol";
 
 interface IQuoterV2 {
     function quoteExactInput(bytes memory path, uint256 amountIn)
@@ -83,9 +85,12 @@ contract IndexZapForkTest is Test {
         }
 
         alice = _eoa(alice);
-        factory = new WeightedIndexFactory(address(this), address(0));
+        factory =
+            new WeightedIndexFactory(address(this), address(0), address(0), address(new WeightedMath()), address(0));
         factory.setApprovedCreator(address(this), true);
-        zap = new IndexZap(IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER), A.USDC, A.USDT);
+        zap = new IndexZap(
+            IIndexFactory(address(factory)), IUniversalRouter(A.UNIVERSAL_ROUTER), LocalVenues.none(), A.USDC, A.USDT
+        );
 
         factory.proposeListing(A.WBTC);
         factory.proposeListing(A.WETH);
@@ -168,30 +173,39 @@ contract IndexZapForkTest is Test {
     function _mixedMintLegs() internal pure returns (IUniversalRouterSwaps.MintLeg[] memory legs) {
         bytes[] memory p = _mintPaths(A.USDC);
         legs = new IUniversalRouterSwaps.MintLeg[](3);
-        legs[0] = IUniversalRouterSwaps.MintLeg({v3Path: p[0], v4Path: new PathKey[](0), maxAmountIn: 0});
-        legs[1] = IUniversalRouterSwaps.MintLeg({v3Path: p[1], v4Path: new PathKey[](0), maxAmountIn: 0});
-        legs[2] = IUniversalRouterSwaps.MintLeg({v3Path: "", v4Path: _v4MintPathLink(), maxAmountIn: 0});
+        legs[0] =
+            IUniversalRouterSwaps.MintLeg({localRoute: "", v3Path: p[0], v4Path: new PathKey[](0), maxAmountIn: 0});
+        legs[1] =
+            IUniversalRouterSwaps.MintLeg({localRoute: "", v3Path: p[1], v4Path: new PathKey[](0), maxAmountIn: 0});
+        legs[2] = IUniversalRouterSwaps.MintLeg({localRoute: "", v3Path: "", v4Path: _v4MintPathLink(), maxAmountIn: 0});
     }
 
     function _mixedBurnLegs() internal pure returns (IUniversalRouterSwaps.BurnLeg[] memory legs) {
         bytes[] memory p = _burnPaths(A.USDC);
         legs = new IUniversalRouterSwaps.BurnLeg[](3);
-        legs[0] = IUniversalRouterSwaps.BurnLeg({v3Path: p[0], v4Path: new PathKey[](0), minAmountOut: 0});
-        legs[1] = IUniversalRouterSwaps.BurnLeg({v3Path: p[1], v4Path: new PathKey[](0), minAmountOut: 0});
-        legs[2] = IUniversalRouterSwaps.BurnLeg({v3Path: "", v4Path: _v4BurnPathLink(), minAmountOut: 0});
+        legs[0] =
+            IUniversalRouterSwaps.BurnLeg({localRoute: "", v3Path: p[0], v4Path: new PathKey[](0), minAmountOut: 0});
+        legs[1] =
+            IUniversalRouterSwaps.BurnLeg({localRoute: "", v3Path: p[1], v4Path: new PathKey[](0), minAmountOut: 0});
+        legs[2] =
+            IUniversalRouterSwaps.BurnLeg({localRoute: "", v3Path: "", v4Path: _v4BurnPathLink(), minAmountOut: 0});
     }
 
     function _mintLegs(bytes[] memory paths) internal pure returns (IUniversalRouterSwaps.MintLeg[] memory legs) {
         legs = new IUniversalRouterSwaps.MintLeg[](paths.length);
         for (uint256 i = 0; i < paths.length; ++i) {
-            legs[i] = IUniversalRouterSwaps.MintLeg({v3Path: paths[i], v4Path: new PathKey[](0), maxAmountIn: 0});
+            legs[i] = IUniversalRouterSwaps.MintLeg({
+                localRoute: "", v3Path: paths[i], v4Path: new PathKey[](0), maxAmountIn: 0
+            });
         }
     }
 
     function _burnLegs(bytes[] memory paths) internal pure returns (IUniversalRouterSwaps.BurnLeg[] memory legs) {
         legs = new IUniversalRouterSwaps.BurnLeg[](paths.length);
         for (uint256 i = 0; i < paths.length; ++i) {
-            legs[i] = IUniversalRouterSwaps.BurnLeg({v3Path: paths[i], v4Path: new PathKey[](0), minAmountOut: 0});
+            legs[i] = IUniversalRouterSwaps.BurnLeg({
+                localRoute: "", v3Path: paths[i], v4Path: new PathKey[](0), minAmountOut: 0
+            });
         }
     }
 
@@ -419,7 +433,7 @@ contract IndexZapForkTest is Test {
         for (uint256 i = 0; i < 3; ++i) {
             (uint256 legQuote,,,) = quoter.quoteExactOutput(mintPaths[i], need[i]);
             mintLegs[i] = IUniversalRouterSwaps.MintLeg({
-                v3Path: mintPaths[i], v4Path: new PathKey[](0), maxAmountIn: legQuote + legQuote / 200
+                localRoute: "", v3Path: mintPaths[i], v4Path: new PathKey[](0), maxAmountIn: legQuote + legQuote / 200
             });
             total += legQuote;
         }
@@ -438,7 +452,7 @@ contract IndexZapForkTest is Test {
         for (uint256 i = 0; i < 3; ++i) {
             (uint256 legOut,,,) = quoter.quoteExactInput(burnPaths[i], got[i]);
             burnLegs[i] = IUniversalRouterSwaps.BurnLeg({
-                v3Path: burnPaths[i], v4Path: new PathKey[](0), minAmountOut: legOut - legOut / 200
+                localRoute: "", v3Path: burnPaths[i], v4Path: new PathKey[](0), minAmountOut: legOut - legOut / 200
             });
             quoteOut += legOut;
         }
@@ -466,7 +480,7 @@ contract IndexZapForkTest is Test {
         assertGt(out, spent - spent / 50);
     }
 
-    /// @dev The zap takes and pays only USDC and USDT (the owner's call of 2026-11-18): a burn into WBTC, the index's
+    /// @dev The zap takes and pays only USDC and USDT: a burn into WBTC, the index's
     ///      own component, and a mint paid in WETH, another, are refused before anything moves.
     function testFork_aCurrencyOtherThanTheTwoStablecoinsIsRefused() public {
         _mint(A.USDC, 1e18, 100);

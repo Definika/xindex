@@ -558,9 +558,14 @@ contract WeightedHubFeesTest is WeightedTest {
         assertFalse(monthly.canStartRebalance(), "the monthly one is not");
         vm.expectRevert(abi.encodeWithSelector(IWeightedHub.RebalanceTooSoon.selector, earliest));
         monthly.startRebalance(0);
-        vm.prank(guardian);
-        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.RebalanceTooSoon.selector, earliest));
-        monthly.startRebalance(0);
+        // Nothing has filled this index yet, so the owner and guardian wait out its interval as anyone does: their
+        // week's restart is for an index a fill closed (`test_theOwnerOrGuardianRestartsAWeekAfterAnyFill`).
+        address[2] memory roles = [owner, guardian];
+        for (uint256 i = 0; i < roles.length; ++i) {
+            vm.prank(roles[i]);
+            vm.expectRevert(abi.encodeWithSelector(IWeightedHub.RebalanceTooSoon.selector, earliest));
+            monthly.startRebalance(0);
+        }
 
         vm.warp(earliest - 1);
         assertFalse(monthly.canStartRebalance());
@@ -748,7 +753,7 @@ contract WeightedHubFeesTest is WeightedTest {
     /// @dev The yearly rate is a ceiling. Each accrual charges the rate for the time since the last one, on what is
     ///      left, and anyone may accrue, so a year of daily accruals takes less than one accrual at its end: at the
     ///      600 basis points of both caps, 5.82% of the index against 6.00%. Neither takes more than the rate, and
-    ///      the holders keep the difference (the cold review of 2026-11-10).
+    ///      the holders keep the difference (the cold review of the oracle-free build).
     function test_theStreamingRateIsACeilingThatFrequentAccrualsUndercut() public {
         WeightedHub streaming = _streamingIndex();
         _issueWith(streaming, alice, 1000e18, address(0));

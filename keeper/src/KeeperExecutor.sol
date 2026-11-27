@@ -7,15 +7,19 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {IWeightedHub} from "xindex/src/interfaces/IWeightedHub.sol";
 import {IWeightedIndexFactory} from "xindex/src/interfaces/IWeightedIndexFactory.sol";
 import {IMintRequests} from "xindex/src/interfaces/IMintRequests.sol";
+import {IPythPrices} from "xindex/src/interfaces/IPythPrices.sol";
 import {IRebalanceExecutor} from "xindex/src/interfaces/IRebalanceExecutor.sol";
 import {PathLib} from "xindex/src/libraries/PathLib.sol";
 import {IV3SwapRouter} from "./interfaces/IV3SwapRouter.sol";
+import {IAeroSwapRouter} from "./interfaces/IAeroSwapRouter.sol";
 import {ITokenBridge} from "./interfaces/ITokenBridge.sol";
+import {IPyth} from "./interfaces/IPyth.sol";
 
 /// @title KeeperExecutor
 /// @notice The keeper bot's executor for `WeightedHub` auctions and `MintRequests` requests. It sells what an index
-///         sends out into USDC and buys what the index needs with USDC, through Uniswap V3 along the routes the bot
-///         passes with each fill, and it serves a coin with no route from its own inventory: it delivers that coin
+///         sends out into USDC and buys what the index needs with USDC, through Uniswap V3 or the chain's own DEX
+///         (PancakeSwap's V3 pools on BNB Chain, Aero's concentrated pools on Base) along the routes the bot passes with
+///         each fill, and it serves a coin with no route from its own inventory: it delivers that coin
 ///         from stock and keeps that coin when the index sells it. A mint request is filled the same way, the basket
 ///         bought and issued to this contract and the shares delivered for the escrowed stablecoin; a redeem request
 ///         by paying the stablecoin, redeeming the escrowed shares here and selling the basket. Several requests on
@@ -27,20 +31,49 @@ import {ITokenBridge} from "./interfaces/ITokenBridge.sol";
 ///         bot's simulation cannot cost more than the bot accepted. A coin Ethereum has only as a Wormhole copy is
 ///         restocked through Wormhole's Token Bridge: the treasury bridges it in, what it bridges in is added to that
 ///         coin's stock allowance as far as the owner's restock allowance goes, and it bridges kept stock out to the
-///         home-chain addresses the owner pinned.
+///         home-chain addresses the owner pinned. A coin this chain issues that no pool sells, as Ondo's stocks, the
+///         treasury buys here, through UniswapX, and deposits ({depositStock}), credited the same way; no path takes
+///         it out but the owner's.
 /// @dev Three keys. The keeper, a hot key, only fills; the treasury, the restock service's hot key, only bridges stock
-///      in and out and draws or repays USDC; and the owner, a cold key, withdraws, rotates the keeper, pins the
+///      in and out, deposits stock it bought, and draws or repays USDC; and the owner, a cold key, withdraws, rotates the keeper, pins the
 ///      treasury and the home-chain recipients, and sets how much of each coin the keeper may still deliver from stock,
-///      both directly and as restocked coins arrive. Anyone can create a factory index and hold all its shares, so a
+///      both directly and as restocked coins arrive. Anyone can come to hold all the shares of a factory index, so a
 ///      fill can deliver to an index the keeper itself owns (CF-1): what bounds the stock a compromised keeper key can
 ///      move is that allowance, which every delivery from stock spends and only the owner raises, restocking included
 ///      (RS-1), not the factory check. The same key can trade the USDC float badly within the floor it sets. A stolen
 ///      treasury key can bridge stock only to the owner's pinned recipients and hold at most the owner's cap of USDC
 ///      off the float (RS-2), so the hot keys together can lose the working capital the owner handed the bot, and
 ///      nothing beyond it. The executor holds no role in the protocol: filling an auction is open to anyone.
+///      An index on a factory with an oracle accepts a fill only against Pyth prices of the last minute, which reach
+///      Pyth's contract only when someone posts them. So {fill} may carry Pyth's signed update and posts it first, in
+///      the same transaction, paying Pyth's fee with the ether the call carries and with nothing else: the call must
+///      carry exactly that fee, the Pyth contract is the one the index's own factory reads, and the executor never
+///      spends ether of its own.
 contract KeeperExecutor is IRebalanceExecutor {
+    /// @notice Which router the chain's own DEX is reached through, beside Uniswap's.
+    /// - None: no other venue; every route is Uniswap's.
+    /// - SwapRouter02: a router with Uniswap's SwapRouter02 calls and paths, as PancakeSwap's SmartRouter on BNB Chain.
+    /// - Aero: Aero's concentrated-liquidity SwapRouter on Base, whose calls carry a deadline and whose paths name a
+    ///   pool's tick spacing where Uniswap's name its fee.
+    enum LocalKind {
+        None,
+        SwapRouter02,
+        Aero
+    }
+
     /// @notice Uniswap's SwapRouter02.
     IV3SwapRouter public immutable ROUTER;
+    /// @notice The chain's own DEX router, or zero where there is none. A route that starts with the one byte
+    ///         `LOCAL_ROUTE` swaps through it along the path after that byte; every other route is Uniswap's.
+    address public immutable LOCAL_ROUTER;
+    /// @notice How `LOCAL_ROUTER` is called.
+    LocalKind public immutable LOCAL_KIND;
+    /// @notice The byte a route through the chain's own DEX starts with. A path is 20 bytes and 23 more a hop, so a
+    ///         route of one byte more cannot be read as a path of its own.
+    bytes1 public constant LOCAL_ROUTE = 0x01;
+    /// @dev A path's length, less 20, is a whole number of 23-byte hops; a local route's is one byte longer.
+    uint256 private constant HOP = 23;
+    uint256 private constant LOCAL_REMAINDER = 21;
     /// @notice The float's currency, and the end of every route.
     address public immutable USDC;
     /// @notice The factory whose indexes this executor fills.
@@ -71,7 +104,8 @@ contract KeeperExecutor is IRebalanceExecutor {
     ///         service's wallet on most chains, and on Solana, whose bridge pays a token account, the wallet's token
     ///         account for that coin. Only the owner sets it.
     mapping(uint16 chain => mapping(address token => bytes32 recipient)) public homeRecipient;
-    /// @notice How much more of each coin arriving through the bridge may earn stock allowance: every credit spends it.
+    /// @notice How much more of each coin arriving through the bridge or deposited by the treasury may earn stock
+    ///         allowance: every credit spends it.
     ///         Only the owner sets it, so the stock a compromised keeper key can deliver stays within what the owner
     ///         allowed, restocking included (RS-1).
     mapping(address token => uint256 amount) public restockAllowance;
@@ -97,12 +131,41 @@ contract KeeperExecutor is IRebalanceExecutor {
     event BridgedIn(address indexed token, uint256 amount, uint256 credited);
     /// @notice `amount` more of `token` arriving through the bridge may now earn stock allowance.
     event RestockAllowanceSet(address indexed token, uint256 amount);
+    /// @notice The treasury deposited `amount` of `token` it bought, `credited` of it added to its stock allowance.
+    event StockDeposited(address indexed token, uint256 amount, uint256 credited);
     /// @notice `amount` of `token` left for `recipient` on Wormhole chain `chain`, as the bridge's message `sequence`.
     event BridgedOut(address indexed token, uint256 amount, uint16 indexed chain, bytes32 recipient, uint64 sequence);
     /// @notice The treasury drew `amount` of USDC from the float.
     event UsdcDrawn(uint256 amount);
     /// @notice The treasury repaid `amount` of USDC into the float.
     event UsdcRepaid(uint256 amount);
+
+    /// @notice An auction fill, for {fill}. A struct, because eight arguments, four of them arrays, do not fit the
+    ///         compiler's stack.
+    /// @param index The index whose auction is filled, one the factory created.
+    /// @param newUnits The recorded units each component is to have, in component order, as `executeRebalance` takes
+    ///        them. The bot chooses them from its own view of the market; the floor below is what protects the float.
+    /// @param routes One per component: an exact-input Uniswap V3 path from the component to USDC, which read as an
+    ///        exact-output path buys the component with USDC; empty for a coin served from inventory, and for USDC.
+    /// @param maxAmountsIn Passed to the hub: the fill reverts if the index asks for more of any component.
+    /// @param maxSupply The most shares the index may have when the fill runs. The settlement grows with the supply,
+    ///        so an issue ahead of the fill that would break `maxAmountsIn` is refused here, for one read, rather than
+    ///        by the hub after its own checks (XS-4).
+    /// @param minUsdcDelta The least the USDC float may change by: negative accepts a cost, positive requires a gain.
+    /// @param deadline The latest block timestamp the fill may be mined at.
+    /// @param pythUpdate Pyth's signed update for the legs the fill moves, posted to Pyth's contract before the fill;
+    ///        empty to post none, as on a factory without an oracle. The call must carry exactly Pyth's fee for it,
+    ///        and no ether without it (`WrongPythFee`).
+    struct AuctionFill {
+        IWeightedHub index;
+        uint256[] newUnits;
+        bytes[] routes;
+        uint256[] maxAmountsIn;
+        uint256 maxSupply;
+        int256 minUsdcDelta;
+        uint256 deadline;
+        bytes[] pythUpdate;
+    }
 
     /// @notice A request fill, for {fillMint} and {fillRedeem}.
     /// @param id The request.
@@ -116,6 +179,9 @@ contract KeeperExecutor is IRebalanceExecutor {
     ///        USDC buying the stablecoin may cost.
     /// @param expectedNonce The index's rebalanceNonce the fill was simulated at: a settlement since then re-sizes the
     ///        basket, so the fill stops (RX-4).
+    /// @param expected The hash of the request the keeper priced, as `MintRequests.requestHash` computes it. An id
+    ///        is only a counter: after a re-org it can name another request, whose escrow the keeper never valued
+    ///        (RW-7, CA-M6).
     /// @param minUsdcDelta The least the USDC float may change by.
     /// @param deadline The latest block timestamp the fill may be mined at.
     struct RequestFill {
@@ -126,6 +192,7 @@ contract KeeperExecutor is IRebalanceExecutor {
         bytes stableRoute;
         uint256 stableLimit;
         uint256 expectedNonce;
+        bytes32 expected;
         int256 minUsdcDelta;
         uint256 deadline;
     }
@@ -151,6 +218,9 @@ contract KeeperExecutor is IRebalanceExecutor {
     /// @param stableMaxIn Zero for no bound: the most USDC buying what the redeem requests are paid may cost.
     /// @param stableMinOut Zero for no bound: the least USDC selling what the mint requests escrowed must return.
     /// @param expectedNonce The index's rebalanceNonce the batch was simulated at (RX-4).
+    /// @param expected The requests the keeper priced, as one hash: from zero, `keccak256(abi.encode(running, h))`
+    ///        for the hash `h` of each request in turn (`MintRequests.requestHash`), the redeem requests first, then
+    ///        the mint requests, each in the batch's order (RW-7, CA-M6).
     /// @param minUsdcDelta The least the USDC float may change by.
     /// @param deadline The latest block timestamp the batch may be mined at.
     struct BatchFill {
@@ -169,6 +239,7 @@ contract KeeperExecutor is IRebalanceExecutor {
         uint256 stableMaxIn;
         uint256 stableMinOut;
         uint256 expectedNonce;
+        bytes32 expected;
         int256 minUsdcDelta;
         uint256 deadline;
     }
@@ -189,11 +260,19 @@ contract KeeperExecutor is IRebalanceExecutor {
     error WrongSide(uint256 id);
     /// @notice The routes do not number one per component.
     error LengthMismatch();
-    /// @notice `token`'s route is not a path from `token` to USDC, or names USDC itself.
+    /// @notice `token`'s route is not a path from `token` to USDC, or names USDC itself, or names the chain's own DEX
+    ///         where the executor has none.
     error BadRoute(address token);
+    /// @notice The chain's own DEX was given as `router` of kind `kind`: a router with no kind, or a kind with none.
+    error BadLocalRouter(address router, LocalKind kind);
     /// @notice The index needs more of `token` than the executor may deliver from stock (what it holds, capped by the
     ///         owner's stock allowance), and `token` has no route to buy the rest.
     error NoRoute(address token);
+    /// @notice A fill carried `sent` wei where Pyth's fee for its update is `fee`: more or less than the fee, or any
+    ///         ether with no update to pay for.
+    error WrongPythFee(uint256 sent, uint256 fee);
+    /// @notice A fill carried a Pyth update for an index whose factory has no oracle.
+    error NoOracle();
     /// @notice `caller` called back outside a fill of its own.
     error UnexpectedCaller(address caller);
     /// @notice The fill changed the float by `usdcDelta`, below `minUsdcDelta`.
@@ -212,11 +291,18 @@ contract KeeperExecutor is IRebalanceExecutor {
     /// @notice A batch would hand over `spent` more shares of `index` than it brings in, above the `allowance` the
     ///         owner left for delivering that index's shares from stock.
     error OverStockAllowance(address index, uint256 spent, uint256 allowance);
+    /// @notice A batch took `taken` shares of `index` out of those held here before it, and had spent only `spent`
+    ///         of the stock allowance for them: it counted shares in that it never brought in (CA-H1).
+    error ShareStockShort(address index, uint256 taken, uint256 spent);
+    /// @notice The requests a batch names are not the ones the keeper priced: hashed in the batch's order, they are
+    ///         not its `expected` (CA-M6).
+    error RequestsChanged();
     /// @notice `caller` is not the treasury.
     error NotTreasury(address caller);
     /// @notice The owner pinned no recipient on Wormhole chain `chain`.
     error NoHomeRecipient(uint16 chain, address token);
-    /// @notice USDC is the float, not stock: it does not cross the bridge.
+    /// @notice USDC is the float, not stock: it does not cross the bridge, and the treasury repays it rather than
+    ///         depositing it.
     error NotStock(address token);
     /// @notice The bridged transfer carried `actual`, not the `expected` token.
     error WrongToken(address expected, address actual);
@@ -230,7 +316,9 @@ contract KeeperExecutor is IRebalanceExecutor {
         IMintRequests requests,
         ITokenBridge tokenBridge,
         address owner,
-        address keeper_
+        address keeper_,
+        address localRouter,
+        LocalKind localKind
     ) {
         if (
             address(router) == address(0) || usdc == address(0) || address(factory) == address(0)
@@ -238,7 +326,12 @@ contract KeeperExecutor is IRebalanceExecutor {
                 || keeper_ == address(0)
         ) revert ZeroAddress();
         if (requests.FACTORY() != address(factory)) revert RequestsMismatch(address(requests));
+        if ((localRouter == address(0)) != (localKind == LocalKind.None)) {
+            revert BadLocalRouter(localRouter, localKind);
+        }
         ROUTER = router;
+        LOCAL_ROUTER = localRouter;
+        LOCAL_KIND = localKind;
         USDC = usdc;
         FACTORY = factory;
         REQUESTS = requests;
@@ -319,48 +412,52 @@ contract KeeperExecutor is IRebalanceExecutor {
         emit HomeRecipientSet(chain, token, recipient);
     }
 
-    /// @notice Owner only. Lets `amount` more of `token` arriving through the bridge earn stock allowance from now on,
-    ///         replacing what was left; zero stops crediting it (RS-1).
+    /// @notice Owner only. Lets `amount` more of `token` arriving through the bridge or deposited by the treasury earn
+    ///         stock allowance from now on, replacing what was left; zero stops crediting it (RS-1).
     function setRestockAllowance(address token, uint256 amount) external onlyOwner {
         restockAllowance[token] = amount;
         emit RestockAllowanceSet(token, amount);
     }
 
-    /// @notice Keeper only. Fills `index`'s auction at the units the keeper names. The index reads no price: it
-    ///         accepts the units when their weighted gain clears its auction's bar.
-    /// @param newUnits The recorded units each component is to have, in component order, as `executeRebalance` takes
-    ///        them. The bot chooses them from its own view of the market; the floor below is what protects the float.
-    /// @param routes One per component: an exact-input Uniswap V3 path from the component to USDC, which read as an
-    ///        exact-output path buys the component with USDC; empty for a coin served from inventory, and for USDC.
-    /// @param maxAmountsIn Passed to the hub: the fill reverts if the index asks for more of any component.
-    /// @param maxSupply The most shares the index may have when the fill runs. The settlement grows with the supply,
-    ///        so an issue ahead of the fill that would break `maxAmountsIn` is refused here, for one read, rather than
-    ///        by the hub after its own checks (XS-4).
-    /// @param minUsdcDelta The least the USDC float may change by: negative accepts a cost, positive requires a gain.
-    /// @param deadline The latest block timestamp the fill may be mined at.
+    /// @notice Keeper only. Fills `f.index`'s auction at the units the keeper names. The index judges them on units
+    ///         first: it accepts them when their weighted gain clears its auction's bar. On a factory with an oracle
+    ///         it then checks them against Pyth's prices of the last minute, which `f.pythUpdate` posts first.
     /// @return usdcDelta What the fill changed the float by.
     /// @return gasUsed The gas the call used inside this function, for the bot's simulation.
-    function fill(
-        IWeightedHub index,
-        uint256[] calldata newUnits,
-        bytes[] calldata routes,
-        uint256[] calldata maxAmountsIn,
-        uint256 maxSupply,
-        int256 minUsdcDelta,
-        uint256 deadline
-    ) external returns (int256 usdcDelta, uint256 gasUsed) {
+    function fill(AuctionFill calldata f) external payable returns (int256 usdcDelta, uint256 gasUsed) {
         uint256 gasStart = gasleft();
         _checkKeeper();
-        if (block.timestamp > deadline) revert Expired(deadline);
-        if (!FACTORY.isIndex(address(index))) revert NotIndex(address(index));
-        _checkSupply(index, maxSupply);
-        _checkRoutes(index.componentTokens(), routes);
+        if (block.timestamp > f.deadline) revert Expired(f.deadline);
+        if (!FACTORY.isIndex(address(f.index))) revert NotIndex(address(f.index));
+        _postPrices(f.index, f.pythUpdate);
+        _checkSupply(f.index, f.maxSupply);
+        _checkRoutes(f.index.componentTokens(), f.routes);
 
         uint256 before = IERC20(USDC).balanceOf(address(this));
-        _settle(index, newUnits, routes, maxAmountsIn);
+        _settle(f.index, f.newUnits, f.routes, f.maxAmountsIn);
         usdcDelta = SafeCast.toInt256(IERC20(USDC).balanceOf(address(this))) - SafeCast.toInt256(before);
-        if (usdcDelta < minUsdcDelta) revert TooCostly(usdcDelta, minUsdcDelta);
+        if (usdcDelta < f.minUsdcDelta) revert TooCostly(usdcDelta, f.minUsdcDelta);
         gasUsed = gasStart - gasleft();
+    }
+
+    /// @dev Posts `pythUpdate`, Pyth's signed prices, to the Pyth contract that `index`, a factory index, is checked
+    ///      against, and pays Pyth's fee with the ether this call carries, which must be exactly that fee. With no
+    ///      update the call must carry none. So the executor forwards the caller's own ether and never its own, and
+    ///      only to the Pyth contract the index's factory deployed its price reader with.
+    function _postPrices(IWeightedHub index, bytes[] calldata pythUpdate) private {
+        if (pythUpdate.length == 0) {
+            if (msg.value != 0) revert WrongPythFee(msg.value, 0);
+            return;
+        }
+        address prices = index.PRICES();
+        if (prices == address(0)) revert NoOracle();
+        IPyth pyth = IPyth(IPythPrices(prices).PYTH());
+        uint256 fee = pyth.getUpdateFee(pythUpdate);
+        if (msg.value != fee) revert WrongPythFee(msg.value, fee);
+        // The destination is nobody's to choose: it is the Pyth contract that the price reader of `index`, a factory
+        // index, was deployed with. And the ether is this call's own, exactly Pyth's fee.
+        // forge-lint: disable-next-line(arbitrary-send-eth)
+        pyth.updatePriceFeeds{value: fee}(pythUpdate);
     }
 
     /// @dev The hub's bounded settlement of `index`, with this contract marked as filling it for the callback.
@@ -495,6 +592,9 @@ contract KeeperExecutor is IRebalanceExecutor {
         if (!request.open) revert IMintRequests.RequestNotOpen(f.id);
         if (block.timestamp > request.deadline) revert IMintRequests.RequestExpired(f.id, request.deadline);
         if (request.isMint != isMint) revert WrongSide(f.id);
+        // The request behind the id is the one the keeper priced, to its last field. The escrow checks the id alone
+        // in the fill below, which this same call makes (RW-7, CA-M6).
+        if (keccak256(abi.encode(request)) != f.expected) revert IMintRequests.RequestChanged(f.id);
         index = IWeightedHub(request.index);
         uint256 nonce = index.rebalanceNonce();
         if (nonce != f.expectedNonce) revert StaleRebalanceNonce(f.expectedNonce, nonce);
@@ -534,15 +634,31 @@ contract KeeperExecutor is IRebalanceExecutor {
         gasUsed = gasStart - gasleft();
     }
 
-    /// @dev {fillBatch}'s steps, after every check that can stop it before a swap (XS-6).
+    /// @dev {fillBatch}, after every check that can stop it before a swap (XS-6): the share stock's allowance is spent
+    ///      on what the batch is to hand over beyond what it is to bring in, its steps run, and the count is held
+    ///      against the shares themselves.
     function _batch(BatchFill calldata f) private {
         address[] memory tokens = _checkBatch(f);
-        (uint256 pay, uint256 sharesIn) = _openSide(f, f.redeemIds, f.redeemPay, false);
-        (uint256 deliver,) = _openSide(f, f.mintIds, f.mintShares, true);
-        // Spent before anything moves. The index's shares are its own hub's, which transfers what it is asked to, so
-        // what the batch brings in and hands over is known here.
-        _spendShareStock(address(f.index), deliver + f.redeem, sharesIn + f.issue);
+        (uint256 pay, uint256 sharesIn, bytes32 priced) = _openSide(f, f.redeemIds, f.redeemPay, false, bytes32(0));
+        uint256 deliver;
+        (deliver,, priced) = _openSide(f, f.mintIds, f.mintShares, true, priced);
+        if (priced != f.expected) revert RequestsChanged();
+        // Spent before anything moves, from a count made ahead of the facts.
+        uint256 spent = _spendShareStock(address(f.index), deliver + f.redeem, sharesIn + f.issue);
+        uint256 sharesBefore = IERC20(address(f.index)).balanceOf(address(this));
+        _batchSteps(f, tokens, pay, deliver);
+        // The stock may have fallen by what was spent for it and no more. Redeem requests paid nothing are never
+        // filled; their escrows, counted above as shares brought in, let the whole stock leave with no allowance
+        // spent, and nothing compared the count with the shares (CA-H1).
+        uint256 sharesHeld = IERC20(address(f.index)).balanceOf(address(this));
+        if (sharesHeld + spent < sharesBefore) {
+            revert ShareStockShort(address(f.index), sharesBefore - sharesHeld, spent);
+        }
+    }
 
+    /// @dev A batch's steps: the issue, the redeem requests paid `pay` in all, the mint requests delivered `deliver`
+    ///      shares in all, the escrows sold, and the redeem.
+    function _batchSteps(BatchFill calldata f, address[] memory tokens, uint256 pay, uint256 deliver) private {
         // The issue first: it is the one step that spends a coin's stock allowance, and it runs before any call
         // into the escrow.
         if (f.issue != 0) _issueHere(f.index, tokens, f.issue, f.routes, f.maxIn);
@@ -589,13 +705,18 @@ contract KeeperExecutor is IRebalanceExecutor {
     /// @dev One side of a batch, read before anything moves, so a request its requester cancelled or another filler
     ///      filled since the simulation costs these reads rather than a basket (XS-6): each request open, not past
     ///      its deadline, of the side named, and on the batch's index and stablecoin.
+    /// @param running The hash of the requests read so far, zero before the first (see {BatchFill}'s `expected`).
     /// @return handed What the fills hand the requesters: shares for mint requests, the stablecoin for redeem requests.
     /// @return escrowed What the fills take: the stablecoin for mint requests, shares for redeem requests.
-    function _openSide(BatchFill calldata f, uint256[] calldata ids, uint256[] calldata amounts, bool isMint)
-        private
-        view
-        returns (uint256 handed, uint256 escrowed)
-    {
+    /// @return priced `running`, with each of these requests' hashes folded in.
+    function _openSide(
+        BatchFill calldata f,
+        uint256[] calldata ids,
+        uint256[] calldata amounts,
+        bool isMint,
+        bytes32 running
+    ) private view returns (uint256 handed, uint256 escrowed, bytes32 priced) {
+        priced = running;
         if (ids.length != amounts.length) revert LengthMismatch();
         for (uint256 i = 0; i < ids.length; ++i) {
             uint256 id = ids[i];
@@ -607,6 +728,7 @@ contract KeeperExecutor is IRebalanceExecutor {
             if (request.stable != f.stable) revert WrongStable(id);
             handed += amounts[i];
             escrowed += request.escrow;
+            priced = keccak256(abi.encode(priced, keccak256(abi.encode(request))));
         }
     }
 
@@ -614,9 +736,10 @@ contract KeeperExecutor is IRebalanceExecutor {
     ///      (`in_`): those come out of the shares held here before the call. Without it a compromised keeper key could
     ///      deliver the whole share stock to a request of its own, or redeem it and sell the basket into a pool it
     ///      moved, where the float's allowance sees no loss because the float does not fall (CF-1).
-    function _spendShareStock(address index, uint256 out, uint256 in_) private {
-        if (out <= in_) return;
-        uint256 spent = out - in_;
+    /// @return spent What it spent of the allowance: what the batch may take out of the shares held before it.
+    function _spendShareStock(address index, uint256 out, uint256 in_) private returns (uint256 spent) {
+        if (out <= in_) return 0;
+        spent = out - in_;
         uint256 allowance = stockAllowance[index];
         if (spent > allowance) revert OverStockAllowance(index, spent, allowance);
         stockAllowance[index] = allowance - spent;
@@ -683,18 +806,32 @@ contract KeeperExecutor is IRebalanceExecutor {
             : TOKEN_BRIDGE.wrappedAsset(t.tokenChain, t.tokenAddress);
         if (carried != token) revert WrongToken(token, carried);
         amount = IERC20(token).balanceOf(address(this)) - before;
-        // The credit: what arrived, within what is left of the restock allowance (RS-1) and of what the stock allowance
-        // can still hold, since it has no unlimited value and an overflow would refuse the coins (RS-6).
-        uint256 room = restockAllowance[token];
-        uint256 stock = stockAllowance[token];
-        uint256 credited = amount < room ? amount : room;
-        if (credited > type(uint256).max - stock) credited = type(uint256).max - stock;
-        restockAllowance[token] = room - credited;
-        stockAllowance[token] = stock + credited;
+        uint256 credited = _creditRestock(token, amount);
         // What arrived is known only after the bridge's transfer; only the treasury calls, through the immutable
         // bridge.
         // forge-lint: disable-next-line(reentrancy-events)
         emit BridgedIn(token, amount, credited);
+    }
+
+    /// @notice Treasury only. Takes `amount` of `token`, which the treasury bought on this chain and approved, into
+    ///         stock, and adds what arrived to `token`'s stock allowance as {redeemBridged} does: as far as the owner's
+    ///         restock allowance for it goes, which the credit spends (RS-1), and as far as the stock allowance can
+    ///         still hold (RS-6). What arrives beyond it stays here as stock the keeper cannot deliver until the owner
+    ///         allows it. It is the way in for a coin no bridge carries and no pool sells, which the restock buys
+    ///         through UniswapX; nothing lets the treasury take stock back out.
+    /// @return credited What was added to the stock allowance.
+    function depositStock(address token, uint256 amount) external returns (uint256 credited) {
+        _checkTreasury();
+        if (token == USDC) revert NotStock(token);
+        uint256 before = IERC20(token).balanceOf(address(this));
+        SafeERC20.safeTransferFrom(IERC20(token), msg.sender, address(this), amount);
+        // What arrived, not what was asked: a token that charges for a transfer credits only what it delivered.
+        uint256 arrived = IERC20(token).balanceOf(address(this)) - before;
+        credited = _creditRestock(token, arrived);
+        // What arrived is known only after the transfer; only the treasury calls, and a reentrant call from the token
+        // is not the treasury's.
+        // forge-lint: disable-next-line(reentrancy-events)
+        emit StockDeposited(token, arrived, credited);
     }
 
     /// @notice Treasury only. Bridges `amount` of `token` to the owner's pinned recipient for it on Wormhole
@@ -761,14 +898,7 @@ contract KeeperExecutor is IRebalanceExecutor {
             uint256 out = amounts[i];
             // A zero amountIn would make the router swap its own balance instead.
             if (out == 0 || routes[i].length == 0) continue;
-            SafeERC20.forceApprove(IERC20(tokens[i]), address(ROUTER), out);
-            // What a swap returns is not needed: a fill measures the float as a whole against its floor.
-            // forge-lint: disable-next-item(unused-return)
-            ROUTER.exactInput(
-                IV3SwapRouter.ExactInputParams({
-                    path: routes[i], recipient: address(this), amountIn: out, amountOutMinimum: _limit(minOut, i, 0)
-                })
-            );
+            _swapIn(routes[i], tokens[i], out, _limit(minOut, i, 0));
         }
     }
 
@@ -797,15 +927,7 @@ contract KeeperExecutor is IRebalanceExecutor {
             if (fromStock < need) {
                 // USDC has no route, so a float too short for a USDC component also ends here.
                 if (routes[i].length == 0) revert NoRoute(token);
-                // forge-lint: disable-next-item(unused-return)
-                ROUTER.exactOutput(
-                    IV3SwapRouter.ExactOutputParams({
-                        path: routes[i],
-                        recipient: address(this),
-                        amountOut: need - fromStock,
-                        amountInMaximum: _limit(maxIn, i, IERC20(USDC).balanceOf(address(this)))
-                    })
-                );
+                _swapOut(routes[i], need - fromStock, _limit(maxIn, i, IERC20(USDC).balanceOf(address(this))));
             }
         }
     }
@@ -814,38 +936,118 @@ contract KeeperExecutor is IRebalanceExecutor {
     ///      already.
     function _sellStable(address stable, uint256 amount, bytes calldata route, uint256 minOut) private {
         if (stable == USDC || amount == 0) return;
-        SafeERC20.forceApprove(IERC20(stable), address(ROUTER), amount);
-        // forge-lint: disable-next-item(unused-return)
-        ROUTER.exactInput(
-            IV3SwapRouter.ExactInputParams({
-                path: route, recipient: address(this), amountIn: amount, amountOutMinimum: minOut
-            })
-        );
+        _swapIn(route, stable, amount, minOut);
     }
 
     /// @dev Buys `amount` of `stable` with USDC along `route`, read backwards, for at most `maxIn` (zero for the
     ///      whole float); nothing to do when it is USDC already.
     function _buyStable(address stable, uint256 amount, bytes calldata route, uint256 maxIn) private {
         if (stable == USDC) return;
-        uint256 float = IERC20(USDC).balanceOf(address(this));
-        // forge-lint: disable-next-item(unused-return)
-        ROUTER.exactOutput(
-            IV3SwapRouter.ExactOutputParams({
-                path: route, recipient: address(this), amountOut: amount, amountInMaximum: maxIn != 0 ? maxIn : float
-            })
-        );
+        _swapOut(route, amount, maxIn != 0 ? maxIn : IERC20(USDC).balanceOf(address(this)));
+    }
+
+    /// @dev Sells exactly `amountIn` of `tokenIn`, the route's first token, for at least `minOut` of USDC, through the
+    ///      venue the route names, approved for exactly the sale, which spends all of it.
+    function _swapIn(bytes memory route, address tokenIn, uint256 amountIn, uint256 minOut) private {
+        (bool local, bytes memory path) = _venueOf(route);
+        address router = local ? LOCAL_ROUTER : address(ROUTER);
+        SafeERC20.forceApprove(IERC20(tokenIn), router, amountIn);
+        // What a swap returns is not needed: a fill measures the float as a whole against its floor.
+        if (local && LOCAL_KIND == LocalKind.Aero) {
+            // forge-lint: disable-next-item(unused-return)
+            IAeroSwapRouter(router)
+                .exactInput(
+                    IAeroSwapRouter.ExactInputParams({
+                        path: path,
+                        recipient: address(this),
+                        deadline: block.timestamp,
+                        amountIn: amountIn,
+                        amountOutMinimum: minOut
+                    })
+                );
+        } else {
+            // forge-lint: disable-next-item(unused-return)
+            IV3SwapRouter(router)
+                .exactInput(
+                    IV3SwapRouter.ExactInputParams({
+                        path: path, recipient: address(this), amountIn: amountIn, amountOutMinimum: minOut
+                    })
+                );
+        }
+    }
+
+    /// @dev Buys exactly `amountOut` of the route's first token with at most `maxIn` of USDC, the route's last, through
+    ///      the venue the route names. Uniswap's router holds the float's standing approval; the local router is
+    ///      approved for the purchase's bound and for nothing after it.
+    function _swapOut(bytes memory route, uint256 amountOut, uint256 maxIn) private {
+        (bool local, bytes memory path) = _venueOf(route);
+        if (!local) {
+            // forge-lint: disable-next-item(unused-return)
+            ROUTER.exactOutput(
+                IV3SwapRouter.ExactOutputParams({
+                    path: path, recipient: address(this), amountOut: amountOut, amountInMaximum: maxIn
+                })
+            );
+            return;
+        }
+        address router = LOCAL_ROUTER;
+        SafeERC20.forceApprove(IERC20(USDC), router, maxIn);
+        if (LOCAL_KIND == LocalKind.Aero) {
+            // forge-lint: disable-next-item(unused-return)
+            IAeroSwapRouter(router)
+                .exactOutput(
+                    IAeroSwapRouter.ExactOutputParams({
+                        path: path,
+                        recipient: address(this),
+                        deadline: block.timestamp,
+                        amountOut: amountOut,
+                        amountInMaximum: maxIn
+                    })
+                );
+        } else {
+            // forge-lint: disable-next-item(unused-return)
+            IV3SwapRouter(router)
+                .exactOutput(
+                    IV3SwapRouter.ExactOutputParams({
+                        path: path, recipient: address(this), amountOut: amountOut, amountInMaximum: maxIn
+                    })
+                );
+        }
+        SafeERC20.forceApprove(IERC20(USDC), router, 0);
+    }
+
+    /// @dev Whether `route` names the chain's own DEX, and the path it swaps along: the route less its first byte for
+    ///      a local route, the route itself for Uniswap's. The routes were checked when the fill began ({_checkRoutes}).
+    function _venueOf(bytes memory route) private pure returns (bool local, bytes memory path) {
+        local = _isLocal(route);
+        if (!local) return (local, route);
+        uint256 n = route.length - 1;
+        path = new bytes(n);
+        for (uint256 i = 0; i < n; ++i) {
+            path[i] = route[i + 1];
+        }
+    }
+
+    /// @dev A route is local when it is one byte longer than a path could be and that byte is `LOCAL_ROUTE`.
+    function _isLocal(bytes memory route) private pure returns (bool) {
+        return route.length % HOP == LOCAL_REMAINDER && route[0] == LOCAL_ROUTE;
+    }
+
+    /// @dev Whether `route`, a path from `from` to USDC or a local route along one, is well formed and, if local,
+    ///      names a DEX this executor has.
+    function _routeIsGood(bytes calldata route, address from) private view returns (bool) {
+        bytes calldata path = route;
+        if (_isLocal(route)) {
+            if (LOCAL_KIND == LocalKind.None) return false;
+            path = route[1:];
+        }
+        return PathLib.isValidShape(path) && PathLib.firstToken(path) == from && PathLib.lastToken(path) == USDC;
     }
 
     /// @dev A stablecoin other than USDC needs a well-formed path from it to USDC; USDC takes none.
     function _checkStableRoute(address stable, bytes calldata route) private view {
         bool needed = stable != USDC;
-        if (
-            needed != (route.length != 0)
-                || (needed
-                    && (!PathLib.isValidShape(route)
-                        || PathLib.firstToken(route) != stable
-                        || PathLib.lastToken(route) != USDC))
-        ) revert BadRoute(stable);
+        if (needed != (route.length != 0) || (needed && !_routeIsGood(route, stable))) revert BadRoute(stable);
     }
 
     /// @dev One route per component, each empty or a well-formed path from its component to USDC; USDC takes none.
@@ -855,10 +1057,7 @@ contract KeeperExecutor is IRebalanceExecutor {
         for (uint256 i = 0; i < n; ++i) {
             bytes calldata route = routes[i];
             if (route.length == 0) continue;
-            if (
-                tokens[i] == USDC || !PathLib.isValidShape(route) || PathLib.firstToken(route) != tokens[i]
-                    || PathLib.lastToken(route) != USDC
-            ) revert BadRoute(tokens[i]);
+            if (tokens[i] == USDC || !_routeIsGood(route, tokens[i])) revert BadRoute(tokens[i]);
         }
     }
 
@@ -878,5 +1077,17 @@ contract KeeperExecutor is IRebalanceExecutor {
 
     function _checkTreasury() private view {
         if (msg.sender != treasury) revert NotTreasury(msg.sender);
+    }
+
+    /// @dev Adds `amount` of `token`, which arrived for stock, to its stock allowance within what is left of the owner's
+    ///      restock allowance (RS-1) and of what the stock allowance can still hold, since it has no unlimited value and
+    ///      an overflow would refuse the coins (RS-6). Returns what it added.
+    function _creditRestock(address token, uint256 amount) private returns (uint256 credited) {
+        uint256 room = restockAllowance[token];
+        uint256 stock = stockAllowance[token];
+        credited = amount < room ? amount : room;
+        if (credited > type(uint256).max - stock) credited = type(uint256).max - stock;
+        restockAllowance[token] = room - credited;
+        stockAllowance[token] = stock + credited;
     }
 }

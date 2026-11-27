@@ -1,5 +1,5 @@
-// The keeper's view of Ethereum, through viem: pinned reads, calls with state and block overrides, revert names,
-// and signed sends. ABIs come from the repo's committed `abi/` and from the executor's own build (`keeper/out`).
+// The keeper's view of its chain (Ethereum, BNB Chain or Base), through viem: pinned reads, calls with state and block
+// overrides, revert names, and signed sends. ABIs come from the repo's committed `abi/` and from the executor's own build (`keeper/out`).
 
 import { readFileSync } from "node:fs";
 import {
@@ -14,7 +14,7 @@ import {
   parseAbi,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { mainnet, sepolia } from "viem/chains";
+import { base, bsc, mainnet, sepolia } from "viem/chains";
 import { HUB_SLOTS } from "./config.mjs";
 import { barAt, BAR_HALF_LIFE } from "./units.mjs";
 
@@ -38,18 +38,45 @@ export const ABI = {
     "function symbol() view returns (string)",
     "function decimals() view returns (uint8)",
   ]),
-  multicall3: parseAbi(["function getCurrentBlockTimestamp() view returns (uint256)"]),
+  multicall3: parseAbi([
+    "function getCurrentBlockTimestamp() view returns (uint256)",
+    "struct Call3Value { address target; bool allowFailure; uint256 value; bytes callData; }",
+    "struct Result { bool success; bytes returnData; }",
+    "function aggregate3Value(Call3Value[] calls) payable returns (Result[] returnData)",
+  ]),
+  // The factory's price reader, through which a hub values a fill's legs at Pyth's prices (`PythPrices`).
+  prices: parseAbi([
+    "function PYTH() view returns (address)",
+    "function valueOf(address token, bool leaving) view returns (uint256)",
+    "error NoPriceFeed(address token)",
+    "error StalePrice(address token, uint256 publishTime)",
+    "error UnusablePrice(address token)",
+  ]),
   quoter: parseAbi([
     "function quoteExactInput(bytes path, uint256 amountIn) returns (uint256 amountOut, uint160[], uint32[], uint256)",
     "function quoteExactOutput(bytes path, uint256 amountOut) returns (uint256 amountIn, uint160[], uint32[], uint256)",
   ]),
   v3Factory: parseAbi(["function getPool(address, address, uint24) view returns (address)"]),
+  // Aero's concentrated-liquidity factory, pool and Metaquoter on Base: pools keyed by tick spacing, a slot0 one field
+  // shorter than Uniswap's, and quotes along a list of pools from the token paid (bot/routes.mjs).
+  aeroFactory: parseAbi(["function getPool(address, address, int24) view returns (address)"]),
+  aeroPool: parseAbi([
+    "function slot0() view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, bool unlocked)",
+  ]),
+  metaquoter: parseAbi([
+    "function quoteExactInput(address[] pools, address tokenIn, uint256 amountIn) returns (uint256 amountOut, uint160[], uint32[])",
+    "function quoteExactOutput(address[] pools, address tokenIn, uint256 amountOut) returns (uint256 amountIn, uint160[], uint32[])",
+  ]),
+  // OP Stack's GasPriceOracle predeploy: what posting a transaction of `size` bytes to Ethereum may cost, at most.
+  l1FeeOracle: parseAbi(["function getL1FeeUpperBound(uint256 size) view returns (uint256)"]),
   v3Pool: parseAbi([
     "function slot0() view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, uint8 feeProtocol, bool unlocked)",
   ]),
-  // Pyth's contract, which no contract of the protocol calls: the keeper asks it to confirm a price Hermes served.
+  // Pyth's contract. The keeper asks it to confirm a price Hermes served, and its executor posts Pyth's update to it
+  // before a fill on a factory with an oracle, whose price reader then reads the prices back.
   pyth: parseAbi([
     "function getUpdateFee(bytes[] updateData) view returns (uint256)",
+    "function updatePriceFeeds(bytes[] updateData) payable",
     "struct Price { int64 price; uint64 conf; int32 expo; uint256 publishTime; }",
     "struct PriceFeed { bytes32 id; Price price; Price emaPrice; }",
     "function parsePriceFeedUpdates(bytes[] updateData, bytes32[] priceIds, uint64 minPublishTime, uint64 maxPublishTime) payable returns (PriceFeed[] priceFeeds)",
@@ -61,7 +88,7 @@ export const ABI = {
     "error PriceFeedNotFound()",
   ]),
 };
-const ERRORS = [...ABI.hub, ...ABI.factory, ...ABI.requests, ...ABI.executor, ...ABI.pyth].filter((x) => x.type === "error");
+const ERRORS = [...ABI.hub, ...ABI.factory, ...ABI.requests, ...ABI.executor, ...ABI.pyth, ...ABI.prices].filter((x) => x.type === "error");
 
 /// Multicall3, at one address on every chain the keeper runs on: its clock tells whether the RPC honours overrides.
 const MULTICALL3 = "0xcA11bde05977b3631167028862bE2a173976CA11";
@@ -100,13 +127,14 @@ const hex = (x) => numberToHex(x);
 const word = (x) => pad(numberToHex(x), { size: 32 });
 
 /// viem's definition of each chain the keeper runs on: its multicall refuses a block before the chain's own Multicall3
-/// was deployed, and mainnet's dates from block 14,353,601, past Sepolia's head.
-const VIEM_CHAINS = { 1: mainnet, 11155111: sepolia };
+/// was deployed, and mainnet's dates from block 14,353,601, past Sepolia's head. Without one, viem has no Multicall3
+/// to call at all.
+export const VIEM_CHAINS = { 1: mainnet, 11155111: sepolia, 56: bsc, 8453: base };
 
 export function createChain(cfg) {
   const client = createPublicClient({
     chain: VIEM_CHAINS[cfg.chain.chainId],
-    transport: http(cfg.rpcUrl, { timeout: 15_000, retryCount: 2 }),
+    transport: http(cfg.rpcUrl, { timeout: cfg.rpcTimeoutMs ?? 15_000, retryCount: 2 }),
   });
   const account = privateKeyToAccount(cfg.keeperKey);
 
@@ -133,6 +161,29 @@ export function createChain(cfg) {
       params: [tx, hex(blockNumber), state, block],
     });
     return decodeFunctionResult({ abi, functionName, data: result });
+  }
+
+  /// Runs `calls`, each `{to, abi, functionName, args, value}`, one after the other inside one eth_call, through
+  /// Multicall3's `aggregate3Value`, at `blockNumber` with `over`. Returns one entry per call: `{ok: true, result}`
+  /// with its decoded outputs, or `{ok: false, error}` with an error that carries the call's revert data, which
+  /// {revertReason} names. It is how the keeper asks an index something that depends on prices nobody has posted yet:
+  /// Pyth's update first, then the question, in the order the fill itself runs them. The calls' sender is Multicall3,
+  /// which neither Pyth nor a view cares about.
+  async function callAfter(calls, blockNumber, over = {}) {
+    const batch = calls.map((c) => ({
+      target: c.to,
+      allowFailure: true,
+      value: c.value ?? 0n,
+      callData: encodeFunctionData({ abi: c.abi, functionName: c.functionName, args: c.args }),
+    }));
+    const value = batch.reduce((sum, c) => sum + c.value, 0n);
+    const results = await call({ to: MULTICALL3, abi: ABI.multicall3, functionName: "aggregate3Value", args: [batch], value }, blockNumber, over);
+    return results.map((r, i) => {
+      if (!r.success) return { ok: false, error: Object.assign(new Error("the call reverted"), { data: r.returnData }) };
+      // A call that returns nothing, as Pyth's update does, has nothing to decode.
+      if (r.returnData === "0x") return { ok: true, result: undefined };
+      return { ok: true, result: decodeFunctionResult({ abi: calls[i].abi, functionName: calls[i].functionName, data: r.returnData }) };
+    });
   }
 
   /// Signs and broadcasts `tx` (see TxTracker), returning its hash. A node that already holds it reports the hash.
@@ -162,15 +213,29 @@ export function createChain(cfg) {
     address: account.address,
     latestNonce: async () => BigInt(await client.getTransactionCount({ address: account.address, blockTag: "latest" })),
     pendingNonce: async () => BigInt(await client.getTransactionCount({ address: account.address, blockTag: "pending" })),
+    /// The receipt of `hash`, or null when the node holds none. Any other failure throws: a timeout or a node behind
+    /// says nothing about the transaction, and read as "no receipt" it scored a mined fill as replaced, its outcome
+    /// dropped (RZ-6).
     receipt: async (hash) => {
       try {
         return await client.getTransactionReceipt({ hash });
-      } catch {
-        return null;
+      } catch (error) {
+        if (error?.name === "TransactionReceiptNotFoundError") return null;
+        throw error;
       }
     },
     send,
   };
+
+  /// What the chain charges on top of gas for posting a transaction of `data` to Ethereum, at most, in the gas coin's
+  /// wei: Base's L1 data fee, read from its GasPriceOracle at `blockNumber`; zero on a chain that charges none. The
+  /// bound is the oracle's own for the transaction's size, the calldata plus what a signed EIP-1559 envelope adds, so
+  /// a fill is never counted cheaper than it is.
+  async function l1Fee(data, blockNumber) {
+    if (!cfg.chain.l1FeeOracle) return 0n;
+    const size = BigInt((data.length - 2) / 2 + 200);
+    return read(cfg.chain.l1FeeOracle, ABI.l1FeeOracle, "getL1FeeUpperBound", [size], blockNumber);
+  }
 
   /// Refuses to run against anything but the deployment and RPC this keeper is built for.
   async function checkSetup() {
@@ -178,15 +243,38 @@ export function createChain(cfg) {
     if (chainId !== cfg.chain.chainId) throw new Error(`chain ${chainId} is not ${cfg.chain.name}`);
     const at = await client.getBlockNumber();
     const ex = (fn) => read(cfg.executor, ABI.executor, fn, [], at);
-    const [keeper, router, usdc, factory, requests] =
-      await Promise.all([ex("keeper"), ex("ROUTER"), ex("USDC"), ex("FACTORY"), ex("REQUESTS")]);
+    const [keeper, router, usdc, factory, requests, localRouter, localKind] = await Promise.all([
+      ex("keeper"),
+      ex("ROUTER"),
+      ex("USDC"),
+      ex("FACTORY"),
+      ex("REQUESTS"),
+      ex("LOCAL_ROUTER"),
+      ex("LOCAL_KIND"),
+    ]);
     const same = (a, b) => a.toLowerCase() === b.toLowerCase();
     if (!same(keeper, account.address)) throw new Error(`the executor's keeper is ${keeper}, not this bot's ${account.address}`);
     if (!same(router, cfg.chain.swapRouter02)) throw new Error(`the executor routes through ${router}, not SwapRouter02`);
+    // The chain's own DEX the bot routes legs through is the one the executor reaches, of the same kind, or neither has one.
+    const dex = cfg.chain.localDex;
+    const wanted = dex ? { router: dex.router, kind: dex.kind } : { router: "0x0000000000000000000000000000000000000000", kind: 0 };
+    if (!same(localRouter, wanted.router) || Number(localKind) !== wanted.kind) {
+      throw new Error(`the executor's own DEX is ${localRouter} of kind ${localKind}, not ${wanted.router} of kind ${wanted.kind}`);
+    }
     if (!same(usdc, cfg.chain.usdc)) throw new Error(`the executor's float is ${usdc}, not ${cfg.chain.name}'s USDC`);
     if (!same(factory, cfg.factory)) throw new Error(`the executor fills ${factory}'s indexes, not FACTORY's`);
     const requestsFactory = await read(requests, ABI.requests, "FACTORY", [], at);
     if (!same(requestsFactory, factory)) throw new Error(`the executor's request escrow ${requests} is on another factory`);
+    // Every dollar the bot counts in the float is the float's raw units over its decimals, which the chain table
+    // states: a token that says otherwise is not the float the bot was set up for. The request escrow's two
+    // stablecoins are read with theirs, which value its requests (BNB Chain's both have eighteen).
+    const floatDecimals = Number(await read(usdc, ABI.erc20, "decimals", [], at));
+    if (floatDecimals !== cfg.chain.usdcDecimals) {
+      throw new Error(`the float has ${floatDecimals} decimals, not the ${cfg.chain.usdcDecimals} ${cfg.chain.name}'s USDC has`);
+    }
+    const stables = await Promise.all(["USDC", "USDT"].map((fn) => read(requests, ABI.requests, fn, [], at)));
+    const stableDecimals = new Map();
+    for (const stable of stables) stableDecimals.set(stable.toLowerCase(), Number(await read(stable, ABI.erc20, "decimals", [], at)));
 
     const implementation = await read(cfg.factory, ABI.factory, "IMPLEMENTATION", [], at);
     const duration = await read(implementation, ABI.hub, "AUCTION_DURATION", [], at);
@@ -215,7 +303,7 @@ export function createChain(cfg) {
       }
       if (bar !== barAt(BAR_HALF_LIFE)) throw new Error("WeightedHub's bar is not the one the keeper computes");
     }
-    return { implementation, pyth: cfg.chain.pyth, duration, delay, requests };
+    return { implementation, pyth: cfg.chain.pyth, duration, delay, requests, stableDecimals };
   }
 
   return {
@@ -224,10 +312,12 @@ export function createChain(cfg) {
     read,
     multicall,
     call,
+    callAfter,
     txIo,
     checkSetup,
     isRevert,
     blockNumber: () => client.getBlockNumber({ cacheTime: 0 }),
     block: (blockNumber) => client.getBlock({ blockNumber }),
+    l1Fee,
   };
 }

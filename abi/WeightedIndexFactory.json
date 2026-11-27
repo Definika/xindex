@@ -11,6 +11,21 @@
         "name": "initialGuardian",
         "type": "address",
         "internalType": "address"
+      },
+      {
+        "name": "pyth",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "math",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "sharesOracle",
+        "type": "address",
+        "internalType": "address"
       }
     ],
     "stateMutability": "nonpayable"
@@ -147,6 +162,19 @@
   },
   {
     "type": "function",
+    "name": "MAX_WEIGHT_DEVIATION",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "MAX_WHOLE_TOKENS",
     "inputs": [],
     "outputs": [
@@ -199,6 +227,19 @@
   },
   {
     "type": "function",
+    "name": "PRICES",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "PROPOSAL_WINDOW",
     "inputs": [],
     "outputs": [
@@ -213,6 +254,19 @@
   {
     "type": "function",
     "name": "TOTAL_WEIGHT",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "WEIGHTS_DELAY",
     "inputs": [],
     "outputs": [
       {
@@ -294,6 +348,130 @@
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "cancelPriceFeed",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "cancelWeights",
+    "inputs": [
+      {
+        "name": "index",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "createAndIssue",
+    "inputs": [
+      {
+        "name": "name",
+        "type": "string",
+        "internalType": "string"
+      },
+      {
+        "name": "symbol",
+        "type": "string",
+        "internalType": "string"
+      },
+      {
+        "name": "components",
+        "type": "tuple[]",
+        "internalType": "struct IWeightedIndexFactory.ComponentSpec[]",
+        "components": [
+          {
+            "name": "token",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "weight",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "units",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      },
+      {
+        "name": "params",
+        "type": "tuple",
+        "internalType": "struct IWeightedIndexFactory.IndexParams",
+        "components": [
+          {
+            "name": "creatorFeeBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "creatorStreamingBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "maxPlatformFeeBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "maxPlatformStreamingBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "rebalanceInterval",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "gated",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "listed",
+            "type": "bool",
+            "internalType": "bool"
+          }
+        ]
+      },
+      {
+        "name": "shares",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "to",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "index",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "payable"
   },
   {
     "type": "function",
@@ -460,6 +638,32 @@
     "inputs": [
       {
         "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "executePriceFeed",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "executeWeights",
+    "inputs": [
+      {
+        "name": "index",
         "type": "address",
         "internalType": "address"
       }
@@ -705,6 +909,25 @@
   },
   {
     "type": "function",
+    "name": "mintingPaused",
+    "inputs": [
+      {
+        "name": "index",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "paused",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "openMinting",
     "inputs": [
       {
@@ -728,6 +951,19 @@
       }
     ],
     "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "pauseMinting",
+    "inputs": [
+      {
+        "name": "index",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -783,6 +1019,66 @@
         "name": "",
         "type": "address",
         "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "pendingPriceFeed",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "feed",
+        "type": "tuple",
+        "internalType": "struct IPythPrices.PriceFeed",
+        "components": [
+          {
+            "name": "id",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "kind",
+            "type": "uint8",
+            "internalType": "enum IPythPrices.FeedKind"
+          }
+        ]
+      },
+      {
+        "name": "eta",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "pendingWeights",
+    "inputs": [
+      {
+        "name": "index",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "weights",
+        "type": "uint256[]",
+        "internalType": "uint256[]"
+      },
+      {
+        "name": "eta",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -921,6 +1217,37 @@
   },
   {
     "type": "function",
+    "name": "priceFeedOf",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct IPythPrices.PriceFeed",
+        "components": [
+          {
+            "name": "id",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "kind",
+            "type": "uint8",
+            "internalType": "enum IPythPrices.FeedKind"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "proposeGuardian",
     "inputs": [
       {
@@ -947,6 +1274,54 @@
   },
   {
     "type": "function",
+    "name": "proposePriceFeed",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "feed",
+        "type": "tuple",
+        "internalType": "struct IPythPrices.PriceFeed",
+        "components": [
+          {
+            "name": "id",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "kind",
+            "type": "uint8",
+            "internalType": "enum IPythPrices.FeedKind"
+          }
+        ]
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "proposeWeights",
+    "inputs": [
+      {
+        "name": "index",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "weights",
+        "type": "uint256[]",
+        "internalType": "uint256[]"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "referralShareBps",
     "inputs": [],
     "outputs": [
@@ -964,6 +1339,19 @@
     "inputs": [],
     "outputs": [],
     "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "resumeMinting",
+    "inputs": [
+      {
+        "name": "index",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -1069,6 +1457,25 @@
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "weightsEta",
+    "inputs": [
+      {
+        "name": "index",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "eta",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -1416,6 +1823,38 @@
   },
   {
     "type": "event",
+    "name": "MintingPaused",
+    "inputs": [
+      {
+        "name": "index",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "by",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "MintingResumed",
+    "inputs": [
+      {
+        "name": "index",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "OwnershipTransferStarted",
     "inputs": [
       {
@@ -1454,6 +1893,75 @@
   },
   {
     "type": "event",
+    "name": "PriceFeedCancelled",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "PriceFeedProposed",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "id",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "kind",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "enum IPythPrices.FeedKind"
+      },
+      {
+        "name": "eta",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "PriceFeedSet",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "id",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "kind",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "enum IPythPrices.FeedKind"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "TokenDecimalsSet",
     "inputs": [
       {
@@ -1486,6 +1994,44 @@
         "type": "bool",
         "indexed": false,
         "internalType": "bool"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "WeightsCancelled",
+    "inputs": [
+      {
+        "name": "index",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "WeightsProposed",
+    "inputs": [
+      {
+        "name": "index",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "weights",
+        "type": "uint256[]",
+        "indexed": false,
+        "internalType": "uint256[]"
+      },
+      {
+        "name": "eta",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
       }
     ],
     "anonymous": false
@@ -1691,6 +2237,17 @@
   },
   {
     "type": "error",
+    "name": "InvalidPriceFeed",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "InvalidRecipient",
     "inputs": [
       {
@@ -1760,6 +2317,11 @@
   },
   {
     "type": "error",
+    "name": "NoOracle",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "NoPendingGuardianChange",
     "inputs": []
   },
@@ -1769,6 +2331,28 @@
     "inputs": [
       {
         "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "NoPendingPriceFeed",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "NoPendingWeights",
+    "inputs": [
+      {
+        "name": "index",
         "type": "address",
         "internalType": "address"
       }
@@ -1831,6 +2415,27 @@
   },
   {
     "type": "error",
+    "name": "OffWeights",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "weight",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "valueShare",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "OwnableInvalidOwner",
     "inputs": [
       {
@@ -1878,6 +2483,54 @@
       },
       {
         "name": "maxPlatformStreamingBps",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "PriceFeedExpired",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "deadline",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "PriceFeedNotReady",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "eta",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "PriceFeedPending",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "eta",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -1992,6 +2645,27 @@
   },
   {
     "type": "error",
+    "name": "Underbacked",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "balance",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "required",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "UnitsOutOfRange",
     "inputs": [
       {
@@ -2001,6 +2675,38 @@
       },
       {
         "name": "units",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "WeightsExpired",
+    "inputs": [
+      {
+        "name": "index",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "deadline",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "WeightsNotReady",
+    "inputs": [
+      {
+        "name": "index",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "eta",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -2030,6 +2736,11 @@
   {
     "type": "error",
     "name": "ZeroAmount",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ZeroShares",
     "inputs": []
   }
 ]

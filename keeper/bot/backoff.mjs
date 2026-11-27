@@ -1,6 +1,10 @@
 // Failures remembered per key, so the bot stops spending gas, Hermes requests and simulations on what keeps failing:
 // a fill that reverted on chain after its simulation passed (XS-4), keyed by auction, and a request whose simulation
 // reverts (XS-7), keyed by request. No dependencies, so it is unit-tested on its own.
+//
+// Every window below is written in Ethereum's twelve-second blocks. Each factory takes `scale`, how many of its chain's
+// blocks span one of Ethereum's (M.blockScale: one on Ethereum, 27 on BNB Chain, 60 on Base), so a wait lasts the same
+// time on every chain rather than a 27th of it.
 
 /// Fills of one auction that may revert on chain before the bot leaves that auction (XS-4).
 export const MAX_REVERTED_FILLS = 3;
@@ -13,7 +17,8 @@ export const STRIKE_LAPSE_BLOCKS = 300;
 /// A fill that reverts on chain after its simulation passed was front-run (an issue past SUPPLY_TOLERANCE_BPS, a
 /// rival fill) or simulated by an RPC that cannot be trusted, and each one costs gas: its auction (`index:proposal`)
 /// waits 5, then 10 blocks, and after the third the bot leaves it until the strikes lapse (XS-4, RX-26).
-export const revertedFills = () => new Backoff({ blocks: 5, limit: MAX_REVERTED_FILLS, lapseBlocks: STRIKE_LAPSE_BLOCKS });
+export const revertedFills = (scale = 1n) =>
+  new Backoff({ blocks: 5, limit: MAX_REVERTED_FILLS, lapseBlocks: STRIKE_LAPSE_BLOCKS }).scaled(scale);
 
 /// Fills of one request that may revert on chain before the bot leaves that request (XS-7).
 export const MAX_REVERTED_REQUEST_FILLS = 3;
@@ -23,17 +28,24 @@ export const MAX_REVERTED_REQUEST_FILLS = 3;
 /// basket's swaps: the request (`request:id`) waits 5, then 10 blocks, and after the third the bot leaves it (XS-7).
 /// Its requester (`requester:address`) and index (`index:address`) are struck too, so new request ids from the same
 /// requester or on the same index do not start over (RX-10).
-export const revertedRequestFills = () =>
-  new Backoff({ blocks: 5, limit: MAX_REVERTED_REQUEST_FILLS, lapseBlocks: STRIKE_LAPSE_BLOCKS });
+export const revertedRequestFills = (scale = 1n) =>
+  new Backoff({ blocks: 5, limit: MAX_REVERTED_REQUEST_FILLS, lapseBlocks: STRIKE_LAPSE_BLOCKS }).scaled(scale);
 
 /// A request (`request:id`) whose simulation reverts is simulated again 2, 4, 8... blocks later, at most 200 (about
 /// 40 minutes), until it closes (XS-7): requests last up to 30 days, and what made one fail can pass.
-export const failedRequests = () => new Backoff({ blocks: 2, maxBlocks: 200 });
+export const failedRequests = (scale = 1n) => new Backoff({ blocks: 2, maxBlocks: 200 }).scaled(scale);
 
 /// A request whose check keeps declining it without a revert (it pays too little, needs restock, has no preview) is
 /// checked again 2, 4, 8... blocks later, at most 200, so a decoy that never pays cannot hold a check slot every
 /// block for 30 days (RX-24).
-export const skippedRequests = () => new Backoff({ blocks: 2, maxBlocks: 200 });
+export const skippedRequests = (scale = 1n) => new Backoff({ blocks: 2, maxBlocks: 200 }).scaled(scale);
+
+/// A request declined only because the executor is short of a coin no route sells is waiting for the restock, which
+/// reads what it needs from the keeper's board, where a report lasts NEEDS_MAX_AGE_SECONDS (900 s, 75 blocks). It is
+/// checked again 2, 4, 8... blocks later, at most 50: under the board's lifetime, so the need stays on the board until
+/// the coins land, where the 200 blocks of {skippedRequests} let it lapse and the restock send the stock home.
+export const SHORT_RECHECK_BLOCKS = 50;
+export const shortRequests = (scale = 1n) => new Backoff({ blocks: 2, maxBlocks: SHORT_RECHECK_BLOCKS }).scaled(scale);
 
 export class Backoff {
   /// After its n-th failure at block B a key is tried again from block B + `blocks · 2^(n-1)`, at most B +
@@ -44,6 +56,17 @@ export class Backoff {
     this.limit = limit;
     this.lapseBlocks = lapseBlocks;
     this.entries = new Map(); // key -> {failures, until, stopped, last}
+  }
+
+  /// This back-off with every window `scale` times as many blocks: the same time on a chain whose blocks come `scale`
+  /// times as often as Ethereum's. Returns itself.
+  scaled(scale) {
+    const k = Number(scale);
+    if (!Number.isInteger(k) || k < 1) throw new Error(`not a block scale: ${scale}`);
+    this.blocks *= k;
+    this.maxBlocks *= k;
+    this.lapseBlocks *= k;
+    return this;
   }
 
   /// The entry of `key` at block `block`, or undefined once its strikes have lapsed.

@@ -19,8 +19,8 @@ contract RequestsStub {
     }
 }
 
-/// @notice Drives the treasury's restocking (bridged arrivals of any size, bridging out, drawing and repaying USDC,
-///         more than it drew when sales at home brought it more) and the owner's figures, any value up to the most a
+/// @notice Drives the treasury's restocking (bridged arrivals of any size, deposits of coins it bought here, bridging
+///         out, drawing and repaying USDC, more than it drew when sales at home brought it more) and the owner's figures, any value up to the most a
 ///         uint256 holds, in any order, making only calls that must succeed. Each step is checked where it happens: no
 ///         call but the owner's raises what the keeper may deliver from stock and arrivals may still earn (RS-1), an
 ///         arrival earns exactly what arrived within what is left of both allowances (RS-6), and after every draw the
@@ -44,6 +44,7 @@ contract RestockHandler is Test {
     uint256 public maxCap;
     /// @notice Calls that went through, per path, and arrivals that met a full stock allowance.
     uint256 public redeemed;
+    uint256 public deposited;
     uint256 public bridgedOut;
     uint256 public drawn;
     uint256 public repaid;
@@ -104,6 +105,31 @@ contract RestockHandler is Test {
         // The ceiling stays where the owner's last call left it: across any run of treasury calls the keeper's reach
         // never climbs back above it (RZ-29).
         ++redeemed;
+    }
+
+    /// @dev The treasury deposits `amount` of the coin it bought on this chain, as the restock's UniswapX buys land.
+    function deposit(uint256 amount) external {
+        amount = bound(amount, 0, 1e30);
+        coin.mint(treasury, amount);
+        uint256 stock = executor.stockAllowance(address(coin));
+        uint256 room = executor.restockAllowance(address(coin));
+        uint256 before = potential();
+
+        vm.startPrank(treasury);
+        coin.approve(address(executor), amount);
+        uint256 credited = executor.depositStock(address(coin), amount);
+        vm.stopPrank();
+
+        uint256 expected = amount < room ? amount : room;
+        if (expected > type(uint256).max - stock) {
+            expected = type(uint256).max - stock;
+            ++filled;
+        }
+        assertEq(credited, expected, "RS-6: the credit, within both allowances");
+        assertEq(executor.stockAllowance(address(coin)), stock + credited);
+        assertEq(executor.restockAllowance(address(coin)), room - credited, "spends the restock allowance by as much");
+        assertLe(potential(), before, "RS-1: a deposit raises nothing");
+        ++deposited;
     }
 
     /// @dev The treasury bridges `amount` of the executor's stock, at least one bridge unit, to the home wallet.
@@ -195,7 +221,9 @@ contract KeeperExecutorInvariantTest is Test {
             IMintRequests(address(new RequestsStub(factory))),
             ITokenBridge(address(bridge)),
             owner,
-            makeAddr("keeper")
+            makeAddr("keeper"),
+            address(0),
+            KeeperExecutor.LocalKind.None
         );
         vm.startPrank(owner);
         executor.setTreasury(treasury);
@@ -231,13 +259,18 @@ contract KeeperExecutorInvariantTest is Test {
         handler.setStockAllowance(type(uint256).max - 1e18);
         handler.setRestockAllowance(type(uint256).max);
         handler.redeem(300e8, 0);
+        handler.deposit(2e18);
+        handler.setRestockAllowance(5e17);
+        handler.setStockAllowance(0);
+        handler.deposit(1e18);
         handler.setTreasuryUsdcAllowance(0);
         handler.repay(1);
         assertEq(handler.redeemed(), 2);
         assertEq(handler.bridgedOut(), 1);
         assertEq(handler.drawn(), 2);
         assertEq(handler.repaid(), 2);
-        assertEq(handler.filled(), 1, "the second arrival met the full allowance");
+        assertEq(handler.deposited(), 2);
+        assertEq(handler.filled(), 2, "the second arrival and the first deposit met the full allowance");
         assertEq(usdc.balanceOf(treasury), 1_000_000e6 - 1, "the 900 repaid covered the 600 drawn: the cap drawn anew");
         assertEq(executor.treasuryUsdcOut(), 1_000_000e6 - 1);
         assertEq(executor.treasuryUsdcAllowance(), 0, "the owner's figure lowered to zero");
