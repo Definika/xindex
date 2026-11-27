@@ -11,9 +11,9 @@ Every earlier review in this repository is internal, the work of agents and of t
 
 ## 1. Commit
 
-The candidate is the branch `feat/pyth-check` at `<candidate>`, the commit that adds the sValue check and the
+The candidate is the branch `feat/pyth-check` at `532fff3`, the commit that adds the sValue check and the
 keeper's local DEX to `b747070`. Read it against `7a1d9c2`, whose `src/` is the oracle-free candidate's:
-`git diff 7a1d9c2 <candidate> -- src keeper/src script`. The commits between them that change `src/` or `keeper/src/`:
+`git diff 7a1d9c2 532fff3 -- src keeper/src script`. The commits between them that change `src/` or `keeper/src/`:
 
 | Commit | What it changed | Record |
 |---|---|---|
@@ -21,7 +21,7 @@ keeper's local DEX to `b747070`. Read it against `7a1d9c2`, whose `src/` is the 
 | `737689f` | `keeper/src/` only: `KeeperExecutor.depositStock`, the treasury's deposit of an Ondo stock bought through UniswapX | `docs/design/uniswapx-restock.md` |
 | `3a6a516` | The swap engine reaches each chain's own DEX beside Uniswap: PancakeSwap's Infinity Universal Router on BNB Chain, Aero's Metarouter on Base (`LocalVenue`, `localRoute`) | `docs/design/chain-venues.md` |
 | `b747070` | A fill reads Pyth's prices of the last 15 seconds, a creation's check those of the last 60 (`MAX_PRICE_AGE`, `MAX_CREATION_PRICE_AGE`; HK-25) | `audits/internal/attack-replay-ii.md` |
-| `<candidate>` | Feed kind `SharesOracle`: an Ondo token valued at its share's Pyth price times the settled sValue of Ondo's `SyntheticSharesOracle` (`SValueUnavailable`), the factory's fifth constructor argument, `src/interfaces/ISyntheticSharesOracle.sol`. In `keeper/src/`: the executor reaches PancakeSwap's SmartRouter and Aero's CL SwapRouter (`LOCAL_ROUTER`, `LOCAL_KIND`, `LOCAL_ROUTE`) | `docs/design/ondo-svalue.md`, `docs/design/keeper-chain-venues.md` |
+| `532fff3` | Feed kind `SharesOracle`: an Ondo token valued at its share's Pyth price times the settled sValue of Ondo's `SyntheticSharesOracle` (`SValueUnavailable`), the factory's fifth constructor argument, `src/interfaces/ISyntheticSharesOracle.sol`. In `keeper/src/`: the executor reaches PancakeSwap's SmartRouter and Aero's CL SwapRouter (`LOCAL_ROUTER`, `LOCAL_KIND`, `LOCAL_ROUTE`) | `docs/design/ondo-svalue.md`, `docs/design/keeper-chain-venues.md` |
 
 The other commits in that range (`e1fc80cd`, `bcb3d0f`, `384f5dd`, `914b262`, `e2493ad`) change the lists, the
 scripts, the docs and the keeper's bot, and no contract. `src/MintRequests.sol` is unchanged since `7a1d9c2`; its release
@@ -30,7 +30,7 @@ hash moves all the same, since its metadata carries the source of the interfaces
 Solidity 0.8.28, EVM `cancun`, optimizer on at 100 runs, no via-IR (`foundry.toml`). CI pins Foundry v1.8.1 and
 eth-wake 4.22.1 (`.github/workflows/test.yml`). The gates, run on the candidate:
 
-| Gate | Result on `<candidate>` |
+| Gate | Result on `532fff3` |
 |---|---|
 | `forge fmt --check`, `forge build --sizes --deny warnings`, `forge lint -D notes`, for the repository and for `keeper/` | no findings |
 | `forge test`, fork suites aside | 663 passing, none failing |
@@ -134,7 +134,7 @@ Uniswap's, PancakeSwap's and Aero's routers and pools, the tokens), except where
 In a clone made with `git clone --recurse-submodules`:
 
 ```bash
-git checkout <candidate>
+git checkout 532fff3
 forge build --sizes --deny warnings
 forge lint -D notes
 forge test --no-match-path 'test/fork/*'   # unit, fuzz and invariant tests, no RPC

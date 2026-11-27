@@ -604,8 +604,10 @@ contract MainnetAddressesForkTest is Test {
         (uint256 valued, uint256 refused) = OndoSValues.check(1, M.PYTH, M.ONDO_SHARES_ORACLE);
         emit log_named_uint("Ondo legs valued at their sValue", valued);
         emit log_named_uint("Ondo legs refused, their sValue unheld or unsettled", refused);
+        // How many Ethereum's oracle holds depends on the block: it holds 10 of the 353 near the head, and fewer at
+        // older pins. Every leg is checked either way, valued at its sValue or refused by name; BNB Chain's suite
+        // pins a leg at a known sValue.
         assertEq(valued + refused, 344, "every leg of kind SharesOracle");
-        assertGt(valued, 0, "the oracle holds some");
         (uint128 sValue,,,,,) = ISyntheticSharesOracle(M.ONDO_SHARES_ORACLE).assetData(M.WETH);
         assertEq(sValue, 0, "a coin is no asset of Ondo's: its getter answers zeros, never a revert");
     }
