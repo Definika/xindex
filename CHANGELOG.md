@@ -18,6 +18,7 @@ where it was made.
 | A third deployment | Since 2026-11-21 the same contracts are deployable on Base: sixteen coins, thirteen of them copies Base's own bridge mints of coins on Ethereum's list. It reverses "no Base deployment for now" of 2026-10-18. | [`docs/design/base.md`](docs/design/base.md) |
 | Oracle-free rebalance | Since 2026-11-10 no contract reads a price: an executor names the units a rebalance settles at, and the index accepts them when a weighted gain in units clears a bar that falls with time. Pyth left the protocol, and came back on 2026-11-22 only as a check that can refuse a fill (the row below). The units' rule is still the current design's. | [`docs/design/rebalance.md`](docs/design/rebalance.md), [`audits/retired/oracle.md`](audits/retired/oracle.md) |
 | Pyth's check, creation on the weights, changeable weights | Since 2026-11-22 a fill the units accept must also hold at Pyth's prices, a check that can only refuse; since 2026-11-23 an index is created within 5% of its weights at those prices, its creator can change the weights behind 7 days of notice, creating an index can issue its first shares in the same call (`createAndIssue`), and the owner or guardian may restart a rebalance a week after any fill. No mint, redeem or claim reads a price. The current design. | [`docs/design/pyth-check.md`](docs/design/pyth-check.md), [`docs/design/changeable-weights.md`](docs/design/changeable-weights.md) |
+| A fourth deployment, in development | Since 2026-11-28 a Solana program, `solana/`, issues and redeems indexes in kind through tickets, its list to be Ondo's Token-2022 tokens. It reverses "Not planned: a Solana deployment" of 2026-10-07. The rebalance and the rest are not ported yet. | [`docs/design/solana.md`](docs/design/solana.md) |
 
 `WeightedHub` keeps v4's in-kind issue, redeem, claims and backing check; the zap and `MintRequests` carried over
 unchanged. Each retirement record lists the review findings that went with the retired code and where the rest are
@@ -896,8 +897,43 @@ rebalance it replaced, and the later ones what was built on it and found in it.
   - Tests: four in `keeper/test/KeeperExecutor.t.sol`, a fill through each chain's own DEX on its real pools in
     `keeper/test/KeeperExecutor.chains.fork.t.sol` (3 of 3 on each chain near its head), the route suite's; mutants
     KV1 to KV10. Not done: the keeper's end-to-end test on this change, which needs an archive node.
+- **Solana, the first slice** (2026-11-28, `docs/design/solana.md`). No contract under `src/` changed. `solana/` is an
+  Anchor workspace (Anchor 1.2.0), program `xindex`:
+  - What was read first: Ondo's NVDAon is a Token-2022 mint with a scaled-UI multiplier, a pause, an empty
+    transfer-hook slot and a freeze authority, and no permanent delegate, so on Solana Ondo can freeze or pause a leg
+    but not move or burn it.
+  - Built: the configuration, initialized by the upgrade authority only, with the owner's two-step handover and the
+    guardian's delayed change; listings behind `LISTING_DELAY` that refuse a transfer fee, a permanent delegate, a
+    non-transferable mint, accounts frozen by default, a set transfer hook and more than 9 decimals; approved
+    creators; an index created in three steps, its address committing to the SHA-256 of its terms; issue through a
+    ticket, deposits leg by leg checked against the vault's obligations (`Underbacked`) and what it received
+    (`ShortDeposit`); redeem into a ticket that touches no leg, and claims leg by leg, whole or in part.
+  - The index is a zero-copy header with its legs read in place: a Borsh copy of two hundred legs ran out of the
+    32 KB heap when sealed, and an error built eagerly in a loop (`ok_or(error!(..))`) ran a redeem of two hundred
+    legs out of it too.
+  - Measured on LiteSVM with mainnet's features: an account's creation takes six of a transaction's 64
+    instruction-trace entries, so nine deposits that create their vaults fit a transaction (701k compute units) and
+    eighteen once the vaults exist (850k, 63 accounts of 64); a redeem of two hundred legs costs 65k.
+  - Tests: 4 unit and 21 LiteSVM tests on Token-2022 mints built with Ondo's extensions, each revert its exact error;
+    seven mutants (the backing check, the delivery check, the issue's rounding, the terms check, the seal's approval,
+    the hook check, the redeem's booking) each killed by its test. Not run: a fork of Solana, a transaction's byte
+    size with address lookup tables, CI.
+  - The address book the same day (`solana/listing/ondo.json`, `solana/listing/read_ondo.py`): Ethereum's 353 Ondo
+    tokens, every one with a Solana mint on Ondo's page, the page's Ethereum address matching the keeper's catalogue for
+    all 353. Each mint read at slot 474,725,877: Token-2022, 9 decimals, its metadata naming the symbol, a scaled-UI
+    multiplier, no permanent delegate, no hook, no pause; one mint authority for all, two freeze keys. Each at
+    Ethereum's Pyth feed, nine at the token's own and 344 at the share's; 21 multipliers stand more than 5% from one.
+    `programs/xindex/tests/ondo_book.rs` lists all 353 as their accounts were read and creates an index of two hundred.
 
 ## Product decisions, as they were made
+
+**Solana** (the owner's calls of 2026-11-26 and 2026-11-28). On 2026-11-26 the owner asked for Solana, its large
+non-meme coins and "everything Ondo supports"; the answer then was a design record and a measurement first. On
+2026-11-28, told that investor material could not call Solana ready while no code existed, the owner: "მოდი დაამატე
+მაშინ სოლანა კოდში", with Ondo's tokens on the Solana chain as its list. It reverses "Not planned: a Solana deployment"
+of 2026-10-07. Said with it: a Solana transaction carries about eighteen legs, so creation, issue and redeem run over
+several transactions; a Solana program is upgradeable until its authority is dropped; and until the rebalance, fees and
+Pyth's check are ported, Solana is in development, not ready.
 
 **A pause of minting, and no upgrade** (the owner's calls of 2026-11-23). Reading a line that said each index is a
 fixed clone nobody can upgrade, the owner: "we changed, so clones could be upgradable ... it's bad actually if it's
