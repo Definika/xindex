@@ -1,59 +1,69 @@
 # Xindex Architecture
 
 Xindex turns a portfolio of tokens into a single ERC-20 index token. A wallet the factory's owner approved creates an
-index and chooses each coin's percentage, anyone can mint it with USDC or USDT, and anyone can burn it back into USDC,
-USDT or any other token with Uniswap V3 or V4 liquidity. Every index is fully backed, in kind, by the tokens it holds.
-Its constituents and its creator's percentages never change; it rebalances back toward them through a permissionless
-auction in which the executor names the units each coin is to have and the index checks a gain in units. No contract
-reads a price, a feed or an oracle, for any of it. The one place a price enters is a quote the owner or guardian may
-post with a start: their own figures, used only to refuse a fill (section 3.9). No admin can touch user funds, and no
+index and chooses each coin's percentage, anyone can mint it with USDC or USDT, and anyone can burn it back into USDC
+or USDT, or in kind. Every index is fully backed, in kind, by the tokens it holds. Its constituents never change, and
+its percentages change only when its creator proposes new ones behind 7 days of notice; it rebalances back toward
+them through a permissionless auction in which the executor names the units each coin is to have and the index checks
+a gain in units. No issue, redeem or claim reads a price. A price enters in two places, and in both it can only
+refuse a fill: Pyth's prices, against which every fill the units accept is checked (section 3.10), and a quote the
+owner or guardian may post with a start, their own figures (section 3.9). No admin can touch user funds, and no
 protocol key or bot is involved in rebalancing.
 
-**Xindex is two deployments since 2026-11-13, on Ethereum and on BNB Chain** (the owner's call,
-`design/2026-11-13-bnb-chain-deployment.md`): the same contracts on each, sharing nothing, each holding its own chain's
-tokens in kind, so an index lives on one chain and none spans both. The BNB Chain side is its address book, list,
-deploy checks and fork suite (`script/BnbChainAddresses.sol`); no contract changed for it, and everything below
-describes both deployments unless it names Ethereum's list, Wormhole or the restock service, which are Ethereum's.
+**Xindex is three deployments: on Ethereum, on BNB Chain and on Base** (`docs/design/bnb-chain.md` and
+`docs/design/base.md`): the same contracts on each, sharing nothing, each holding its own chain's tokens in kind, so
+an index lives on one chain and none spans two. The BNB Chain side and the Base side are each an address book, a
+list, deploy checks and a fork suite (`script/BnbChainAddresses.sol`, `script/BaseAddresses.sol`) over the same
+contracts, and everything below describes all three deployments unless it names Ethereum's list, Wormhole or the
+restock service, which are
+Ethereum's. Base lists thirty-two tokens: WETH and AERO, issued there, ZRO, thirteen copies its own bridge mints
+of coins on Ethereum's list, the six Coinbase Wrapped coins, and Coinbase's ten stock tokens, which are precompiles
+of Base and are tested on Base's node (`docs/design/coinbase-on-base.md`).
 
-**On Ethereum one index holds up to 100 coins of the top 300** (the owner's decision of
-2026-10-10, `design/2026-10-10-one-index-wormhole-legs.md`). An index holds Ethereum ERC-20s in kind: the issuer's own
+**On Ethereum one index holds up to 200 coins, of the top 300 and of Ondo's stocks and ETFs**
+(`docs/design/wormhole-legs.md`). An index holds Ethereum ERC-20s in kind: the issuer's own
 contract where Ethereum has one, and otherwise the copy Wormhole's token bridge wraps from the chain that has it.
 Nothing crosses a chain inside a protocol contract: the app and the fillers bridge, the keeper's own executor among
-them (section 5). There is no vault, no proof and no bridge of ours. The BNB Chain deployment of 2026-10-07 was shelved
-on 2026-10-10, deleted on 2026-10-13 and built again on 2026-11-13.
+them (section 5). There is no vault, no proof and no bridge of ours.
 
 This file describes the contracts **as built**: `WeightedIndexFactory`, the `WeightedHub` it clones, `WeightedMath`,
-`IndexZap`, `BasketBuilder` and `MintRequests`. The rebalance is the oracle-free one of 2026-11-10
-(`design/2026-11-10-oracle-free-rebalance.md`, the "spec"), which replaced the Pyth-priced settlement of v5;
-`audit/2026-11-10-oracle-retirement.md` records what went with it. The rest of v5 stands
-(`design/2026-10-05-custom-weights.md`, the "v5 spec", whose sections on Pyth describe the design that was replaced).
+`PythPrices`, `IndexZap`, `BasketBuilder` and `MintRequests`. The rebalance is judged on units
+(`docs/design/rebalance.md`, the "spec"), which replaced the Pyth-priced settlement of
+v5; `audits/retired/oracle.md` records what went with it. A fill the units accept is
+also checked against Pyth's prices, a check that can only refuse (`docs/design/pyth-check.md`); an index is created
+on its weights at those prices, its creator can change the weights behind a notice
+(`docs/design/changeable-weights.md`), a creation can issue the index's first shares in the same call, and the
+owner or guardian may start a rebalance a week after any fill. Where a section below says that the rule on units
+reads no price, it means the settlement itself: Pyth's check sits beside it (section 3.10), and no issue, redeem or
+claim reads a price. The rest of v5 stands
+(`docs/design/custom-weights.md`, the "v5 spec", whose sections on Pyth describe the design that was replaced).
 `WeightedHub` keeps the issue, redeem, claims, recipient checks and backing post-check of v4 Stage A
-(`design/2026-09-30-v4-stage-a-spec.md`); v4's market-cap hub and factory, Stage B's vaults and proofs, and v5's oracle
-are history (section 11). Internal reviews of v5: `audit/2026-10-05-v5-review.md` and
-`audit/2026-10-07-v5-logic-review.md`. The oracle-free mechanism was red-teamed on 2026-11-14 by reviewers who did not
-design it (`audit/2026-11-14-red-team.md`, RW-1 to RW-10). Nothing has had an external audit, and nothing is deployed
+(`docs/design/stage-a-spec.md`); v4's market-cap hub and factory, Stage B's vaults and proofs, and v5's Pyth-priced
+settlement are retired (section 11). Internal reviews of v5: `audits/internal/v5-review.md` and
+`audits/internal/v5-logic-review.md`. The oracle-free mechanism was red-teamed by reviewers who did not
+design it (`audits/internal/red-team-rw.md`, RW-1 to RW-10). Nothing has had an external audit, and nothing is deployed
 on a mainnet.
 
 ## 1. Goals and constraints
 
 | Requirement (from the product brief) | How the contracts meet it |
 |---|---|
-| Create a portfolio as one ERC-20, any name/symbol | `WeightedIndexFactory.createIndex(name, symbol, components, params)` deploys a `WeightedHub` clone with free-form name and symbol; only a wallet the factory's owner approved creates one (`setApprovedCreator`) |
-| Choose each coin's percentage | Each component carries a weight in basis points, the weights summing to 10,000, fixed at creation with the coin list |
+| Create a portfolio as one ERC-20, any name/symbol | `WeightedIndexFactory.createAndIssue(name, symbol, components, params, shares, to)` deploys a `WeightedHub` clone with free-form name and symbol and issues its first shares in the same call, the basket pulled from the creator; `createIndex(name, symbol, components, params)` creates one with no shares, for an index too wide for one transaction. Only a wallet the factory's owner approved creates one (`setApprovedCreator`), and each component's units must lie within 5% of its weight at Pyth's prices (`OffWeights`) |
+| Choose each coin's percentage | Each component carries a weight in basis points, the weights summing to 10,000, set at creation with the coin list; the creator may change the weights later behind a notice of 7 days (`proposeWeights`), never the coins |
 | Others can mint the same index | `issue`, `mintWithToken` and `requestMint` are permissionless |
-| Decentralized | No custody, no pause, no upgrade, no rebalancing key; listings take effect after a public 2-day delay with a guardian veto, guardian changes after 7 days |
+| Decentralized | No custody, no pause of an exit, no upgrade, no rebalancing key; minting alone can be paused, by the owner or guardian; listings take effect after a public 2-day delay with a guardian veto, guardian changes after 7 days |
 | Mint and burn | In-kind `issue` / `redeem` on the hub; USDC/USDT through the zap, or at a limit through `MintRequests` |
 | Trade the index into other coins | Standard ERC-20 (transferable, listable); the zap burns into USDC or USDT only |
 | USDC/USDT in, USDC/USDT out | The zap mints from either stable; the burner chooses the payout token |
-| Rebalancing and index price | The units are brought back toward the weights through an auction, at most once per the index's interval (7 to 91 days): an executor names the units, and the index accepts them when a weighted gain in units clears a bar that falls with time (section 3). The owner or guardian may post a quote with a start, which can only refuse a fill. No contract reads a price of its own; the index price is the basket's value, computed off chain |
-| Layer-1 coins | Ethereum tokens, Bitcoin as WBTC, and coins neither chain has in kind as Wormhole-wrapped copies on Ethereum: SOL, AVAX, SUI and others; XRP, ADA, LTC, DOT, ATOM and BNB on BNB Chain |
+| Rebalancing and index price | The units are brought back toward the weights through an auction, at most once per the index's interval (7 to 91 days): an executor names the units, and the index accepts them when a weighted gain in units clears a bar that falls with time (section 3). A fill the units accept must also hold at Pyth's prices of the last fifteen seconds, within a tolerance that rises to 2% over the auction (section 3.10); the owner or guardian may post a quote with a start. Both can only refuse a fill. The owner or guardian may start again a week after any fill. No issue, redeem or claim reads a price; the index price is the basket's value, computed off chain |
+| Layer-1 coins | Ethereum tokens, Bitcoin as WBTC, and coins Ethereum lacks as Wormhole-wrapped copies there (SOL and AVAX); XRP, ADA, LTC, DOT, ATOM and BNB are held on BNB Chain |
 
 Constraints kept from v3 and v4: in-kind backing, CREATE2 addresses that commit to their contents, fixed constituents,
 reentrancy-guarded untrusted executors, standard ERC-20s only, no admin over funds, and an owner Safe of at least three
-signatures. Added on 2026-10-14 (`design/2026-10-14-mainnet-engine-research.md`): fees in shares, a rebalance interval
-per index and gated indexes, each described below; on 2026-10-16 the streaming fee, as a unit scale. Changed by the owner's calls of 2026-10-05: creators choose
-fixed percentages, and the market-cap index is retired. Changed by the owner's call of 2026-11-10: no oracle. Pyth,
-which v5's settlement read, is gone from the protocol.
+signatures. On top of them (`docs/design/fees-builder-requests.md`): fees in shares, a rebalance interval
+per index, gated indexes and the streaming fee, as a unit scale, each described below. Creators choose the
+percentages, in place of v4's market-cap index, and change them only behind a notice. The settlement is judged on
+units, and Pyth is a check that can only refuse a fill and that holds a creation to its weights.
 
 ## 2. Components
 
@@ -80,11 +90,13 @@ which v5's settlement read, is gone from the protocol.
 
 The index itself: an EIP-1167 clone of one implementation, which the factory deploys in its constructor, using
 OpenZeppelin's upgradeable ERC20 and ERC20Permit (clones skip constructors, so name and symbol are set in
-`initialize`). `FACTORY` and `MATH` are immutables of the implementation, so every clone sees them; `MATH` is the
-`WeightedMath` the factory deployed with it.
+`initialize`). `FACTORY`, `MATH` and `PRICES` are immutables of the implementation, so every clone sees them; `MATH`
+is the `WeightedMath` the factory was given at construction, and `PRICES` the `PythPrices` the factory deployed, zero
+on a factory without an oracle.
 
 - **State:** `Component[] {address token; uint96 units}` and beside it each component's weight in basis points
-  (`uint16[]`), both set at `initialize`. Only `executeRebalance` changes units, and nothing changes the weights.
+  (`uint16[]`), both set at `initialize`. Only `executeRebalance` changes units, and only `setWeights`, which the factory alone calls once a change of
+  weights has waited out its notice, changes the weights.
   `units_i` is the recorded amount of component `i` (in that token's own decimals) per whole index token (`1e18`
   shares); times `_scale / 1e18` it is the raw amount backing one whole index token. `_scale` is the streaming fee's
   factor (1e18 = one, lowered by each accrual and by nothing else; no fill resets it, XS-2), beside which `_lastAccrual`
@@ -93,10 +105,17 @@ OpenZeppelin's upgradeable ERC20 and ERC20Permit (clones skip constructors, so n
   per token in `totalClaims[token]`. A pending rebalance is its `eta` and keep mask, and, when its start posted one, a
   quote: a price per component (`uint128`), a tolerance and the proposal it belongs to; beside them `proposalCount`,
   `rebalanceNonce`, `lastRebalance` (creation, then each fill) and `restartAllowedAt`.
-- **initialize(name, symbol, components, config):** `FACTORY` only, once. 2 to 100 components, each with a non-zero token,
+- **initialize(name, symbol, components, config, first):** `FACTORY` only, once, under the reentrancy guard. 2 to 200
+  components, each with a non-zero token,
   non-zero units within `uint96` and a weight from 1 to `TOTAL_WEIGHT`; the weights sum to `TOTAL_WEIGHT` (10,000),
   and no two components share a token. Anything else is `InvalidComponents`. Fee rates, a referral share or an
-  interval outside the hub's own outer bounds are `InvalidConfig`; the factory bounds each more tightly.
+  interval outside the hub's own outer bounds are `InvalidConfig`; the factory bounds each more tightly. `first` is
+  the creation's own first issue, `FirstIssue {from, shares, to}`: with shares, the initializer ends by issuing them
+  to `to`, the ordinary issue below with one difference, that the basket is pulled from `from`, the creator the
+  factory names, who approved the index's address before it existed. It is the only time the hub pulls from an
+  account other than its caller. The guard matters: a clone reads as initialized while its initializer runs, so
+  without it a component that called back could issue or redeem in the middle of the first issue
+  (`test_theFirstIssueIsUnderTheGuard`, mutant FB3).
 - **issue(shares, to):** computes `ceil(shares × units_i × scale / 1e36)` per component, mints, emits, then pulls each
   component from `msg.sender` and reverts `TransferAmountMismatch` unless the balance grew by at least that amount
   (rejects fee-on-transfer tokens), then sends itself one raw unit of it and reverts `CannotSendOut` unless the whole
@@ -105,16 +124,19 @@ OpenZeppelin's upgradeable ERC20 and ERC20Permit (clones skip constructors, so n
   then pushes every component. Neither reads a price.
 - **redeemSkipping(shares, to, skipMask):** the same, except each component whose bit is set stays in the index and is
   booked as a claim for `to`, the account that receives every other component (DA-17), before any token moves.
-  **claim(token, to)** pays `msg.sender`'s claim on `token` and clears it.
-- **startRebalance(keepMask)**, **startRebalance(keepMask, prices, tolerance)**, **cancelRebalance()** and the two
-  **executeRebalance** overloads: section 3.
+  **claim(token, to)** pays `msg.sender`'s claim on `token` and clears it; **claim(token, to, amount)** pays part of
+  it and leaves the rest recorded, for a claim the index can no longer pay whole (CA-S01).
+- **startRebalance(keepMask)**, **startRebalance(keepMask, prices, tolerance)**, **cancelRebalance()**,
+  **cancelRebalance(proposalId)** and the two **executeRebalance** overloads: section 3.
 - **Views:** `components()`, `componentTokens()`, `componentCount()`, `componentWeights()`, `recordedUnits()` (the units
   a fill's `newUnits` are compared with, without the scale), `config()`, `previewIssue`, `previewRedeem`, `claimOf`,
   `totalClaims`, `pendingStreamingFee()`, `lastAccrual()`, `earliestRebalance()`, `pendingRebalance()`, `currentBar()`,
   `rebalanceQuote()` (the pending proposal's prices and tolerance, empty and zero when it has none),
   `canStartRebalance()`, and `previewRebalance(newUnits)`, which returns the bar, the gain and the amounts a fill of
-  those units in this block would settle, and reverts as the fill would. No function values the index. The only
-  prices any function takes or returns are a quote's, the owner's or guardian's own (section 3.9).
+  those units in this block would settle, and reverts as the fill would, Pyth's check included, so on a factory with
+  an oracle it answers only while Pyth's contract holds prices of the last fifteen seconds. No function values the index. The
+  only prices any function takes or returns are a quote's, the owner's or guardian's own (section 3.9); Pyth's are
+  read through `PRICES` inside a fill and its preview (section 3.10).
 - **Access:** `issue`, `redeem`, `redeemSkipping`, both `startRebalance` overloads, `cancelRebalance` and both
   `executeRebalance` overloads revert `NotInitialized` on anything but an initialized clone; the implementation has
   initializers disabled. A recipient can never be zero, the hub itself or its factory, and that includes a plain ERC-20
@@ -127,22 +149,40 @@ OpenZeppelin's upgradeable ERC20 and ERC20Permit (clones skip constructors, so n
 
 ### WeightedIndexFactory (`src/WeightedIndexFactory.sol`)
 
-- The constructor takes the owner and the guardian (zero means none) and deploys `WeightedMath` and, with the math's
-  address fixed in it, the `WeightedHub` implementation. The factory stores no price and reads none, and it depends on
-  no Uniswap contract.
+- The constructor takes the owner, the guardian (zero means none), Pyth's contract (zero for a factory without an
+  oracle) and a `WeightedMath` deployed before it (`NotAContract` without code), and deploys the price reader, when
+  there is a Pyth, and, with the math's and the reader's addresses fixed in it, the `WeightedHub` implementation. The
+  math is deployed on its own because with it inside, the factory's init code would pass EIP-3860's 49,152
+  bytes. The factory stores no price; it asks the price reader for values at creation alone, to refuse units off the
+  weights, and it depends on no Uniswap contract.
+- **Weights.** `proposeWeights(index, weights)`, the index's creator only, on a factory with an oracle (`NoOracle`):
+  each weight at least one basis point, all summing to 10,000, one per component (`InvalidWeights`); a new proposal
+  replaces the pending one. Anyone applies it with `executeWeights(index)` from `WEIGHTS_DELAY`, 7 days, after the
+  proposal to `PROPOSAL_WINDOW` after that (`WeightsNotReady`, `WeightsExpired`), and the index refuses it while a
+  rebalance is live (`RebalancePending`). The creator, the owner or the guardian cancels one (`cancelWeights`).
+  `pendingWeights(index)` reports it. The index emits `WeightsChanged`; its units follow at the next rebalance.
 - **Listing.** `proposeListing(token)`, owner only: the token must have code (`NotAContract`), its decimals are read
   now and must be at most 18 (`InvalidDecimals`), and the token must be neither listed (`AlreadyListed`) nor under a
-  live listing (`ListingPending`). A listing is a token and its decimals and nothing else: no listing carries a price
-  id. The decimals only bound the units an index may start with (`maxUnitsOf`); they are read once, so the figure is
+  live listing (`ListingPending`). A listing is a token and its decimals and nothing else; a token's Pyth feed is set
+  apart from it (below). The decimals bound the units an index may start with (`maxUnitsOf`) and scale the token's
+  price in the reader; they are read once, so the figure is
   public before it counts, and the factory calls no token after that (RT-01). `executeListing` is permissionless from
   `eta = now + LISTING_DELAY` (2 days) for `PROPOSAL_WINDOW` (7 days); it records the decimals (`TokenDecimalsSet`) and
   whitelists the token. `cancelListing` and `delist` are owner or guardian; delisting is immediate, keeps the token's
   decimals, and affects only indexes created afterwards. A relisting reads the decimals anew and reaches only indexes
   created after it (`test_aRelistingReachesOnlyNewIndexes`).
-- **Creation.** `createIndex(name, symbol, components, params)`, open only to a wallet the owner approved
-  (`CreatorNotApproved` otherwise) and payable for the policy's creation fee, with `params` the creator's fee rate, the
+- **Price feeds.** `proposePriceFeed(token, {id, kind})`, owner only, on a factory with an oracle (`NoOracle`): a
+  kind other than `None` names an id and `None` names none (`InvalidPriceFeed`). `executePriceFeed` is
+  permissionless from `LISTING_DELAY` for `PROPOSAL_WINDOW`; `cancelPriceFeed` is owner or guardian;
+  `priceFeedOf(token)` and `pendingPriceFeed(token)` report. Unlike a listing, a feed reaches every index from the
+  moment it is set, and it can only refuse: a wrong one stops fills that move the token, or lets through one the
+  units already accept.
+- **Creation.** `createIndex(name, symbol, components, params)` and `createAndIssue(name, symbol, components,
+  params, shares, to)`, open only to a wallet the owner approved
+  (`CreatorNotApproved` otherwise, from `_checkApprovedCreator`, which both call first) and payable for the policy's
+  creation fee, with `params` the creator's fee rate, the
   highest platform fee it accepts, the rebalance interval (7 to 91 days), the gate and the listing flag; each component
-  a `ComponentSpec {token, weight, units}`: a non-empty name and symbol, 2 to 100 whitelisted components, units in
+  a `ComponentSpec {token, weight, units}`: a non-empty name and symbol, 2 to 200 whitelisted components, units in
   `[MIN_RAW_UNITS, maxUnitsOf(token)]` (`UnitsOutOfRange`), weights of at least one basis point summing to exactly
   10,000 (`InvalidWeights`) and no token twice (`DuplicateToken`). The floor, 10,000 raw units, is DA-09's granularity
   rule. The ceiling is `MAX_WHOLE_TOKENS` (1e9) whole tokens per index token at the token's listed decimals, so a
@@ -151,21 +191,32 @@ OpenZeppelin's upgradeable ERC20 and ERC20Permit (clones skip constructors, so n
   name, the symbol, every component's token, units and weight, and the config: fee and streaming rates, referral share
   and rebalance interval (LR-05); the gate and the listing flag are not in it. The clone is registered (`isIndex`,
   `creatorOf`, `allIndexes`), announced (`IndexCreated`) and initialized in one transaction; `predictIndexAddress` gives
-  the address first. No unit is checked against a price: the app derives the units from the percentages at its own
-  prices, and rebalances, the first possible after the index's own interval (7 to 91 days), close any gap within the
-  caps, paying it to whoever fills them: hence the approval below.
+  the address first. On a factory with an oracle the units are held to the weights: each component's share of the
+  index's value at Pyth's prices, every unit valued as arriving, lies within `MAX_WEIGHT_DEVIATION`, 5%, of its
+  weight, relative to the weight, or the creation reverts `OffWeights` (`_checkOnWeights`, one call to the reader
+  for all components; a missing, stale or unusable price reverts too). The duplicate check is one pass over
+  transient storage. `createAndIssue` then has the clone issue `shares` to `to` in its initializer (`FirstIssue`,
+  above; `ZeroShares` for none): creating an index is buying it, and a first issue the creator cannot pay, or a
+  component that arrives short or could not leave again, reverts the creation, so no index is left that its
+  creator could not back. The two in one call cost about 110,000 gas a component on mock tokens, 13.4M at 125
+  components and past the cap at 200 (`test_aCreationWithItsFirstIssueFitsOneTransaction`), so the widest indexes
+  are created with `createIndex` and issued afterwards. The first issue's shares and recipient are not terms of the
+  index and not in the salt, and the factory itself still calls no token.
 - **Approved creators.** `setApprovedCreator(account, approved)`, owner only, takes effect at once and emits
   `CreatorApprovalSet`; `isApprovedCreator(account)` reads it. Neither the owner nor the guardian is approved by being
-  a role (`test_onlyAnApprovedCreatorCreatesAnIndex`, `test_onlyTheOwnerApprovesCreators`). The reason is that nothing
-  reads a price: no contract can compare the units a creator names with its weights, and an index created off its
-  weights carries that distance from its first day and loses it to whoever fills its auctions (section 3.7). The
-  approval is what keeps a stranger from creating such an index; the team creates on the weights at the app's prices.
+  a role (`test_onlyAnApprovedCreatorCreatesAnIndex`, `test_onlyTheOwnerApprovesCreators`). The gate answers a cost
+  of the rule on units: no rule on units alone can compare the units a creator names with its weights, and an index
+  created off its weights carries that distance from its first day and loses it to whoever fills its auctions
+  (section 3.7). The creation's weights check closes that on a factory with an oracle, and the gate stays by the
+  owner's decision: reopening creation is the owner's to decide.
   It is read at creation and nowhere else: an approved wallet is bound by the whitelist and the fee caps, it has no
   power over any index's funds, and withdrawing an approval reaches no index that exists
   (`test_aWithdrawnApprovalStopsCreationAndReachesNoIndex`). An index's creator role still moves to any account,
   approved or not, through `transferCreator` and `acceptCreator`, which is how a partner takes over an index the team
   made (`test_theCreatorRoleMovesToAnAccountThatWasNeverApproved`). `acceptCreator` accrues the index's streaming fee
-  before it writes the new creator, so what was earned up to the handover is the outgoing creator's (RW-6).
+  before it writes the new creator, so what was earned up to the handover is the outgoing creator's (RW-6), and it
+  cancels a change of weights the outgoing creator left pending, so no creator's proposal takes effect under the
+  next (HK-16, `test_HK16_aHandoverClearsTheOutgoingCreatorsWeights`).
 - **Guardian and ownership.** `proposeGuardian` is owner only (zero removes the role) and replaces any pending change;
   `executeGuardianChange` is permissionless from `GUARDIAN_DELAY` (7 days) for `PROPOSAL_WINDOW`. The owner can cancel
   any guardian change, the guardian only its own removal, never its replacement (XA-61). `isOwnerOrGuardian(account)`
@@ -176,17 +227,24 @@ OpenZeppelin's upgradeable ERC20 and ERC20Permit (clones skip constructors, so n
   `renounceOwnership` always reverts. An expired proposal leaves `listingEta`, `pendingGuardian` and
   `pendingGuardianEta` set, so `listingPending(token)` and `guardianChangePending()` say whether one can still run
   (DA-16).
-- Neither role can pause, upgrade, set units or weights, or touch funds held by any index.
+- **Pausing mints.** `pauseMinting(index)`, owner or guardian, stops the issue of new shares of a factory index
+  (`NotIndex` otherwise), or of every index when `index` is zero; `resumeMinting(index)`, owner only, lifts one or
+  the other; `mintingPaused(index)` reports. `feeTerms` answers `allowed` false while either holds, which only an
+  issue reads, so the hub reverts `NotAllowedMinter` and is otherwise unchanged: a redeem, `redeemSkipping`, a
+  claim, a transfer, a fee accrual and a rebalance go on (`test_aPauseStopsIssuesAndNoExitNorARebalance`). It is the
+  brake for an index or a build found to have a fault, in place of an upgrade key. A creation
+  with a first issue is stopped with the other issues; `createIndex` is not.
+- Neither role can pause an exit, upgrade, set units or weights, or touch funds held by any index.
 
 ### IndexZap (`src/IndexZap.sol`)
 
-v3's user-facing convenience layer, unchanged by v5. Stateless, ownerless, holds nothing a user is owed between
+The user-facing convenience layer. Stateless, ownerless, holds nothing a user is owed between
 transactions (a stranger's router leftover that a burn's recipient refused can rest there, RW-9), and,
-with the basket builder, the only contract here that knows about Uniswap: since 2026-10-16 its swaps run through
+with the basket builder, the only contract here that knows about Uniswap or the chain's own DEX: its swaps run through
 `UniversalRouterSwaps` (`src/UniversalRouterSwaps.sol`), the abstract engine both inherit, which holds the exact-output
 buy, the hop-by-hop V3 and one-swap V4 sales, the route checks and the pre-fund-and-sweep payment, and hands what a hop
-did not sell to a hook each contract implements; the swap errors are declared once in `IXindexErrors`. PancakeSwap's legs, added on 2026-10-06, were removed on 2026-10-14,
-which returned the zap to its earlier Uniswap-only build. The zap types its calls with `IIndexFactory` and `IIndexHub`, which declare exactly what it calls: `isIndex` on the factory, and
+did not sell to a hook each contract implements; the swap errors are declared once in `IXindexErrors`. The zap types
+its calls with `IIndexFactory` and `IIndexHub`, which declare exactly what it calls: `isIndex` on the factory, and
 `issue`, `redeem`, the previews, `componentTokens` and `rebalanceNonce` on an index. `IWeightedIndexFactory` and
 `IWeightedHub` extend them, so the compiler holds the weighted contracts to that surface.
 
@@ -199,11 +257,14 @@ which returned the zap to its earlier Uniswap-only build. The zap types its call
   a permit is tried, never required, so one already submitted is accepted.
 - **USDC and USDT only.** `tokenIn` and `tokenOut` must be the zap's `USDC` or `USDT`, construction arguments the
   deploy script resolves from the chain's address book, or the call reverts `NotAStable` before anything moves; the
-  basket builder's `buy` and `sell` take the same two (the owner's call of 2026-11-18). No entry point is payable: the
-  ether entry points of 2026-10-29 (`mintWithEth`, `burnToEth`, `burnToEthWithPermit`) and the zap's `WETH` are gone
-  (`audit/2026-11-18-zap-ether-retirement.md`). The pass-through leg is then a stablecoin the index holds itself.
-- **One venue per leg.** A `MintLeg` or `BurnLeg` carries exactly one non-empty route, a packed `v3Path` or a
-  `PathKey[] v4Path`, or `BadRoute(i)`; both empty is valid only for the pass-through leg. A V4 route must be hookless (`hooks` zero and
+  basket builder's `buy` and `sell` take the same two. No entry point is payable, and the zap holds no `WETH` and
+  takes no ether (`audits/retired/zap-ether.md`). The pass-through leg is then a stablecoin the index holds itself.
+- **One venue per leg.** A `MintLeg` or `BurnLeg` carries exactly one non-empty route, a packed `v3Path`, a
+  `PathKey[] v4Path` or a `localRoute` through the chain's own DEX (PancakeSwap's Infinity Universal Router on BNB
+  Chain, Aero's Metarouter on Base, none on Ethereum; `docs/design/chain-venues.md`), or `BadRoute(i)`; all
+  empty is valid only for the pass-through leg. The chain's DEX is fixed per deployment and its router is no valid
+  recipient; its legs keep every rule below, pre-funded, swept in the same call, measured as balance changes, sold one
+  hop at a time. A V4 route must be hookless (`hooks` zero and
   `hookData` empty), which also rules out the dynamic-fee flag. `address(0)` is native ether and may appear only as an
   intermediate; the zap has no `receive()`, so no swap can send it ether.
 - **Every command is the zap's own.** Each swap is one `execute(commands, inputs)` built here, and nothing a caller
@@ -237,14 +298,16 @@ which returned the zap to its earlier Uniswap-only build. The zap types its call
 
 ### BasketBuilder (`src/BasketBuilder.sol`)
 
-The zap's stateful sibling, built on 2026-10-16 for the basket one transaction cannot swap: the legs are bought over
+The zap's stateful sibling, for the basket one transaction cannot swap: the legs are bought over
 several calls into an escrow the caller owns here and issued in one, and selling mirrors it. Ownerless, no upgrade,
 nothing to configure, and nobody else needed: no filler.
 
-- **State:** `escrowOf[user][token]`, the only storage. A token in it moves on its owner's call alone: into an issue,
-  a sale or a withdrawal.
-- `deposit(token, amount)` credits the balance increase it caused, so a fee-on-transfer token credits what arrived;
-  `withdraw(token, amount, to)` debits first and then transfers, `amount` 0 meaning the whole escrow.
+- **State:** `escrowOf[user][token]`, and `totalEscrow[token]`, the sum of every user's escrow of a token. A token in
+  an escrow moves on its owner's call alone: into an issue, a sale or a withdrawal.
+- `deposit(token, amount)` credits the balance increase it caused, so a fee-on-transfer token credits what arrived,
+  and a transfer that delivered nothing reverts `TransferShortfall` (CA-R2-16);
+  `withdraw(token, amount, to)` debits first and then transfers, `amount` 0 meaning the whole escrow, and `to` cannot
+  be the token itself (CA-R2-15).
 - `buy(BuyParams{index, expectedNonce, shares, tokenIn, maxAmountIn, components, legs, deadline})` pulls the whole
   `maxAmountIn` (refusing a fee-on-transfer currency), buys each named component up to what `previewIssue(shares)`
   needs beyond the escrow through the engine, credits the escrow, keeps the basket's own `tokenIn` out of the refund,
@@ -258,13 +321,17 @@ nothing to configure, and nobody else needed: no filler.
   through the engine or, when it is `tokenOut`, counts it toward the payout against its leg's minimum (DA-15), credits
   what a hop did not sell back to the escrow (`Unsold`), measures the payout as its `tokenOut` balance change and pays
   `to`, refusing a fee-on-transfer payout.
-- **Invariant:** for every token the builder's balance covers the sum of the escrows, since every credit is a
-  measured arrival and every debit precedes the transfer it pays for; what strangers send stays, as in `MintRequests`.
+- **Invariant:** for every token the builder's balance covers the sum of the escrows, `totalEscrow`, since every
+  credit is a measured arrival and every debit precedes the transfer it pays for; what strangers send stays, as in
+  `MintRequests`. Only the token's issuer can break it, by taking part of the builder's balance. While it is broken,
+  a deposit, a buy or a redeem that would credit that token reverts `Underbacked`, so a newcomer's coins never pay an
+  earlier escrow; what is left still leaves, first come, first served (CA-H2, as RX-8 in the hub). A leg that is the
+  paying stablecoin itself is checked again once the call's refund has left.
   This assumes one ledger behind one address: a swap measured across two addresses of one ledger reverts
   `SharedBalance` (RW-10), and a redeem of an index naming both would be credited twice, so such a token is never
   listed.
   Recipients are checked as the zap's, plus any index (RT-21); every entry point shares one reentrancy guard; it never
-  calls `redeemSkipping` or `executeRebalance`. A hundred-leg basket fits three buys and one mint under EIP-7825
+  calls `redeemSkipping` or `executeRebalance`. The widest basket, 200 legs, fits six buys and one mint under EIP-7825
   (`test/BasketBuilder.t.sol`, on mock pools).
 
 ### MintRequests (`src/MintRequests.sol`)
@@ -273,7 +340,7 @@ An ownerless escrow for people who hold a stablecoin and want shares without swa
 requester escrows USDC or USDT for at least `minShares` shares of a factory index (`requestMint`), or shares for at
 least `minOut` of a stablecoin (`requestRedeem`), fillable until a deadline at most `MAX_REQUEST_DURATION` (30 days)
 away. Anyone fills by sending the requester what they asked for, and takes the escrow; the requester cancels at any
-time, and anyone refunds the escrow to the requester after the deadline. It is how a hundred-coin index is bought with
+time, and anyone refunds the escrow to the requester after the deadline. It is how a wide index is bought with
 USDC: a filler assembles the basket, wrapped legs included, and bridges on its own account. The keeper in `keeper/`
 fills requests at their limits (`fillMint`, `fillRedeem`, and several at once with `fillBatch`, which passes a
 seller's shares to a buyer and trades one basket for the difference), and anyone else may.
@@ -291,7 +358,17 @@ Two rules tie a fill to what was priced. A request records the index's `rebalanc
 `refund` read no nonce, so the escrow always comes back (RW-2). And a filler may name the request it priced:
 `fill(id, amount, expected)` reverts `RequestChanged` unless the hash of the request behind `id` is `expected`
 (`requestHash`), which covers a re-org or a front-run that puts another request behind the id; `fill(id, amount)` is
-for a caller that reads the request in the same call, as the keeper's executor does (RW-7).
+for a caller that reads the request in the same call, as the keeper's executor does (RW-7). Reading it there is not
+enough alone, so the executor also compares what it read with the hash its keeper priced (CA-M6).
+
+A request records the nonce the index reads when its transaction lands, which need not be the one its requester
+priced. `requestMint(..., expectedNonce)` and `requestRedeem(..., expectedNonce)` name that nonce and revert
+`StaleRebalanceNonce` after a settlement, before anything is escrowed; the unbound two stay for a caller that does
+not price a basket (CA-M1).
+
+`totalEscrow[token]` is the sum of the open escrows in a token. A request is taken only while the contract's balance
+covers it: after an issuer destroyed part of the balance, a new deposit would pay the earlier requests, so it reverts
+`Underbacked` until the balance is whole again (CA-H2, as RX-8 in the hub).
 
 Fillers pay requesters directly, the contract never calls `approve`, and every entry point shares one reentrancy
 guard. A deposit that could not be paid back out, as from an address Tether has blacklisted, is refused (SA-01).
@@ -307,12 +384,13 @@ Decodes Uniswap V3 packed paths (`token(20) | fee(3) | token(20) ...`): shape ch
 
 An index holds amounts of coins, and a weight is a share of value, so bringing the units back to the weights takes
 someone who knows what the coins are worth. That someone is the executor, never the index: the executor names the units
-each component is to have, and the index judges them on units alone. No contract reads a price, a feed, a pool's price
-or an oracle, for a rebalance or for anything else (`test_V5I4_noContractNamesPyth`, `test_A713_noContractReadsAPrice`),
-so no feed can block an exit, misprice a mint or set the terms of a rebalance. The one place a price enters is a quote
-the owner or guardian may post with a start: their own figures, fixed at the start, and used only to refuse a fill the
-rule accepts (section 3.9). The spec is `design/2026-11-10-oracle-free-rebalance.md`. Until 2026-11-10 the settlement
-was priced by Pyth (section 11).
+each component is to have, and the index judges them on units first. No issue, redeem or claim reads a price, and no
+contract reads a Chainlink feed or a pool's price (`test_A713_noContractReadsAPrice`,
+`test_onlyThePriceReaderReadsPyth`), so no feed can block an exit or misprice a mint. A price enters in two places,
+and in both it can only refuse a fill the rule accepts: a quote the owner or guardian may post with a start, their
+own figures, fixed at the start (section 3.9); and Pyth's prices, against which every fill on a
+factory with an oracle is checked (section 3.10). Sections 3.2 to 3.8 are the rule on units, which stands whatever a
+price says. The spec is `docs/design/rebalance.md`.
 
 Notation: `u_i` a component's recorded units, `v_i` the units the executor names for it, `w_i` its weight (basis points
 on chain, summing to 10,000), `σ` the index's scale after the settlement's own accrual (1e18 = one),
@@ -328,9 +406,15 @@ or in its auction (`RebalancePending`). A non-zero keep mask, and any start befo
 owner or guardian (`Unauthorized`, R16). The mask must fit the components and leave at least two moving
 (`InvalidKeepMask`, V5-L2), since one moving component alone has nothing to trade against. After a fill with a keep
 mask, a start without one waits only `MIN_REBALANCE_INTERVAL`, so a sliver the guardian fills behind a mask cannot hold
-everyone else off for a quarter (one filled under a quote and no mask can, RW-3); a start with a mask may start then
+everyone else off for a quarter; a start with a mask may start then
 too, so the guardian can renew a keep around a frozen component
-(XS-3). The start stores `eta = now + REBALANCE_DELAY` and the mask, and emits `RebalanceStarted`. It is a plain call:
+(XS-3). The owner or guardian may also start `MIN_REBALANCE_INTERVAL` after any fill, mask or none,
+though not before an index's first fill, while a stranger waits out the index's interval: a fill restarts the whole
+interval however little it traded, so without that a sliver settled at an auction's last second, or under a quote
+that refuses every real trade, would hold an index off its weights for up to 91 days with nobody able to reopen it
+(RW-3; `test_theOwnerOrGuardianRestartsAWeekAfterAnyFill`,
+`test_RW3_aSliverUnderAQuoteHoldsTheRolesOffAWeekNotAQuarter`). A start too soon reverts
+`RebalanceTooSoon(earliest)` with the caller's own earliest. The start stores `eta = now + REBALANCE_DELAY` and the mask, and emits `RebalanceStarted`. It is a plain call:
 it takes no ether and no data, reads no price and calls nothing on any component.
 
 `startRebalance(keepMask, prices, tolerance)` is the same start with a quote posted, for the owner or guardian only,
@@ -341,14 +425,17 @@ at are named at the fill, so nothing a holder would leave over is fixed at the s
 `eta + AUCTION_DURATION` (4 hours), the twenty halvings of its bar (section 3.5). Nothing on chain waits for a market to
 be open: an executor that cannot value a coin leaves it alone, naming its units unchanged, and trades the rest.
 
-`cancelRebalance()`, owner or guardian, clears a pending proposal. Cancelling during the notice or the auction holds
+`cancelRebalance()`, owner or guardian, clears a pending proposal, whichever it is when the call lands.
+`cancelRebalance(proposalId)` clears it only if it is still the index's latest proposal, and reverts `StaleProposal`
+otherwise: a Safe uses it, since its transaction lands long after its signers read the proposal, when the other role
+may already have replaced that one with a start of its own (CA-S02). Cancelling during the notice or the auction holds
 strangers off for `REBALANCE_DELAY` from the cancel (`restartAllowedAt`, R15); cancelling one that already expired only
 clears it, and the hold-off the expiry granted stands (VR-04). An auction that expires unfilled holds strangers off
 until `eta + AUCTION_DURATION + REBALANCE_DELAY`, so the owner and guardian get the first restart (XA-02, XA-16,
 CR-I02). `canStartRebalance()` is the whole timing condition for a stranger, false on an uninitialized clone (DA-22).
 The eight states this makes (uninitialized, interval, cooldown, open, notice, auction, expired and held, expired and
 open), every action from each and the exact second of every transition are tabulated in
-`design/2026-10-29-rebalance-state-machine.md`, and `test/WeightedHub.states.t.sol` takes every cell.
+`docs/design/rebalance-state-machine.md`, and `test/WeightedHub.states.t.sol` takes every cell.
 
 ### 3.2 The rule
 
@@ -434,8 +521,10 @@ holders. After the twenty halvings of the four-hour auction it ends at 476,837,1
 index. It never reaches zero. `currentBar()` returns it, and 0 outside an auction
 (`test_theBarHalvesEveryTwelveMinutesRoundedUp`).
 
-- It starts above what any trade offers. Only a fill that doubles every component, a gift, clears the first second:
-  `L(1) = 0.5333` (`test_onlyAGiftClearsTheBarsFirstSecond`).
+- It starts above what any trade offers. Only a gift clears the first second: a fill that adds about three quarters
+  or more to every component, and takes nothing. Doubling every one scores `L(1) = 0.5333`, and the score peaks a
+  little before that, `L(0.9) = 0.5412`, since it runs under the logarithm (`test_onlyAGiftClearsTheBarsFirstSecond`,
+  CA-S07).
 - It falls about 1.1% of itself per block, so the price of a fill is found to a hundredth of what is at stake.
 - **The bar is on the whole index's gain, not a premium on what is traded.** With the executor choosing the trade, a
   premium on the traded amount is won by the smallest trade: the first profitable fill would move a sliver, restart the
@@ -513,8 +602,9 @@ fifth of an index per fill. No contract can compare units with weights without a
 factory's owner approved create an index (section 2): the team creates on the weights, at the app's prices, and the app
 shows an index's coins against its weights (`docs/known-limitations.md`).
 
-**No price can be wrong.** No key signs a price and no feed reports one, so there is none to forge or to stop. What is
-left is a coin that turns worthless and free to mint, by its issuer or through a forged bridge message. The caps and
+**On units, no price can be wrong.** The rule reads none, so there is none to forge or to stop; Pyth's check beside
+it can only refuse (section 3.10). What is left is a coin that turns worthless and free to mint, by its issuer or
+through a forged bridge message. The caps and
 the gain rule bound what it draws: a coin at 10% of an index, at most 5.8% of the other components per fill, at most
 once every `MIN_REBALANCE_INTERVAL`, until the guardian keeps it (section 3.8).
 
@@ -608,6 +698,63 @@ top of the rule that needs no price. The keeper reads `rebalanceQuote()` and nam
 model's `quote_floor` (`test/vectors/settlement.py`) generates the 77 vectors under `quotes`, which
 `test/WeightedMath.vectors.t.sol` replays, and `test/WeightedHub.quote.t.sol` holds the hub's ten tests.
 
+### 3.10 Pyth's check
+
+The spec is `docs/design/pyth-check.md`. On a factory with an oracle, which the deploy script makes
+every factory on Ethereum, BNB Chain and Base, a fill that passed the caps, the bar and the quote is then valued at
+Pyth's prices, and so is its preview (`_checkValues`).
+
+**The values.** `PythPrices` is deployed by the factory's constructor with the chain's Pyth contract; it holds
+nothing and writes nothing. For each leg a fill moves it reads the factory's feed for the token (`priceFeedOf`: an
+id and a kind) and the decimals the listing recorded, then Pyth's stored price (`getPriceUnsafe`). A leg that keeps
+its units is not read. It refuses a leg with no feed (`NoPriceFeed`), a price published more than `MAX_PRICE_AGE`,
+15 seconds, ago (`StalePrice`; a creation's check allows `MAX_CREATION_PRICE_AGE`, 60), and a price that is not positive, no wider than its confidence, of an exponent
+outside the range, or that comes to a value of zero or of more than 128 bits (`UnusablePrice`). A value is one raw
+unit's worth in dollars times 1e36, leaning against the executor: Pyth's price plus its confidence, rounded up, for
+a leg that leaves, and the price less the confidence, rounded down, for one that arrives. The kind says what the
+feed prices: `Token`, one whole token; `Vault`, the asset of an ERC-4626 vault, one whole vault token being worth
+`convertToAssets` of it, read at the fill; `Multiplier`, one share, a token standing for `multiplier()` of them;
+`SharesOracle`, one share, an Ondo token standing for the sValue Ondo's `SyntheticSharesOracle` holds for it
+(`SHARES_ORACLE`, the factory's fifth constructor argument), read at the fill and refused unless settled: held, no
+corporate action scheduled or under way, unchanged for `MIN_SVALUE_AGE`, twenty minutes (`SValueUnavailable`,
+`docs/design/ondo-svalue.md`).
+
+**The check.** With `value_i` those values, `WeightedMath.oracleCheck` requires
+
+```
+Σ value_i · (v_i − u_i) over the legs that grow  ≥  ⌈ Σ value_i · (u_i − v_i) over those that shrink · (W − tol(e)) / W ⌉
+tol(e) = ⌊ MAX_ORACLE_TOLERANCE · e / AUCTION_DURATION ⌋,   MAX_ORACLE_TOLERANCE = 2%
+```
+
+or the fill reverts `BelowOracleValue(valueIn, floor)`. The tolerance is nothing at the auction's first second and
+2% at its last, so with the bar it makes a second Dutch auction: executors compete by filling earlier, at a smaller
+tolerance.
+
+**Why it can only refuse.** It runs after the rule on units and beside it: no path accepts on prices a fill the
+units refuse, and no issue, redeem or claim calls the reader. So a price that is stale, missing or unusable stops
+the fills that move that leg, which costs liveness and nothing else; and a price that is wrong or hostile can do no
+more than pass a fill the units already accept, whose bound is section 3.7's. The same holds for a feed the owner
+sets wrongly, behind `LISTING_DELAY` and the guardian's cancel.
+
+**What it buys.** On units alone a lone executor at the auction's last second keeps the index's whole distance from
+its weights. Under the check it keeps at most the tolerance of what it trades: 2% of the traded value at the last
+second, less before. It is also what lets a creation be held to its weights (`_checkOnWeights`, through
+`valuesWith`) and what bounds a change of weights, which opens a distance on purpose.
+
+**Who posts the price.** Pyth is a pull oracle: a price reaches its contract only when someone posts a signed
+update and pays its fee. A filler posts it in its own transaction, before it fills; the keeper's executor does so
+inside `fill` (`pythUpdate`), for exactly Pyth's fee. A filler chooses which update of the last fifteen seconds to
+post (HK-25), and
+anyone can post a newer one first, which can make a fill named at the edge of the tolerance revert.
+
+**What it adds to the trust model.** Pyth's publishers and signers become a party that can stop rebalancing, or, by
+signing a wrong price, lower a fill's bound to the units' alone. They cannot reach an issue, a redeem or a claim.
+
+`test/WeightedHub.oracle.t.sol` and `test/PythPrices.t.sol` hold the tests; the exact model's `oracle_floor`
+generates the 85 vectors under `oracles`, which `test/WeightedMath.vectors.t.sol` replays and the keeper's port
+replays too; the mutants are PY1 to PY28. At two hundred legs a fill under the check costs 12.7M gas on mock tokens
+(`test_theMostComponentsFillUnderPythsCheckInOneTransaction`).
+
 ## 4. Accounting
 
 Invariant, for every component, forever:
@@ -626,25 +773,26 @@ holder can redeem and no executor can use.
 
 **Fees.** Every conversion of shares into an amount of a component goes through one private helper,
 `_backing(shares, units, scale, rounding) = mulDiv(shares, units · scale, 1e36, rounding)`: issue, redeem, the
-settlement and its backing check. The fees built on 2026-10-14 are paid in shares. `issue(shares, to, referrer)`
+settlement and its backing check. The fees are paid in shares. `issue(shares, to, referrer)`
 pulls the basket for `gross = ceil(shares · 10,000 / (10,000 − fee))`, mints `shares` to `to` and `gross − shares` to
 the recipients; `redeem` burns `shares`, mints `floor(shares · fee / 10,000)` to the recipients and pays the backing of
 the rest, rounded down. `fee` is the creator's rate plus the platform's, both in `config()` and fixed at creation. The
 recipients come from the factory's `feeTerms(index, to)` at each call: the index's creator, who can hand the role on,
 and the platform recipient of the moment; a referrer named at mint takes `referralShareBps` of the platform's part,
 rounded down, unless the index is gated and the gate would refuse it as `to` (AU-1). A recipient that could not hold shares is replaced, so no fee can block a mint or an exit
-(`test/WeightedHub.fees.t.sol`). The streaming fee built on 2026-10-16 is the `scale`: a yearly rate, the creator's (0
+(`test/WeightedHub.fees.t.sol`). The streaming fee is the `scale`: a yearly rate, the creator's (0
 to 500 bps) plus the platform's (0 to 100 bps), accrues in shares before every issue, redeem and settlement, and on
 `accrueFees`, as `supply · f / (1 − f)` shares for `f` the rate times the elapsed part of a year, and the scale every
 share's units carry falls by `supply / (supply + minted)`, both rounded down. The previews and `components()` report
 at the scale an accrual now would leave (`pendingStreamingFee`). A settlement works on the recorded units and moves
 each leg's backing at the scale, and the units it writes carry the scale as the old ones did: no leg is rounded to fold
-it in, so a kept leg's units stay exact and nothing is stranded (XS-2; the fold it replaced left up to `supply / 1e18`
-raw units of each leg owned by no share at every fill). The scale therefore only shrinks; an accrual that would shrink
+it in, so a kept leg's units stay exact and nothing is stranded (XS-2; folding it in would leave up to
+`supply / 1e18` raw units of each leg owned by no share at every fill). The scale therefore only shrinks; an accrual
+that would shrink
 it to zero, which only a second lifetime's gap could ask, is not charged. Its integer floor leaves at most `supply ·
 units / 1e36` raw units of a leg per accrual, a part in 1e18. Every accrual restarts the clock, so a dust supply cannot
 carry idle time over to the next minter (XS-1). The settlement arithmetic itself lives in
-`WeightedMath`, a stateless contract the factory deploys with the implementation and the hub reaches by STATICCALL
+`WeightedMath`, a stateless contract deployed before the factory, which the hub reaches by STATICCALL
 through its `MATH` immutable, because the scale pushed the hub past EIP-170; the hub still reads every balance, and the
 math holds nothing and reads nothing. No price enters either.
 
@@ -652,32 +800,32 @@ math holds nothing and reads nothing. No price enters either.
 
 `docs/integration.md` walks through each flow for an app. In short:
 
-- **Create.** A wallet the owner approved picks 2 to 100 listed coins and their percentages; the app derives the units
-  at current prices and shows the address and the index's wrapped share of value, and the wallet creates. A partner
+- **Create.** A wallet the owner approved picks 2 to 200 listed coins and their percentages; the app derives the units
+  at Pyth's prices and shows the address and the index's wrapped share of value, and the wallet creates, with its
+  first issue in the same call up to about 125 components (`createAndIssue`), or with `createIndex` and an issue
+  afterwards. A partner
   asks the team, which creates the index and hands on its creator role, fee included (`transferCreator`,
   `acceptCreator`).
 - **Mint and burn** through the zap (up to about 35 components, on coins with a route), through the basket builder
-  over several transactions (any size, on coins with a route, the rest deposited in kind), in kind (up to 100), or at
+  over several transactions (any size, on coins with a route, the rest deposited in kind), in kind (up to 200), or at
   a limit through `MintRequests`, filled by anyone who holds or can issue the shares.
 - **Rebalance.** At most once per the index's interval, 7 to 91 days: anyone starts, a plain call, or the owner or
   guardian starts with a quote (section 3.9); 2 hours of notice; then a 4-hour auction in which an executor names the
   units from its own prices, previews the fill with `previewRebalance(newUnits)`, and settles once its gain clears the
   bar, preferably through the bounded overload. The bot in `keeper/` is one such executor and holds no role; anyone may
   run one. Its bidding, and any other honest executor's, is what makes the price fair (section 3.5). It prices its own
-  trades off chain, from Pyth's prices served by Hermes, which needs an API key since 2026-08-26; no contract waits on
-  that.
+  trades off chain, from Pyth's prices served by Hermes, which needs an API key, and posts Pyth's update with each
+  fill (section 3.10).
 - **Restock.** A coin no Ethereum pool sells, most Wormhole copies among them, reaches an executor's fill only from its
-  stock. Beside the keeper runs its restock service (`keeper/restock.mjs`, since 2026-10-19), under a key of its own,
+  stock. Beside the keeper runs its restock service (`keeper/restock.mjs`), under a key of its own,
   the treasury, which the executor's owner pins: it buys such a copy on its home chain's DEX, bridges it into the
   executor through Wormhole's Token Bridge (`redeemBridged`), and bridges spare stock back out (`bridgeOut`), only to
   the home-chain wallets the executor's owner pins, to sell there; USDC for the buys moves by CCTP. What arrives earns
   the keeper stock allowance only within the restock allowance the executor's owner sets per coin, so restocking never
   raises what a stolen keeper key can deliver (RS-1), and the treasury holds at most the owner's figure of USDC off the
-  float (RS-2). It was built for the eight EVM-homed coins with a market, XRP, ADA, LTC, DOT and BNB on BNB Chain, AVAX,
-  OP and AERO, and serves the last three by default since the first five left Ethereum's list on 2026-11-13; ATOM has
-  none, and JUP, PYTH, SUI, APT and ALGO wait for their chains' adapters (`keeper/README.md`,
-  `audit/2026-10-25-restock-review.md`). None of it is a protocol contract or role: the hub sees an executor that
-  delivers.
+  float (RS-2). It serves EVM home chains alone (`audits/retired/non-evm-restock.md`), and of the copies on
+  Ethereum's list it serves AVAX by default (`keeper/README.md`, `audits/internal/restock-review-rs.md`). None of it
+  is a protocol contract or role: the hub sees an executor that delivers.
 - **Leaving.** Issue and redeem stay open through notice and auction. Once the auction is live an executor can order
   its fill ahead of a public exit, and shares issued while a rebalance is pending share its haircut (RT-02).
 - **Frozen component.** `redeemSkipping` and `claim` for holders, the keep mask for rebalances.
@@ -688,75 +836,91 @@ math holds nothing and reads nothing. No price enters either.
 **In-kind core, swap layer on top.** Splitting custody (the hub) from convenience (the zap) keeps the part that holds
 funds small and admin-free, and lets the swap layer be replaced without touching any index.
 
-**Nothing reads a price.** v3 read Chainlink feeds to shape targets and to gate each settlement, which made a stale
-feed a halt and could only approximate a bound at market prices (CR-L06). v4 Stage A removed every price and held a
-market-cap rule by keeping units proportional to supplies the owner maintained. v5 brought one back for a creator's
-percentages, which are shares of value: its settlement read Pyth, and three of Pyth's five signing keys could then
-take up to a fifth of each component per fill. Since 2026-11-10 (the owner's call: "we have to cut off oracles
-somehow and keep rebalance safely") the executor names the units and the index checks a gain in units (section 3). So
-no feed and no price signer is trusted, and nobody's keys stand between the holders and their coins. In `src/` and
-`abi/`, `test_V5I4_noContractNamesPyth` fails if any file names Pyth's contract, parse, getters, pushes or price ids
-(V5-I4), and `test_A713_noContractReadsAPrice` if any file names a Chainlink feed, a pool's price or any other common
-price source (A7-13). The cost is the one section 3.5 states: a fair price needs an executor bidding, where a price
-feed gave one whoever filled. Do not bring a price back into a contract, as a check, a bound or a hint: the design's
-safety is that it needs none. The one exception is the quote the owner or guardian may post with a start (section
-3.9): a governance input no contract fetches, which can only refuse a fill the bar accepts. The rule holds without it.
+**A price can only refuse.** A price that accepts a fill makes whoever signs it a party over the funds: a settlement
+read from feeds halts on a stale one and only approximates a bound at market prices (CR-L06), and when v5's
+settlement read Pyth, three of Pyth's five signing keys could take up to a fifth of each component per fill. So the
+executor names the units and the index checks a gain in units (section 3): the settlement's safety rests on no feed
+and no price signer, and nobody's keys stand between the holders and their coins, since no issue, redeem or claim
+reads a price. On units alone a fair price needs an executor bidding, and a lone executor keeps the index's whole
+distance from its weights (section 3.5). So a fill the units accept must also hold at Pyth's prices within a
+tolerance (section 3.10, `docs/design/pyth-check.md`), the one form of oracle that keeps the rule. The price is never
+the reason a fill is accepted, so a price that fails, or lies, leaves the units' bound and takes nothing more. In
+`src/` and `abi/`,
+`test_A713_noContractReadsAPrice` fails if any file but the price reader's names a Chainlink feed, a pool's price or
+any other common price source (A7-13), and `test_onlyThePriceReaderReadsPyth` holds Pyth to `PythPrices`. Do not let
+a price accept a fill, size an amount, or reach an issue, a redeem or a claim. The quote the owner or guardian may
+post with a start (section 3.9) follows the same rule: a governance input no contract fetches, which can only refuse
+a fill the bar accepts.
 
-**Fixed weights and constituents.** Nobody, the creator included, changes them; new weights or a new list mean a new
-index. An index holds its own units and weights from creation, so no relisting or delisting reaches it, and its address
-commits to every component's token, units and weight and to its config, so a front-runner's copy lands at its own
-address (LR-05).
+**Fixed constituents, weights behind a notice.** Nobody, the creator included, changes an index's coins; a new list
+means a new index. The weights change only when the creator proposes new ones and 7 days of notice pass (section 2),
+and the units follow at the next rebalance. An index holds its own units and weights from creation, so no relisting
+or delisting reaches it, and its address commits to every component's token, units and weight and to its config, so a
+front-runner's copy lands at its own address (LR-05).
 
-**Only approved wallets create an index.** No contract reads a price, so none can compare the units a creator names with
-its weights. An index created off its weights carries that distance from its first day and loses it to whoever fills its
-auctions: on the exact model, one last-second fill takes 15.5% of a 50/50 index created 90/10 by value, and at the worst
-a fifth of an index per fill. So `createIndex` reverts `CreatorNotApproved` for any wallet the factory's owner has not
-approved (`setApprovedCreator`), and the team creates on the weights at the app's prices. The approval is read at
+**An index is created on its weights, by an approved wallet, and creating it can buy it.** On units alone an index
+created off its weights carries that distance from its first day and loses it to whoever fills its auctions: on the
+exact model, one last-second fill takes 15.5% of a 50/50 index created 90/10 by value, and at the worst a fifth of an
+index per fill. So a creation, on a factory with an oracle, reverts `OffWeights` unless every
+component's units lie within 5% of its weight at Pyth's prices, and `createIndex` and `createAndIssue` also revert
+`CreatorNotApproved` for any wallet the factory's owner has not approved (`setApprovedCreator`): the gate stays
+beside the check by the owner's decision. `createAndIssue` issues the index's first shares in its initializer, the
+ordinary issue with the creator as payer, so creating an index is buying it and no index is left that its creator
+could not back; it does not keep an index from being emptied later, since every holder can redeem. The approval is read at
 creation and nowhere else: it gates no issue, redeem, rebalance or handoff of the creator role, it reaches no index that
 exists, and it gives no power over funds.
 
-**One deployment, the missing coins wrapped.** About 71 of the top-300 candidates exist on Ethereum through their
+**On Ethereum, the missing coins wrapped.** About 71 of the top-300 candidates exist on Ethereum through their
 issuer; held on BNB Chain instead, the same universe would have wrapped 71 legs. Wormhole is the one bridge accepted for
 wrapping: anyone attests a coin on its home chain and the bridge deploys the copy on Ethereum. The cost is a new trusted
-party over every wrapped leg (section 7). The list (`script/Listings.sol`) stood at 91, 15 of them Wormhole copies,
-until 2026-11-13, when the six copies wrapped from BNB Chain (XRP, ADA, LTC, DOT, ATOM, BNB) left it for BNB Chain's
-own deployment, which holds those coins in kind, and stood at 85, nine of them Wormhole copies, until 2026-11-18, when
-the copies of JUP, PYTH, SUI, APT and ALGO left it: no Ethereum pool trades them, so a rebalance could buy them only
-from stock bridged in from Solana, Sui, Aptos or Algorand, and the restock that would bridge it has never run
-(`design/2026-11-18-bridged-coins-in-a-rebalance.md`). It stands at 80, four of them Wormhole copies: SOL's, which a
-Uniswap pool trades, and AVAX's, OP's and AERO's, which the restock serves from their EVM home chains. The fifteen were:
-SOL, listed first, 12 added on 2026-10-10, and BNB and SUI, whose copies the count of that day missed, added on
-2026-10-18; a 13th of 2026-10-10, DOGE's, left on 2026-10-14 on the owner's call, since Pyth, which then priced the
-rebalance, prices DOGE and not the copy. SAND and RLB left on 2026-10-18 after the source reading, and on 2026-10-19 BTT
-and SEI's copy, added with BNB's and SUI's, their bridges closed or closing (RX-28, RX-32), the owner's calls; ZK is
-tiered Bridged, ZKsync's bridge copy of a token issued on ZKsync Era (RX-19). Tether Gold and the 17 Ondo stocks do not
-count toward the hundred, so 62 coins of the top 300 are listed; 26 more copies await an attestation on Wormhole's
-Portal, each of which, without an Ethereum pool or a restock that has run from its home chain, would meet the same bar
-as the five, and FIL's waits for a reading of its Binance-Peg source (`design/2026-10-10-one-index-wormhole-legs.md`, section
-2a, and `design/2026-10-18-pre-mainnet-readings.md`, section 3).
+party over every wrapped leg (section 7). Two Wormhole copies are listed (`script/Listings.sol`): SOL's, which a
+Uniswap pool trades, and AVAX's, which the restock serves from its EVM home chain. A copy no Ethereum pool trades can
+reach a rebalance only from stock bridged in, so a copy whose restock does not run is not listed: the copies of JUP,
+PYTH, SUI, APT and ALGO, homed off the EVM, are off the list (`docs/design/bridged-coins.md`), and so are OP's, which
+the restock found no route to buy on Optimism, and AERO's, a copy of Aerodrome's AERO, which Aero replaced. The coins
+BNB Chain's deployment holds in kind (XRP, ADA, LTC, DOT, ATOM and BNB) are held there and not as copies. DOGE's copy
+is off the list too, since Pyth prices DOGE and not the copy; so are BTT's and SEI's, their bridges closed or closing
+(RX-28, RX-32), and SAND and RLB after the source reading. ZK is tiered Bridged, ZKsync's bridge copy of a token
+issued on ZKsync Era (RX-19). Tether Gold and the 353 Ondo stocks and ETFs do not count toward the hundred, so 60
+coins of the top 300 are listed; 26 more copies await an attestation through Wormhole's SDK, each of which, without
+an Ethereum pool, would meet the same bar, the restock serving EVM home chains alone
+(`audits/retired/non-evm-restock.md`), and FIL's waits for a reading of its Binance-Peg source
+(`docs/design/wormhole-legs.md`, section 2a, and `docs/design/pre-mainnet-readings.md`, section 3).
 
-**Up to 100 components.** Every path of the hub and the factory fits EIP-7825's per-transaction cap of 2^24 gas at
-100, measured on mock tokens with every account cold (`test_aHundredComponentsFitOneTransaction`):
+**Up to 200 components**, as many as the contracts carry.
+Every path of the hub and the factory fits EIP-7825's per-transaction cap of 2^24 gas, 16.78M, at 200, measured on mock
+tokens with every account cold (`test_theMostComponentsFitOneTransaction`, which lets no path pass five sixths of the
+cap):
 
-| Operation at 100 components | Gas |
-|---|---|
-| `createIndex` | about 5.3M |
-| `issue` | about 4.5M |
-| `startRebalance` | about 94k |
-| `startRebalance` with a quote, which stores a price per component | about 1.4M |
-| `executeRebalance`, an executor that already holds the bought tokens | about 4.2M |
-| the same fill under a quote | about 4.4M |
-| `redeem` | about 3.7M |
-| `redeemSkipping`, every component skipped | about 5.1M |
-| `claim` | about 53k |
+| Operation | Gas at 100 components | at 200 |
+|---|---|---|
+| `createIndex` | about 5.3M | about 13.3M |
+| `issue` | about 4.5M | about 8.9M |
+| `startRebalance` with a quote, which stores a price per component | about 1.4M | about 2.7M |
+| `executeRebalance` under that quote, an executor that already holds the bought tokens | about 4.4M | about 8.8M |
+| `redeem` | about 3.7M | about 7.5M |
+| `redeemSkipping`, every component skipped | about 5.1M | about 10.2M |
+| `claim` | about 53k | about 53k |
 
-The hub is 21,341 bytes, 3,235 under EIP-170. Real tokens transfer dearer than mocks. The fork suite that issues,
-rebalances and redeems every coin forge-std can fund in one index (`test/fork/WeightedHub.fork.t.sol`) is rewritten
-for this rebalance and has not run on it yet, so no figure on real tokens is recorded for this build; the Pyth-priced
-build's are in section 11.
+Creation bounds the count: it compares every pair of components, so its gas grows with the square of the count
+(18.5M at 250, 56M at 500), and it passes the cap near 234. The limit is 200 and not 234 so that a path stays open
+on an index that already exists when a token transfers dearer than a mock or gas is repriced. Under EIP-8037, which
+Sepolia runs, a new storage slot costs 97,920 of state gas: `redeemSkipping` of 100
+with every component skipped, which writes two slots a component, needed a limit of 23.1M there (measured at commit
+`20ed37a`, not merged), so about 46M at 200, three quarters of Ethereum's block of 60M. A keep mask is one word, so no
+build of these contracts holds more than 256. More than that, 500
+or 1,000, needs creation, issue, redeem and the fill each spread over several transactions: another design.
+
+Real tokens transfer dearer than mocks. On a fork of Ethereum at block 26,464,080, with 200 of the 414 listed coins
+in one index (the first 200 a test can fund, Ondo's stocks and ETFs among them), `issue` in kind cost 14.7M, a fill
+14.2M and `redeem` 9.6M, every account cold
+(`testFork_everyCoinIssuesRebalancesAndRedeems`, which requires both to fit a transaction). An index's creator
+simulates its own `issue` first: one too wide to issue with its real tokens can be created and never minted. The hub
+is 22,872 bytes, 1,704 under EIP-170.
 
 A fill that swaps inside the call costs an estimated 150k a leg on top (v4's hybrid design, section 9.1), so swaps
-inside a 100-leg fill do not fit, and a fill that wide needs an executor with inventory. The zap stops near 35
+inside a 100-leg fill do not fit, still less a 200-leg one, and a fill that wide needs an executor with inventory, or
+names new units for some of the legs and leaves the rest at theirs. The zap stops near 35
 components (section 2).
 
 ## 7. Security model
@@ -764,20 +928,24 @@ components (section 2).
 - **Trust.**
   - The factory owner (a Safe), who proposes listings and guardian changes behind public delays, approves which wallets
     may create an index, at once, and hands over ownership in two steps with no delay; the guardian, who can cancel
-    listings and rebalances, delist, start a rebalance with a keep mask, with a quote or before strangers may, and
+    listings and rebalances, delist, start a rebalance with a keep mask, with a quote or before strangers may, pause
+    the minting of new shares, which only the owner resumes, and
     cancel its own removal but not its replacement. The guardian is the guardian's Safe itself.
-  - No price feed and no price signer. Nothing reads a price, so no publisher, signing key or oracle's governance is
-    trusted with anything, Pyth's included. What took their place is not a party but a condition on the price: a fill
-    is safe whoever makes it (section 3.3), and its price is fair when an honest executor bids, the team's keeper
-    first. A lone executor takes the index's distance from its weights out of the holders' value: 0.3 to 0.6% of an
-    index in an ordinary week, 5.0% after one coin of two doubled, and up to a fifth per fill of an index its creator
-    made off its weights (section 3.7), which is why only wallets the owner approved create one. The one price a
-    contract takes is a quote the owner or guardian may post with a start, and it can only refuse a fill: a wrong,
+  - Pyth, for one thing only: refusing a fill. No issue, redeem or claim reads a price, so no publisher, signing key
+    or oracle's governance can block an exit or misprice a mint. A fill is safe on units whoever makes it (section
+    3.3); Pyth's check then caps what a lone executor keeps at the tolerance of what it trades, 2% at the auction's
+    last second (section 3.10). If Pyth's prices are stale or missing, the fills that move the affected legs stop,
+    and with them rebalancing; if they are wrong, or its signers hostile, a fill falls back to the units' bound: the
+    index's distance from its weights, 0.3 to 0.6% of an index in an ordinary week, 5.0% after one coin of two
+    doubled (section 3.7). A creation is held to its weights at the same prices, and the owner sets each token's
+    feed, behind the listing delay and the guardian's cancel. The other price a
+    contract takes is a quote the owner or guardian may post with a start, and it too can only refuse a fill: a wrong,
     stale or hostile one stops its own proposal, which a cancel already can, and gives a compromised role nothing over
-    funds; what it adds to a cancel is that its poster can settle a sliver under it and use up the index's interval
-    (RW-3). With one posted, a lone executor keeps at most its tolerance of what it trades (section 3.9).
+    funds; what it adds to a cancel is that its poster can settle a sliver under it, which uses up the index's
+    interval for strangers, while the owner or the guardian may start again a week later (RW-3). With one posted, a
+    lone executor keeps at most its tolerance of what it trades (section 3.9).
   - Wormhole's guardians, for the wrapped legs: a quorum (13 of 19) can forge a bridge message, minting unbacked copies
-    or upgrading every wrapped token's code at once, with no timelock. Since April 2026, for the chains on delegated
+    or upgrading every wrapped token's code at once, with no timelock. For the chains on delegated
     guardian sets (BNB Chain, Kaia, NEAR, Sui, Arbitrum, Monad), five of seven named guardians suffice to mint, so most
     listed copies rest on five keys (RX-6). The chain a copy comes from is a party too: a copy whose home side closes
     its bridge redeems for nothing (RX-28, RX-32). Their reach is the whole of every wrapped leg, and through a fill
@@ -791,27 +959,30 @@ components (section 2).
 - **What can move a basket's shape or value.** Only a fill: units move to what its executor names, each component
   keeping at least `1 − MAX_TURNOVER` of its units and at most `1 + MAX_GROWTH` of them (V5-M2, RX-15), the weighted
   product of the units never falling, at most once every `MIN_REBALANCE_INTERVAL`. On its weights an index loses
-  nothing to a fill; off them a lone executor keeps at most the distance from the weights (section 3.7). Weights and
-  constituents are fixed at creation. Rounding goes the holders' way everywhere.
+  nothing to a fill; off them a lone executor keeps at most the distance from the weights (section 3.7), and under
+  Pyth's check at most the tolerance of what it trades (section 3.10). Constituents are
+  fixed at creation; a change of weights waits out a notice of 7 days and moves no coin itself. Rounding goes the holders' way everywhere.
 - **The guardian's stalls.** `cancelRebalance` has no window and no rate limit, so a hostile or compromised guardian can
   cancel every auction at its last second until the owner replaces it, after `GUARDIAN_DELAY`, which the guardian cannot
   cancel: a trust assumption of the role (DA-12). A quote no fill can hold stalls its own proposal in the same way.
   A keep-mask rebalance that leaves a pair of small components moving can also be filled with a gift
   to that sliver, and its fill restarts `MIN_REBALANCE_INTERVAL` for a start without a mask rather than the index's
   interval (XS-3), so the stall can outlast the replacement by up to a week, and by a keep-mask auction the outgoing
-  guardian left pending, `REBALANCE_DELAY` + `AUCTION_DURATION` more (RX-44). A start with a quote and no mask is the
-  longer stall: its sliver fill restarts the index's whole interval, up to 91 days, which the owner and the new
-  guardian wait out too (RW-3). While a replacement is pending the owner
+  guardian left pending, `REBALANCE_DELAY` + `AUCTION_DURATION` more (RX-44). A start with a quote and no mask stalls
+  no longer than that: its sliver fill restarts the index's whole interval for strangers, and the owner and the new
+  guardian may start again `MIN_REBALANCE_INTERVAL` after it (RW-3). While a replacement is pending the owner
   cancels the outgoing guardian's keep-mask proposals, within the 2 hours of `REBALANCE_DELAY`, and monitors watch
   `RebalanceStarted` with a non-zero `keepMask` (RT-07). Neither stall moves funds; holders redeem throughout.
-- **Reentrancy.** `nonReentrant` on the hub's eleven entry points that mint, burn, pay, accrue or rebalance
-  (`test_R11_everyEntryPointIsGuardedDuringTheCallback` re-enters ten of them; the quoted start shares the guard), on
-  `createIndex`, on the zap's seven (CR-I26), on every entry point of `BasketBuilder` and on every entry point of
+- **Reentrancy.** `nonReentrant` on the hub's thirteen entry points that mint, burn, pay, accrue or rebalance
+  (`test_R11_everyEntryPointIsGuardedDuringTheCallback` re-enters every one of them), on its two that only the
+  factory calls, `setWeights` and `initialize`, the second because it may issue the index's first shares
+  (`test_theFirstIssueIsUnderTheGuard`), on
+  `createIndex`, `createAndIssue` and `executeWeights`, on the zap's seven (CR-I26), on every entry point of `BasketBuilder` and on every entry point of
   `MintRequests`. The new units, the nonce and the cleared proposal are written before any rebalance transfer, and the
   callback goes only to `msg.sender`. Wake's reentrancy detector does not model the guard; its documented suppressions
   are the `redeem` call in `IndexZap._burnBasket`, the `permit` call in `IndexZap._tryPermit`, the `redeem` call in
   `BasketBuilder.redeem`, the clone's `initialize` call in `WeightedIndexFactory._initializeIndex`, and the executor
-  callback in `WeightedHub`. Since RW-6 there is a sixth, a block around the `accrueFees` call in
+  callback in `WeightedHub`. RW-6 adds a sixth, a block around the `accrueFees` call in
   `WeightedIndexFactory.acceptCreator`: that function has no guard, and is safe because the callee is the factory's
   own clone, which calls no token and no account there.
   Inside `issue`, `redeem` and `executeRebalance`, supply, units and balances change at
@@ -827,16 +998,18 @@ components (section 2).
   token whose ledger a second address also writes (RW-10). Stables are mint currencies, not components.
   The admission check is
   `script/CheckToken.s.sol`, whose default WBT rule refuses a token that can both blacklist a holder and destroy its
-  balance; on 2026-10-10 the owner admitted Tether Gold and Ondo's stocks over that rule.
+  balance; the owner admitted Tether Gold and Ondo's stocks over that rule.
 - **Arithmetic.** Units below `2^96` (`SafeCast`), and at most `maxUnitsOf(token)`, never above `MAX_UNITS`, at
   creation. A leg's change `x` lies in `[−0.2, 1]` at 1e18 once the caps hold, so the score's numerator stays below
-  7e73, inside `int256`, and a hundred weighted scores fit with room to spare. Every product of shares and units, and
+  7e73, inside `int256`, and two hundred weighted scores fit with room to spare. Every product of shares and units, and
   each cap, goes through 512-bit `mulDiv`. Units beyond `uint96` stop a fill rather than wrap (V5-L3, RX-61).
 - **Operations.** `script/DeployWeighted.s.sol` deploys the factory (and through it the math and the hub's
   implementation), the zap, the basket builder and `MintRequests`. `OWNER` and `GUARDIAN`, the guardian's Safe, are
-  required and must differ. On chain 1 the router, WETH and the stablecoins come from `script/MainnetAddresses.sol` and
-  nothing else is accepted (`MainnetOverride`), and the script broadcasts only the build its four release hashes
-  record (CF-5). There the owner must be a contract that is not an EIP-7702 delegated account, and a Safe must need at
+  required and must differ. On chains 1, 56 and 8453 the router, the stablecoins, Pyth's contract and Ondo's
+  `SyntheticSharesOracle` come from that chain's address book (`script/MainnetAddresses.sol`,
+  `script/BnbChainAddresses.sol`, `script/BaseAddresses.sol`; Base has no Ondo oracle) and nothing else is accepted
+  (`MainnetOverride`), and the script broadcasts only the build its four release hashes record (CF-5). There the owner
+  must be a contract that is not an EIP-7702 delegated account, and a Safe must need at
   least three signatures and have no enabled module; neither the guardian nor the broadcasting key may be one of its
   signers (SA-06). Neither role may be the router, the PoolManager, or any token or mint currency in the chain's
   address book (XA-39, CR-I37).
@@ -849,13 +1022,16 @@ components (section 2).
 
 - **Unit and fuzz tests per contract:** `test/WeightedHub.t.sol`, `test/WeightedHub.fees.t.sol`,
   `test/WeightedHub.rebalance.t.sol` (exact settlements, the bar, the unit caps, the bound on and off the weights, keep
-  masks, reentrancy, a hundred components), `test/WeightedHub.states.t.sol` (the rebalance state machine's transition
+  masks, reentrancy, two hundred components), `test/WeightedHub.states.t.sol` (the rebalance state machine's transition
   matrix, section 3.1), `test/WeightedHub.quote.t.sol` (the quote of section 3.9: who may post one, what it must
   contain, the cap it puts on a lone executor, that it only refuses, that a wrong one stops its own proposal and nothing
-  else, and that it ends with its proposal), `test/WeightedMath.vectors.t.sol` (431 settlements and 77 quote checks
+  else, and that it ends with its proposal), `test/WeightedHub.oracle.t.sol` and `test/PythPrices.t.sol` (Pyth's check
+  of section 3.10: the values and what the reader refuses, the tolerance, that the check only refuses, a creation
+  held to its weights and with its first issue, the changes of weights),
+  `test/WeightedMath.vectors.t.sol` (431 settlements, 77 quote checks and 85 oracle checks
   replayed against the exact-rational model of `test/vectors/settlement.py`, written from the spec;
   `test/vectors/proofs.py` checks the safety proof's chain in exact rationals with the standard library alone, section
-  3.3; the method is that of `design/2026-10-29-settlement-vectors.md`), `test/WeightedMath.halmos.t.sol` (the integer
+  3.3; the method is that of `docs/design/settlement-vectors.md`), `test/WeightedMath.halmos.t.sol` (the integer
   properties stated for Halmos, which has not been run on it), `test/WeightedIndexFactory.t.sol`, `test/IndexZap.t.sol`,
   `test/WeightedZap.t.sol`, `test/BasketBuilder.t.sol`, `test/MintRequests.t.sol`, `test/Security.t.sol`, the scripts'
   suites, `test/Repo.t.sol` and the mocks' own tests in `test/mocks/Mocks.t.sol`. `MockWeightedExecutor` fills honestly,
@@ -865,19 +1041,20 @@ components (section 2).
   asserts that every component stays backed including open claims, supply and claims add up, the nonce counts fills, a
   short fill never settles, `canStartRebalance` is right, a fill settles exactly its preview, an accepted fill's gain is
   at least its bar and the bar is never zero (`gainBroken`), no fill sends out more than `MAX_TURNOVER` of a component's
-  units (`turnoverBroken`) or more than doubles them (`growthBroken`), and the weights never change.
+  units (`turnoverBroken`) or more than doubles them (`growthBroken`), and the weights never change, since none of its actions proposes new ones.
   `test/MintRequests.invariant.t.sol` is described in section 2.
 - **Security regression tests,** named after their ids, as `CLAUDE.md` gate 6 requires. v5's own that still bind:
-  V5-M2, V5-L2, V5-L3 and V5-I4, re-targeted to the oracle-free rule; V5-M1, V5-L1, V5R-1 and V5-I1 went with Pyth;
+  V5-M2, V5-L2 and V5-L3, re-targeted to the rule on units; V5-M1, V5-L1, V5R-1 and V5-I1 went with the Pyth-priced
+  settlement, and V5-I4 with Pyth's return as a check (`audits/retired/pyth-check.md`);
   V5-I2, V5-I3 and V5R-I2 are recorded by documentation, and V5R-I1 is retired with Stage B. The older ids that bind
   (R04, R08, R10, R11, R14 to R16, R21, DA-13, DA-14, DA-17, DA-22, SA-07, CR-I01, RT-01, RT-21 and others) are in the
-  weighted suites, as `audit/2026-10-06-v4-retirement.md` and `audit/2026-11-10-oracle-retirement.md` list. The newest
-  regression tests are those of the red team of 2026-11-14 (RW-1, RW-2 and RW-6 to RW-10), which
-  `audit/2026-11-14-red-team.md` lists with their mutants. Seven
-  records say which ids lost their test when a mechanism went: `audit/2026-09-22-v3-retirement.md`,
-  `audit/2026-09-30-v4-stage-a-retirement.md`, `audit/2026-10-06-v4-retirement.md`,
-  `audit/2026-10-07-stage-b-retirement.md`, `audit/2026-10-14-thorchain-retirement.md`,
-  `audit/2026-10-14-pancakeswap-retirement.md` and `audit/2026-11-10-oracle-retirement.md`. A retired id's test is
+  weighted suites, as `audits/retired/v4.md` and `audits/retired/oracle.md` list. The red team of the oracle-free
+  mechanism's (RW-1, RW-2 and RW-6 to RW-10) are listed with their mutants in `audits/internal/red-team-rw.md`. The
+  records under `audits/retired/` say which ids lost their test when a mechanism went: `audits/retired/v3.md`,
+  `audits/retired/v4-stage-a.md`, `audits/retired/v4.md`,
+  `audits/retired/stage-b.md`, `audits/retired/thorchain.md`,
+  `audits/retired/pancakeswap-zap-venue.md`, `audits/retired/oracle.md`, `audits/retired/zap-ether.md`,
+  `audits/retired/pyth-check.md` and `audits/retired/non-evm-restock.md`. A retired id's test is
   never restored against the new design.
 - **The mutation gate.** `test/mutants/mutants.json` holds the mutants as exact edits, the arithmetic's and the hub's
   among them (each rounding flipped, each cap dropped, the bar's rounding, start and half-life, the score's terms),
@@ -889,12 +1066,12 @@ components (section 2).
   `MintRequests` on the real stablecoins and the deploy script against real Safes (`Security.fork`); and the hub:
   every coin forge-std can fund issued, rebalanced and redeemed in one index, the liquid ones through the zap and a
   Uniswap-routed executor, and four drills, a WBTC pause, an executor that leaves a coin alone, a fill that reaches
-  for more than a fifth of a leg and an auction nobody fills (`WeightedHub.fork`). The suites are rewritten for the
-  oracle-free rebalance; `CLAUDE.md` records their run in CI on 2026-11-10, and they have not run on the changes of
-  2026-11-14 (RW-1, RW-2, RW-8, RW-9 and RW-10): they wait for an archive RPC.
+  for more than a fifth of a leg and an auction nobody fills (`WeightedHub.fork`). BNB Chain and Base have suites of
+  their own (`BnbChainAddresses.fork`, `BaseAddresses.fork`, `BaseStocks.fork`). [CHANGELOG.md](CHANGELOG.md)
+  records each run.
 - **Gates,** enforced in CI: the submodule check against `foundry.lock`, the check that no committed file names a path
   on its author's machine, `forge fmt --check`, `forge build --deny warnings`, `forge lint -D notes`, the ABI diff of
-  the five committed ABIs, `forge test` (fork suites required on pushes to `main` and on pull requests into it from this
+  the six committed ABIs, `forge test` (fork suites required on pushes to `main` and on pull requests into it from this
   repository), the keeper's executor and bot suites, 100% coverage on every file, the Wake detectors clean on `src/`,
   and the mutation gate, the workflow pinned whole by `test/Repo.t.sol` (A7-12). Aderyn reports nothing on `src/`
   (`aderyn.toml` gives each excluded rule its reason); CI does not run it yet.
@@ -915,69 +1092,57 @@ components (section 2).
 | Uniswap V3 factory (`CheckToken`'s depth report) | `0x1F98431c8aD98523631AE4a59f267346ea31F984` |
 | Uniswap QuoterV2 (fork tests) | `0x61fFE014bA17989E743c5F6cB21bF9697530B21e` |
 | Wormhole token bridge (Portal) | `0x3ee18B2214AFF97000D974cf647E7C347E8fa585` |
-| WeightedIndexFactory / WeightedHub implementation / WeightedMath / IndexZap / BasketBuilder / MintRequests | not deployed |
+| Pyth | `0x4305FB66699C3B2702D4d05CF36551390A4c69C6` |
+| Ondo `SyntheticSharesOracle` | `0x9BC39DB6fbB44B91a48b8D5A6C208B82B1741bE6` |
+| WeightedIndexFactory / WeightedHub implementation / WeightedMath / PythPrices / IndexZap / BasketBuilder / MintRequests | not deployed |
 
 Every listed token, with the source of each Wormhole copy, is in `script/MainnetAddresses.sol`, and the list with each
-token's tier in `script/Listings.sol`. Only the tokens and the router are called by the protocol's contracts, and no
-oracle is: the V3 factory and the quoter serve scripts and tests, and no protocol contract calls the Wormhole bridge.
-The keeper's executor, which holds no role, calls its Token Bridge to restock (section 5). `script/PythIds.sol` is
-the keeper's catalogue of each coin's Pyth id, for the prices it values its own trades at; no contract or script
-reads it.
+token's tier in `script/Listings.sol`. The protocol's contracts call the tokens and the router, and, through
+`PythPrices` alone, Pyth's contract and Ondo's oracle: the V3 factory and the quoter serve scripts and tests, and no
+protocol contract calls the Wormhole bridge.
+The keeper's executor, which holds no role, calls its Token Bridge to restock (section 5). `script/PythIds.sol` holds
+each Ethereum coin's Pyth id: `script/PriceFeeds.sol` takes from it the feeds `ConfigureWeighted` proposes to the
+factory, and the keeper's catalogue (`keeper/bot/price-ids.mjs`) holds the same ids for the prices it values its own
+trades at.
 
 ## 10. Roadmap
 
-**What remains before a mainnet**, in the order of `design/2026-10-10-one-index-wormhole-legs.md`, section 5, as
-`design/2026-10-18-pre-mainnet-readings.md`, section 7, and the spec, section 9, update it: the 26 Wormhole copies still
-to attest, and FIL's source reading, each then through `CheckToken` and onto the lists, and RAY's `updateWrapped` from
-Solana; a run of the fork suites, rewritten for the oracle-free rebalance, on an archive RPC, which the changes of
-2026-11-14 need too; a run of the Halmos harness; the platform's fee policy and
+**What remains before a mainnet**, in the order of `docs/design/wormhole-legs.md`, section 5, as
+`docs/design/pre-mainnet-readings.md`, section 7, and the spec, section 9, update it: the 26 Wormhole copies still
+to attest, through Wormhole's SDK, each served only if an Ethereum pool trades it, and FIL's source reading, each then through `CheckToken` and onto the lists, and RAY's `updateWrapped` from
+Solana; a run of the fork suites on an archive RPC, which the red team's fixes (RW-1, RW-8 to RW-10) need too; a run
+of the Halmos harness; the platform's fee policy and
 the legal reading; the external audit, then `DeployWeighted`'s release hashes fixed at the audited commit (CF-5); the
-owner Safe (3 of 5) and the guardian's Safe on Ethereum, then `DeployWeighted` and `ConfigureWeighted` over the list,
-and the owner's approval of the wallets that create indexes; a new Sepolia deployment, since the one live there is the
-Pyth-priced build (`docs/deployment.md`); and the app side: `previewRebalance(newUnits)` and the listings as they now
-are, Wormhole Connect for bridging in and out, the wrapped share and the Bridged and Custodial labels on every index, an
-index's coins shown against its weights, and a filler for `MintRequests`. No Pyth plan, parameter replay or settlement
-on a Hermes update is needed any more: the keeper's Hermes key is the keeper's own, for its own prices.
+owner Safe (3 of 5) and the guardian's Safe on each chain, then `DeployWeighted` and `ConfigureWeighted` over the
+list, and the owner's approval of the wallets that create indexes; a Hermes plan that serves the keeper the updates
+it posts with each fill (no contract waits on Hermes: any filler may post an update); a Sepolia deployment of this
+build, since Sepolia runs the oracle-free build of `5b7635f`, without Pyth's check (`docs/deployment.md`); and the app
+side: `previewRebalance(newUnits)` and the listings as they now are, Wormhole Connect for bridging in and out, the
+wrapped share and the Bridged and Custodial labels on every index, an index's coins shown against its weights, and a
+filler for `MintRequests`.
 
-**Backlog.** `createAndMint`, mixed-venue legs that split one leg across V3 and V4, per-pair partial-fill auctions, a backstop for auctions too small to pay (the keeper fills only what
+**Backlog.** Mixed-venue legs that split one leg across V3 and V4, per-pair partial-fill auctions, a backstop for auctions too small to pay (the keeper fills only what
 pays unless its operator sets a subsidy), an aggregator or Universal Router 2.1 zap, V4 pools on the Sepolia market,
-and one L2 deployment if cheap minting for small buyers matters after launch.
+and a second L2 deployment beside Base, if cheap minting for small buyers matters after launch.
 
 ## 11. History
 
-- **v1 and v2** (2026-09-15 and 2026-09-16): the in-kind core and the zap, then on-chain rule rebalancing from Uniswap
-  V3 pool averages, with the Numbers model's uncapped and capped methodologies.
-- **v3** (2026-09-22): prices from Chainlink USD feeds, execution through the Universal Router; the change and what it
-  retired are in `audit/2026-09-22-v3-retirement.md`. v3 is tagged `v3.0.0` and runs on Sepolia; it never launches on
-  mainnet.
-- **v4 Stage A** (2026-09-29 to 2026-09-30): the hybrid multichain design, revised after an external review, and Stage
-  A's price-free market-cap index: units proportional to reference supplies the owner revised in weekly batches, settled
-  by a price-free auction on a band λ. What that retired is in `audit/2026-09-30-v4-stage-a-retirement.md`.
-- **v4 Stage B** (2026-09-30 to 2026-10-06): ownerless vaults on BNB Chain, TRON, NEAR, Stellar, Sui, Injective,
-  VeChain, Aptos and Solana, driven by two zkVM proofs of Ethereum's finality, with each chain's state verifier on
-  Ethereum and the hybrid index that held their coins. Built in large part, deployed nowhere, tagged
-  `stage-b-2026-10-07` and deleted on 2026-10-07 (`audit/2026-10-07-stage-b-retirement.md`).
-- **v5** (2026-10-05 to 2026-10-07): creators' fixed percentages, rebalanced at Pyth prices (`WeightedHub`,
-  `WeightedIndexFactory`) and reviewed (`audit/2026-10-05-v5-review.md`); the market-cap hub and factory deleted on
-  2026-10-06 (`audit/2026-10-06-v4-retirement.md`); PancakeSwap legs in the zap; the logic review and V5R-1's fix on
-  2026-10-07; and that day the owner's decision to deploy on Ethereum and BNB Chain, each holding its own chain's
-  tokens, with no vaults.
-- **One index on Ethereum** (2026-10-10 to 2026-10-13): the owner's decision to ship one deployment, on Ethereum, with
-  the coins it lacks as Wormhole copies, shelving BNB Chain (`design/2026-10-10-one-index-wormhole-legs.md`); the list
-  grown to 93; the fork run of 92 coins in one index; the end-to-end run of 2026-10-12 against Pyth's real contract on
-  an anvil fork, where a fill of 93 legs cost 7.26M gas, Pyth's parse 2.34M of it; the keeper bot with its executor
-  (`keeper/`); and on 2026-10-13 the deletion of the BNB Chain deployment, the v4 demo, the review PoCs and the records
-  of retired designs, all recoverable from git at `f83dcab`. On 2026-10-14 the owner removed THORChain and the zap's
-  PancakeSwap legs: users come with USDC or USDT, and the zap swaps through Uniswap alone.
-- **The oracle-free rebalance** (2026-11-10): the owner's call to cut the oracle and keep the rebalance. Until then v5's
-  settlement was priced by Pyth. The hub fixed the second its prices belonged to, an executor brought a signed update
-  for it, the targets came from those prices, and the auction ran on a multiplier μ that fell from 1.02 to 0.98. From
-  2026-10-26 a start read every moving feed (RX-3), and from 2026-11-02 a `GuardianRelay` held the guardian role,
-  because a start's update was valid for one slot, which a Safe cannot land (RZ-26). Three of Pyth's five signing keys
-  could take up to a fifth of each component per fill. All of that went: the executor names the units, and the index
-  checks a gain in units against a falling bar (section 3, `design/2026-11-10-oracle-free-rebalance.md`).
-  `audit/2026-11-10-oracle-retirement.md` lists the review ids that went with Pyth and the test of every re-targeted
-  one. What it cost: a fair price now needs an executor bidding, where Pyth gave one whoever filled. The same day
-  creation was limited to wallets the factory's owner approves (`setApprovedCreator`), since no contract can check a
-  creator's units against its weights. A quote the owner or guardian may post with a start was added the same day
-  (section 3.9).
+The designs this one replaced, each with the record of what it retired; the versions, every step and every decision
+are in [CHANGELOG.md](CHANGELOG.md).
+
+- **v1 and v2:** the in-kind core and the zap, then on-chain rule rebalancing from Uniswap V3 pool averages.
+- **v3:** prices from Chainlink USD feeds and execution through the Universal Router, tagged `v3.0.0`
+  (`audits/retired/v3.md`). It never launches on a mainnet.
+- **v4 Stage A:** a price-free market-cap index, units proportional to reference supplies the owner revised in
+  batches, settled by a price-free auction on a band λ (`audits/retired/v4-stage-a.md`, `audits/retired/v4.md`).
+- **v4 Stage B:** ownerless vaults on other chains driven by zkVM proofs of Ethereum's finality, with each chain's
+  state verifier on Ethereum; built in large part, deployed nowhere, and deleted (`audits/retired/stage-b.md`).
+- **v5's Pyth-priced settlement:** the hub fixed the second its prices belonged to, an executor brought a signed
+  update, the targets came from those prices, and the auction ran on a multiplier μ that fell from 1.02 to 0.98; three
+  of Pyth's five signing keys could take up to a fifth of each component per fill. The rule on units of section 3
+  replaced it, and Pyth returned only as the check of section 3.10 (`audits/retired/oracle.md`,
+  `audits/retired/pyth-check.md`).
+- **Swap venues:** THORChain and the zap's first PancakeSwap legs (`audits/retired/thorchain.md`,
+  `audits/retired/pancakeswap-zap-venue.md`), and the zap's ether entry points (`audits/retired/zap-ether.md`).
+
+The v4 demo, the reviews' PoC tests and the records of retired designs are recoverable from git at `f83dcab`.

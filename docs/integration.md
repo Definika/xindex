@@ -4,17 +4,44 @@ How each flow works, and what an app needs to get right when it builds on the co
 
 ## Flows
 
-**Create.** Only a wallet the factory's owner approved creates an index: `isApprovedCreator(account)` says whether one
-may, and `createIndex` from any other reverts `CreatorNotApproved(account)`. No contract reads a price, so none can
-compare the units a creator names with its weights. An index created off its weights carries that distance from its
-first day and loses it to whoever fills its auctions: on the exact model, one last-second fill takes 15.5% of a 50/50
-index created 90/10 by value, and at the worst a fifth of an index per fill. The approval keeps a stranger from creating
-such an index, and the team creates on the weights at the app's prices. A partner asks the team, which creates the index
-and hands on its creator role. The creator picks whitelisted tokens, a weight for each in basis points summing to
-10,000, and the value one index token should start at. The app turns each weight into starting units at its own prices,
-`units_i = w_i / 10,000 × value / price_i` in the token's raw units, calls `predictIndexAddress` to show the address,
-and calls `createIndex`. The factory reads no price and takes the units as named, so the app has to derive them on the
-weights: the first rebalance, the index's interval after creation, pays whatever distance is left to whoever fills it.
+**Create, and buy.** Only a wallet the factory's owner approved creates an index: `isApprovedCreator(account)` says
+whether one may, and either creation from any other reverts `CreatorNotApproved(account)`. A partner asks the team,
+which approves its wallet or creates the index and hands on its creator role. The creator picks whitelisted tokens,
+a weight for each in basis points summing to 10,000, and how much to buy. The app turns each weight into units at
+Pyth's prices, `units_i = w_i / 10,000 × value / price_i` in the token's raw units, with `value` what one index token
+is to be worth at the start. Then, in order:
+
+1. `predictIndexAddress(creator, name, symbol, components, params)` gives the address the index will have.
+2. The creator approves every component to that address, for `previewIssue`'s amounts: each component's units for
+   the shares bought plus the index's fee, rounded up, `ceil(gross × units / 1e18)` with
+   `gross = ceil(shares × 10,000 / (10,000 − fee))`. Only this factory can deploy at that address, and only for
+   that creator, so nobody else can spend the approval.
+3. Pyth's update for the components' feeds (`priceFeedOf(token)`) is posted to Pyth's contract, since the creation
+   reads prices of the last minute (`MAX_CREATION_PRICE_AGE`; a fill reads those of the last fifteen seconds).
+4. `createAndIssue(name, symbol, components, params, shares, to)` creates the index and issues `shares` to `to`,
+   pulling the basket from the creator. It is an issue like any other: the index's fee is charged, a gated index
+   issues only to its creator, and a component that arrives short, or that the index could not send out again,
+   reverts the whole creation, so no index is left that its creator could not back.
+
+On a factory with an oracle, which every mainnet factory is, the creation reverts `OffWeights(token, weight,
+valueShare)` unless each component's share of the index's value at Pyth's prices lies within
+`MAX_WEIGHT_DEVIATION`, 5%, of its weight, relative to the weight: an index starts on its weights. A component
+without a feed, or whose price is stale or unusable, reverts the creation (`NoPriceFeed`, `StalePrice`,
+`UnusablePrice`), and so does an Ondo token whose sValue is unsettled or that Ondo's oracle on the chain does not hold
+(`SValueUnavailable`: on Ethereum, 336 of the 344 share-priced tokens when last read): the app reads
+`assetData(token)` on Ondo's
+`SyntheticSharesOracle` (`IPythPrices.SHARES_ORACLE()`) before it offers such an index, and values the token at its
+share's price times the sValue there. Creating and issuing in one call costs about what the two cost apart, some 110,000 gas a component
+on plain tokens, so it fits one transaction up to about 125 components; a wider index is created with
+`createIndex(name, symbol, components, params)`, under the same checks and with no shares, and issued afterwards.
+Paying in USDC or USDT is the app's to compose: swap into the creator's wallet, then the four steps above.
+
+The weights are the creator's to change afterwards, the components are not: `proposeWeights(index, weights)` starts
+7 days of notice (`WEIGHTS_DELAY`), after which anyone applies them with `executeWeights` within `PROPOSAL_WINDOW`;
+the creator, the owner or the guardian cancels with `cancelWeights`. Nothing moves at the change: the next rebalance
+moves the units toward the new weights, under the bar, the caps and Pyth's check. An app shows a pending change
+(`weightsEta`) to every holder, who can leave before it applies.
+
 Every unit has to lie in `[MIN_RAW_UNITS, maxUnitsOf(token)]` or the call reverts `UnitsOutOfRange(token, units)`;
 `maxUnitsOf` is `MAX_WHOLE_TOKENS` (1e9) whole tokens per index token, never above `MAX_UNITS`, so a wei-share stays
 worth nothing (RX-5). The floor binds hardest on Tether Gold, whose 10,000 raw units are 0.01 oz, about $30, so an index
@@ -23,13 +50,21 @@ token worth $100 can hold it at 30% or more; for WBTC, 0.0001 BTC, about $11, at
 show the index address and `creatorOf` to avoid spoofing. The creator role is handed on in two steps: `transferCreator`
 offers it and the new creator takes it with `acceptCreator`, so `creatorOf` only ever names an account that agreed
 (RX-22). `acceptCreator` accrues the index's streaming fee first, to the outgoing creator (RW-6), so the accrual's
-events precede `CreatorTransferred`, and it reverts if called from inside one of the index's own calls. The new
+events precede `CreatorTransferred`, and it reverts if called from inside one of the index's own calls. It also
+cancels a change of weights the outgoing creator left pending (`WeightsCancelled`): the new creator proposes its
+own (HK-16). The new
 creator needs no approval: the approval is read at creation and nowhere else.
 
 The address commits to the creator, the name, the symbol, every component's token, units and weight, and the index's
 fee rates, referral share and rebalance interval. A change of the fee policy that lands between the preview and the
 transaction changes the address, never the terms at an address (RZ-28). A listing is no term of an index, so a
 relisting changes neither.
+
+**A pause of minting.** Before it offers any mint, an app reads `mintingPaused(index)` and
+`mintingPaused(address(0))` on the factory: while either is true every issue of that index reverts
+`NotAllowedMinter`, whichever way it is reached (in kind, the zap, the builder's `mint`, a creation with a first
+issue). Redeeming, claims and transfers are never paused. `MintingPaused(index, by)` and `MintingResumed(index)`
+announce it, with a zero `index` for every index.
 
 **Mint with USDC/USDT.** For each leg the app picks a venue, quotes it (QuoterV2 `quoteExactOutput` for a V3 leg, the
 V4 Quoter for a V4 one), sets per-leg limits and the overall `maxAmountIn`, reads `rebalanceNonce()`, and calls
@@ -38,8 +73,8 @@ V4 Quoter for a V4 one), sets per-leg limits and the overall `maxAmountIn`, read
 someone already submitted is accepted, and USDT has none.
 
 **USDC and USDT only.** The zap's `tokenIn` and `tokenOut`, and the basket builder's, must be that deployment's
-`USDC()` or `USDT()`, else `NotAStable(token)` before anything moves (the owner's call of 2026-11-18). No entry point
-takes ether: the ether entry points of 2026-10-29 are gone, so an app that offers ether swaps it to a stablecoin
+`USDC()` or `USDT()`, else `NotAStable(token)` before anything moves. No entry point
+takes ether, so an app that offers ether swaps it to a stablecoin
 first, outside the zap. On BNB Chain the two are Binance-Peg USDC and USDT, 18 decimals each.
 
 **Burn to USDC/USDT.** The app quotes each leg in the exact-input direction, sets per-leg minimums and a
@@ -51,14 +86,19 @@ non-zero overall `minAmountOut`, passes `rebalanceNonce()`, and calls `burnToTok
    guardian's keep-mask fill, XS-3), anyone calls `startRebalance(0)`. It is a plain call: it takes no ether and no
    data and reads no price. It calls no component and only sets the auction's start, `eta`, 2 hours ahead. The owner
    or guardian may start with a quote instead, `startRebalance(keepMask, prices, tolerance)` (see "Start with a
-   quote" below).
+   quote" below). The owner or guardian may also start before the index's interval has passed, once a fill has
+   settled and `MIN_REBALANCE_INTERVAL`, a week, has passed since it: a fill restarts the whole interval however
+   little it traded, and this is how an index a sliver closed is reopened (RW-3). Before an index's first fill they
+   wait out its interval as anyone does. `canStartRebalance()`
+   answers for a stranger; a start too soon reverts `RebalanceTooSoon(earliest)` with the caller's own earliest.
 2. For 2 hours nothing changes. The units a fill settles at are named at the fill, so the notice is for executors to
    ready their stock, routes and prices, not a window holders need. Issue and redeem stay open throughout.
 3. A 4-hour auction follows. Its bar, `currentBar()`, starts at a half (`BAR_MAX`), halves every 12 minutes
    (`BAR_HALF_LIFE`) along a straight line, rounds up, and ends at 476,837,158,204 in 1e18ths at the auction's last
    second. An executor contract calls `executeRebalance(newUnits, data)`, naming the recorded units every component
    is to have, in component order; `recordedUnits()` returns the current ones, and a component the executor leaves
-   alone gets its current units. The hub reads no price of its own. It accepts the units when these hold:
+   alone gets its current units. The hub judges them on units first, and on a factory with an oracle then checks
+   them against Pyth's prices. It accepts the units when these hold:
    - every component keeps at least four fifths of its own units, rounded up, and at most twice them, and a kept
      component exactly its units, or the call reverts `LegOutOfBounds(index, units, lowest, highest)`;
    - the weighted gain `⌊Σ w_i · L(x_i) / 10,000⌋` is at least the bar, or the call reverts `GainBelowBar(gain,
@@ -66,7 +106,17 @@ non-zero overall `minAmountOut`, passes `rebalanceNonce()`, and calls `burnToTok
      down;
    - when the proposal's start posted a quote, the fill brings in, at the quote's prices, at least `1 − tolerance` of
      the value it takes out: `Σ p_i · (v_i − u_i)` over the components that grow is at least `⌈Σ p_i · (u_i − v_i)
-     over those that shrink · (1e18 − tolerance) / 1e18⌉`, or the call reverts `BelowQuote(valueIn, floor)`.
+     over those that shrink · (1e18 − tolerance) / 1e18⌉`, or the call reverts `BelowQuote(valueIn, floor)`;
+   - on a factory with an oracle (`PRICES()` is not zero), the same inequality at Pyth's prices, with a tolerance
+     that rises in a straight line from nothing at the auction's first second to `MAX_ORACLE_TOLERANCE`, 2%, at its
+     last, or the call reverts `BelowOracleValue(valueIn, floor)`. Each component that moves is valued through the
+     factory's reader (`IPythPrices`, at `priceFeedOf(token)`): what leaves at Pyth's price plus its confidence,
+     what arrives at the price less it. The price must have been published within the last 15 seconds,
+     `MAX_PRICE_AGE` (`StalePrice`), so the executor posts Pyth's update to Pyth's contract in the same transaction, before it
+     fills, and so chooses, of the prices Pyth signed in those seconds and newer than the stored one, which one its
+     fill is checked against (HK-25); a component without a feed (`NoPriceFeed`), or with a price the reader cannot use (`UnusablePrice`),
+     or an Ondo token whose sValue is unsettled (`SValueUnavailable`), stops only a fill that moves it. This check can only refuse: a fill the units refuse is refused whatever the
+     prices say.
 
    The executor receives what the shrinking components release and, inside its `onXindexRebalance` callback, must
    send back what the growing ones need; the fill stands only if every component then backs the new units, with the
@@ -80,9 +130,10 @@ non-zero overall `minAmountOut`, passes `rebalanceNonce()`, and calls `burnToTok
    clears the highest bar is the one that puts the index on its weights at the market's prices, so executors compete by
    filling earlier, which leaves more with the holders. A fair price therefore needs an executor bidding, the keeper in
    `keeper/` first. A lone executor that waits for the last second keeps the index's distance from its weights, out of
-   the holders' value: 0.3 to 0.6% of an index in an ordinary week, 5.0% after one coin of two doubled. A quote posted
-   with the start caps it at the quote's tolerance of what the executor trades. On its weights an index has nothing to
-   take (see "Known limitations").
+   the holders' value on units alone: 0.3 to 0.6% of an index in an ordinary week, 5.0% after one coin of two
+   doubled. Pyth's check caps that at the tolerance of what the executor trades, 2% at the last second and less
+   before it, and a quote posted with the start caps it at the quote's tolerance. On its weights an index has
+   nothing to take (see "Known limitations").
 6. If nobody fills, the auction expires. The owner or guardian can start a fresh one at once; anyone else can 2 hours
    after the auction's last second.
 7. The owner or guardian can cancel a rebalance. Cancelling a live one makes others wait 2 hours from the cancel to
@@ -98,8 +149,10 @@ ordered.
 **Rebalance around a frozen component.** The guardian cancels and starts again with the component's bit in `keepMask`;
 that component must keep its units exactly, and the settlement neither transfers it nor reads its balance, so the
 mask also routes around a component whose contract stops answering (DA-14, RT-01). At least two components must stay
-moving (`InvalidKeepMask`). The guardian is the guardian's Safe: `cancelRebalance()` and `startRebalance(keepMask)`
-are plain calls on the index, which a Safe sends like any other transaction. An executor needs no mask to leave a
+moving (`InvalidKeepMask`). The guardian is the guardian's Safe: `cancelRebalance(proposalId)` and
+`startRebalance(keepMask)` are plain calls on the index, which a Safe sends like any other transaction. The cancel
+names the proposal its signers read and reverts `StaleProposal` if another has replaced it since; the plain
+`cancelRebalance()` cancels whichever is pending when it lands (CA-S02). An executor needs no mask to leave a
 component alone: it names that component's current units.
 
 **Start with a quote.** The owner or guardian may post a quote with a start: `startRebalance(keepMask, prices,
@@ -129,7 +182,9 @@ has none.
 
 **Exit while a component is frozen.** If, say, WBTC is paused, `redeem` and the zap revert. The holder calls
 `redeemSkipping(shares, to, skipMask)` with the WBTC bit set: every other component arrives now and the WBTC amount is
-recorded in `claimOf(to, WBTC)`. Once WBTC transfers resume, `claim(WBTC, to)` pays it.
+recorded in `claimOf(to, WBTC)`. Once WBTC transfers resume, `claim(WBTC, to)` pays it. If the issuer burned part
+of the index's balance meanwhile and the whole claim can no longer be paid, `claim(WBTC, to, amount)` collects what is
+left and keeps the rest recorded (CA-S01).
 
 **Trade.** An index is a normal ERC-20, so it can be transferred or listed on any DEX. The burn path is the guaranteed
 exit.
@@ -138,7 +193,12 @@ exit.
 already holds the components or shares.
 
 **Requests.** A holder of USDC who wants shares without swapping a basket calls `requestMint` with a limit the app
-suggests from its own valuation, for example 1% under the index's value. A minter who holds shares, or can issue them in
+suggests from its own valuation, for example 1% under the index's value. Use the overload that takes `expectedNonce`,
+the index's `rebalanceNonce` when the limit was computed: a settlement between the quote and the transaction then
+reverts `StaleRebalanceNonce` instead of opening the request on a basket the limit was not set for (CA-M1). The same
+holds for `requestRedeem`. A request in a stablecoin the contract holds less of than its open requests escrowed, as
+after the issuer destroyed part of it, reverts `Underbacked`: show that stablecoin as unavailable there, and read
+`totalEscrow(token)` against the contract's balance to know (CA-H2). A minter who holds shares, or can issue them in
 kind, calls `fill(id, amount)`: at least `minShares` shares go from the minter to the requester, measured at the
 requester, and the escrowed USDC goes to the minter. A redemption is the mirror image, and a USDT fee comes out of the
 filler's delivery, so the requester still receives the limit. Unfilled, the escrow goes back on `cancel` (the requester,
@@ -146,7 +206,10 @@ at any time) or `refund` (anyone, after the deadline). A request fills only whil
 one it was made at: after a settlement a fill reverts `StaleRebalanceNonce`, so show such a request as stale and offer
 to cancel it and ask again. A filler that priced a request off chain calls `fill(id, amount, expected)` with the hash
 of the request it priced, `keccak256(abi.encode(request))`, and is refused with `RequestChanged` if anything else
-sits behind the id; compute the hash from the request you read, not from `requestHash(id)` at fill time.
+sits behind the id; compute the hash from the request you read, not from `requestHash(id)` at fill time. The hash
+covers all nine fields, so for a request not yet mined it takes the escrow as it will be credited, the amount that
+arrives after any fee, and the index's nonce at inclusion, not only the amount sent. A cancel or a refund returns the
+escrow as it was taken: the stablecoin of a mint request, the shares of a redeem request.
 
 ## Integration notes
 
@@ -157,7 +220,7 @@ sits behind the id; compute the hash from the request you read, not from `reques
   price from `balanceOf(index)` and `totalSupply()`, and never use a thin DEX pool of the index token as an oracle.
 - **Starting units.** The app derives them from the creator's weights at its own prices (see "Create"); the factory
   takes them as given. `createIndex` reverts `UnitsOutOfRange` unless each lies in `[MIN_RAW_UNITS, maxUnitsOf(token)]`,
-  `InvalidComponentCount` outside 2 to `MAX_COMPONENTS` (100), `InvalidWeights` unless every weight is non-zero and
+  `InvalidComponentCount` outside 2 to `MAX_COMPONENTS` (200), `InvalidWeights` unless every weight is non-zero and
   they sum to 10,000, and `DuplicateToken` when a token is named twice. Offer the one-click zap only up to about 35
   components; a larger index mints in kind, through `MintRequests`, or through the basket builder over several
   transactions.
@@ -212,12 +275,22 @@ sits behind the id; compute the hash from the request you read, not from `reques
   days is the check on the token itself.
 - **Zap calls take a params struct.** `MintParams {index, expectedNonce, tokenIn, maxAmountIn, shares, legs, to,
   deadline, referrer}`
-  with `MintLeg {v3Path, v4Path, maxAmountIn}`, and `BurnParams {index, expectedNonce, shares, tokenOut,
-  minAmountOut, legs, to, deadline}` with `BurnLeg {v3Path, v4Path, minAmountOut}`. `legs` has one entry per component,
+  with `MintLeg {v3Path, v4Path, localRoute, maxAmountIn}`, and `BurnParams {index, expectedNonce, shares, tokenOut,
+  minAmountOut, legs, to, deadline}` with `BurnLeg {v3Path, v4Path, localRoute, minAmountOut}`. `legs` has one entry per component,
   in component order. `expectedNonce` is `rebalanceNonce()` when the legs were quoted; after a rebalance, re-quote.
-- **One venue per leg.** A leg carries exactly one of a packed `v3Path` (Uniswap V3) and a `v4Path` (Uniswap V4). Both
-  empty means "no swap", which is only valid for the pass-through leg, the one whose component already is the stable on
-  a mint or `tokenOut` on a burn. Anything else is `BadRoute(i)`. There are no mixed-venue legs.
+- **One venue per leg.** A leg carries exactly one of a packed `v3Path` (Uniswap V3), a `v4Path` (Uniswap V4) and a
+  `localRoute` (the chain's own DEX: PancakeSwap on BNB Chain, Aero on Base, none on Ethereum; read `LOCAL_DEX()`).
+  All empty means "no swap", which is only valid for the pass-through leg, the one whose component already is the
+  stable on a mint or `tokenOut` on a burn. Anything else is `BadRoute(i)`. There are no mixed-venue legs. Quote each
+  venue and name the one that pays more: on Base Uniswap is the deeper for WETH and cbBTC, Aero for most other coins;
+  on BNB Chain PancakeSwap for nearly all (`docs/design/chain-venues.md`).
+- **Local routes.** One byte naming the pool family, `0` for concentrated liquidity (PancakeSwap V3, Aero CL) and `1`
+  for constant-function pools (PancakeSwap V2, Aero's basic pools), then a path of the V3 shape below, in the same
+  direction as a `v3Path`. The three bytes between tokens are PancakeSwap's fee tier (100, 500, 2,500 or 10,000), Aero's
+  tick spacing, zero for a PancakeSwap V2 pair, and `0` or `1` for Aero's volatile or stable basic pool. A route names
+  tokens, never pools: PancakeSwap's router computes its pools, and the zap looks Aero's up in the factories its
+  deployment pins (`AERO_CL_FACTORY`, `AERO_VOLATILE_FACTORY`, `AERO_STABLE_FACTORY`); a pair without such a pool
+  reverts the swap. Example on Base, buying cbETH with USDC through WETH: `0x00 | cbETH | 1 | WETH | 50 | USDC`.
 - **V3 routes.** Packed paths: `token(20) | fee(3) | token(20) [| fee(3) | token(20)]`. For **mint** the path is
   exact-output encoded, starting with the component and ending with the stable (e.g. `WBTC 500 WETH 500 USDC`). For
   **burn** it is exact-input encoded, starting with the component and ending with `tokenOut`.
@@ -242,9 +315,12 @@ sits behind the id; compute the hash from the request you read, not from `reques
 - **Gas.** The zap costs 265k to 430k gas per component (measured on a mainnet fork at 20 components in v3, CR-I08:
   a mint 5.3M to 6.2M, a burn 5.1M with two V3 hops a leg to 8.6M with four). EIP-7825 caps a transaction at 2^24
   gas, so disable the zap above about 35 components, keep routes to two or three hops, and refuse or reroute any zap
-  call whose simulated gas exceeds about 14M. The in-kind paths fit at 100 components (about 3.7M for `redeem`, 5.1M
-  for `redeemSkipping` with every component skipped), and so does the basket builder: three `buy` calls of about 34
-  legs and one `mint` (`test_aHundredLegBasketFitsInThreeBuysAndAMint`, on mock pools, so the buys are a floor).
+  call whose simulated gas exceeds about 14M. The in-kind paths fit at `MAX_COMPONENTS`, 200 (about 8.9M for `issue`,
+  7.5M for `redeem`, 10.2M for `redeemSkipping` with every component skipped, on mock tokens), and so does the basket
+  builder: six `buy` calls of about 34 legs and one `mint` (`test_theWidestBasketFitsInSixBuysAndAMint`, on mock
+  pools, so the buys are a floor). Real tokens transfer dearer: on a fork of Ethereum, an index of 200 of its 414
+  listed coins issued in kind for 14.7M and redeemed for 9.6M. Simulate an index's own `issue` before creating it:
+  one too wide to issue in a transaction with its real tokens can be created and never minted.
 - **Approvals.** USDC supports `permit`; USDT does not, and its `approve` reverts when it changes a non-zero allowance
   to another non-zero value: if `allowance(user, zap)` is not 0, send `approve(zap, 0)` first. The same holds for
   `MintRequests`: a filler who lost a race, or a requester whose request reverted, keeps a non-zero USDT allowance. Index tokens support
@@ -311,8 +387,8 @@ sits behind the id; compute the hash from the request you read, not from `reques
   errors.
 - **Requests.** Suggest a limit from the app's own valuation and show the deadline; a fill pays exactly what the filler
   sends, so any surplus over the limit goes to the fastest filler. Read a request with `getRequest(id)` (`requester`,
-  `deadline`, `isMint`, `open`, `rebalanceNonce`, `index`, `stable`, `escrow`, `limit`; the nonce is new on
-  2026-11-14, RW-2, so a decoder of the old tuple must follow) and its hash with `requestHash(id)`,
+  `deadline`, `isMint`, `open`, `rebalanceNonce`, `index`, `stable`, `escrow`, `limit`; the nonce is RW-2's) and
+  its hash with `requestHash(id)`,
   and follow `MintRequested`, `RedeemRequested`,
   `RequestFilled(id, filler, delivered)`, `RequestCancelled` and `RequestRefunded`. `escrow` is what arrived, which is
   less than the amount asked when USDT charges a fee. Errors: `NotIndex`, `NotAStable`, `ZeroAmount`,

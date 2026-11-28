@@ -17,7 +17,7 @@ import {
   parseAbi,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { avalanche, base, bsc, mainnet, optimism } from "viem/chains";
+import { avalanche, base, mainnet, optimism } from "viem/chains";
 import { MAINNET } from "../bot/config.mjs";
 import { ABI as KEEPER_ABI, isRevert, revertReason } from "../bot/chain.mjs";
 import { createRoutes } from "../bot/routes.mjs";
@@ -32,28 +32,10 @@ const STANDARD_FINALITY = 2000;
 
 /// Each chain's Wormhole Token Bridge, CCTP domain, and, on a home chain, the Uniswap V3 fork its coins trade on, in
 /// the route search's terms (`bot/routes.mjs`): its float as "usdc", its wrapped gas coin as "weth". Every address was
-/// read on its chain on 2026-10-19: each bridge's chain id and its registered Ethereum peer, each quoter's and router's
+/// read on its chain: each bridge's chain id and its registered Ethereum peer, each quoter's and router's
 /// factory, each token's symbol and decimals, and each CCTP contract's domain and the USDC it mints.
 export const EVM_CHAINS = Object.freeze({
   ethereum: { viem: mainnet, wormhole: 2, tokenBridge: MAINNET.tokenBridge, cctpDomain: 0, usdc: MAINNET.usdc },
-  bsc: {
-    viem: bsc,
-    wormhole: 4,
-    tokenBridge: "0xB6F6D86a8f9879A9c87f643768d9efc38c1Da6E7",
-    cctpDomain: null,
-    // PancakeSwap v3, whose SmartRouter takes SwapRouter02's exact-input and exact-output calls.
-    router: "0x13f4EA83D0bd40E75C8222255bc855a974568Dd4",
-    market: {
-      usdc: "0x55d398326f99059fF775485246999027B3197955",
-      usdcDecimals: 18,
-      weth: "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",
-      v3Factory: "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865",
-      quoterV2: "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997",
-      directFees: [100, 500, 2500, 10000],
-      viaWethFees: [100, 500, 2500, 10000],
-      wethUsdcFee: 100,
-    },
-  },
   avalanche: {
     viem: avalanche,
     wormhole: 6,
@@ -139,6 +121,8 @@ export const ABI = Object.freeze({
     "function receiveMessage(bytes message, bytes attestation) returns (bool)",
     "function usedNonces(bytes32 nonce) view returns (uint256)",
   ]),
+  permit2: parseAbi(["function nonceBitmap(address owner, uint256 word) view returns (uint256)"]),
+  reactor: parseAbi(["function permit2() view returns (address)"]),
 });
 
 /// A signed transfer's hash, as the Token Bridge records a completed one: the double keccak of its body, which starts
@@ -243,6 +227,8 @@ export function createEvm({ name, rpcUrl, key, journal }) {
     resume,
     complete,
     allow,
+    /// Signs EIP-712 typed data with the treasury's key: a UniswapX order's Permit2 witness (`uniswapx.mjs`).
+    signTypedData: (typed) => account.signTypedData(typed),
     sequenceOf,
     /// The sequence the Token Bridge published in mined transaction `hash`.
     sequenceOfTx: async (hash) => sequenceOf(await client.getTransactionReceipt({ hash }), def.tokenBridge),

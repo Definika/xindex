@@ -9,12 +9,15 @@ import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol"
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {CheckToken} from "../script/CheckToken.s.sol";
 import {ConfigureWeighted} from "../script/ConfigureWeighted.s.sol";
+import {ScriptLists} from "../script/ScriptLists.sol";
 import {MainnetAddresses} from "../script/MainnetAddresses.sol";
 import {BnbChainAddresses} from "../script/BnbChainAddresses.sol";
+import {BaseAddresses} from "../script/BaseAddresses.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockFeeToken} from "./mocks/MockFeeToken.sol";
 import {MockRebasingToken} from "./mocks/MockRebasingToken.sol";
 import {MockSelfRefusingToken, MockSelfLosingToken} from "./mocks/MockSelfTransferTokens.sol";
+import {MockEtherNeedyToken} from "./mocks/MockEtherNeedyToken.sol";
 import {MockERC1820Registry, MockERC1363Token} from "./mocks/MockHookRegistries.sol";
 import {
     MockBlacklistToken,
@@ -23,9 +26,10 @@ import {
     MockTokenController,
     MockMiniMeToken,
     MockRolesToken,
+    MockUncountedRolesToken,
     MockSuperOperatorToken
 } from "./mocks/MockAdminTokens.sol";
-import {MockSafeOwner, MockTimelockOwner, MockDelayOwner} from "./mocks/MockOwners.sol";
+import {MockSafeOwner, MockTimelockOwner, MockDelayOwner, MockTruncatedSafeOwner} from "./mocks/MockOwners.sol";
 import {MockLegacyProxy} from "./mocks/MockLegacyProxy.sol";
 import {MockPoolManager} from "./mocks/MockPoolManager.sol";
 import {MockUniswapV3Factory, MockUniswapV3Pool} from "./mocks/MockUniswapV3.sol";
@@ -311,6 +315,39 @@ contract CheckTokenTest is Test {
         checker.log(r);
     }
 
+    /// @dev CA-R2-17: the report read the first holder of DEFAULT_ADMIN_ROLE and printed it as the role's. A token
+    ///      administered by a Safe and by a key beside it then read as the Safe's alone. The line now says how many
+    ///      hold the role, and that the one named is only the first; where the token does not count them, it says so.
+    function test_CAR217_theReportSaysHowManyHoldTheAdminRole() public {
+        MockRolesToken roles = new MockRolesToken(key);
+        vm.prank(key);
+        roles.mint(address(this), 1e24);
+        CheckToken.Report memory r = _check(address(roles));
+        assertEq(r.roleAdmins, 1);
+        string memory alone = checker.describe(r.roleAdmin);
+        assertEq(checker.roleAdminText(r.roleAdmin, r.roleAdmins), alone, "one holder is the role's holder");
+
+        address second = makeAddr("a second admin");
+        vm.prank(key);
+        roles.grantRole(bytes32(0), second);
+        r = _check(address(roles));
+        assertEq(r.roleAdmin.account, key, "still the first one read");
+        assertEq(r.roleAdmins, 2);
+        assertEq(
+            checker.roleAdminText(r.roleAdmin, r.roleAdmins),
+            string.concat(alone, "; the first of 2 holders: read each with getRoleMember")
+        );
+        checker.log(r);
+
+        r = _check(address(new MockUncountedRolesToken(key)));
+        assertEq(r.roleAdmin.account, key);
+        assertEq(r.roleAdmins, 0, "a token that does not count the holders");
+        assertEq(
+            checker.roleAdminText(r.roleAdmin, r.roleAdmins),
+            string.concat(alone, "; the first holder, of a number the token does not give: read its RoleGranted events")
+        );
+    }
+
     function test_classify() public {
         CheckToken.Party memory p = checker.classify(address(0));
         assertEq(uint8(p.kind), uint8(CheckToken.Kind.None));
@@ -332,6 +369,17 @@ contract CheckTokenTest is Test {
         assertEq(checker.kindText(p), "a Safe, 3 of 5");
         p = checker.classify(address(new MockSafeOwner(2, 4, false)));
         assertEq(p.signers, 0, "a multisig that lists no owners");
+        // CA-R2-18: owners that could not be read are not a count of zero: "a Safe, 2 of 0" named a multisig nobody
+        // could sign for. Nor is a length the answer is too short to hold.
+        assertEq(checker.kindText(p), "a Safe, threshold 2, its owners unread");
+        p = checker.classify(address(new MockTruncatedSafeOwner()));
+        assertEq(uint8(p.kind), uint8(CheckToken.Kind.Safe));
+        assertEq(p.signers, 0, "five owners announced, none returned");
+        assertEq(checker.kindText(p), "a Safe, threshold 3, its owners unread");
+        p = checker.classify(address(new MockSafeOwner(0, 4, true)));
+        assertEq(checker.kindText(p), "a Safe, threshold 0, its owners unread", "no Safe needs no signature");
+        p = checker.classify(address(new MockSafeOwner(4, 4, true)));
+        assertEq(checker.kindText(p), "a Safe, 4 of 4");
 
         p = checker.classify(address(new MockTimelockOwner(2 days)));
         assertEq(uint8(p.kind), uint8(CheckToken.Kind.Timelock));
@@ -567,7 +615,7 @@ contract CheckTokenTest is Test {
         _assertPower("hasRole(bytes32,address)", checker.ROLES());
     }
 
-    /// @dev TokenSoft's wrapped XRP, read on 2026-10-26: the check called it listable, because its table named none of
+    /// @dev TokenSoft's wrapped XRP, read: the check called it listable, because its table named none of
     ///      the token's powers. A whitelist its owner can switch on stops any holder not on it, and a revoker takes any
     ///      holder's balance (`revoke(from, amount)`): a blacklist with a destroy, which the WBT rule refuses.
     function test_tokenSoftsWhitelistAndRevokeFallUnderTheWbtRule() public view {
@@ -582,7 +630,7 @@ contract CheckTokenTest is Test {
         assertEq(reason, "the WBT rule: it can blacklist a holder and destroy its balance");
     }
 
-    /// @dev CF-4: the names the owed source reading of 2026-10-18 found outside the table. GALA's blocklist beside its
+    /// @dev CF-4: the names the owed source reading found outside the table. GALA's blocklist beside its
     ///      `burnFrom` goes to review, since the check cannot tell whether that burn needs an allowance; SAND's second
     ///      admin appoints operators that move any balance, as its first does.
     function test_CF4_theSourceReadingsNamesAreInTheTable() public view {
@@ -689,6 +737,12 @@ contract CheckTokenTest is Test {
         assertEq(m.poolManager, BnbChainAddresses.POOL_MANAGER);
         assertEq(m.weth, BnbChainAddresses.WBNB);
         assertEq(m.usdc, BnbChainAddresses.USDT, "Uniswap's depth on BNB Chain sits against USDT");
+        vm.chainId(BaseAddresses.CHAIN_ID);
+        m = checker.markets();
+        assertEq(m.v3Factory, BaseAddresses.UNISWAP_V3_FACTORY);
+        assertEq(m.poolManager, BaseAddresses.POOL_MANAGER);
+        assertEq(m.weth, BaseAddresses.WETH);
+        assertEq(m.usdc, BaseAddresses.USDC);
     }
 
     // ---------------------------------------------------------------------
@@ -769,6 +823,8 @@ contract CheckTokenTest is Test {
         assertEq(checker.pairName(MainnetAddresses.USDC), "USDC");
         assertEq(checker.pairName(BnbChainAddresses.WBNB), "WBNB");
         assertEq(checker.pairName(BnbChainAddresses.USDT), "USDT");
+        assertEq(checker.pairName(BaseAddresses.WETH), "WETH");
+        assertEq(checker.pairName(BaseAddresses.USDC), "USDC");
         assertEq(checker.pairName(key), vm.toString(key));
         vm.chainId(BnbChainAddresses.CHAIN_ID);
         assertEq(checker.pairName(address(0)), "BNB", "BNB Chain's coin is BNB");
@@ -799,6 +855,8 @@ contract CheckTokenTest is Test {
         checker.log(r);
         vm.chainId(BnbChainAddresses.CHAIN_ID);
         checker.log(r);
+        vm.chainId(BaseAddresses.CHAIN_ID);
+        checker.log(r);
     }
 
     // ---------------------------------------------------------------------
@@ -827,9 +885,9 @@ contract CheckTokenTest is Test {
         assertEq(parsed.length, 2);
         assertEq(parsed[1], b);
 
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.ListOffItsChain.selector, "wide", block.chainid));
+        vm.expectRevert(abi.encodeWithSelector(ScriptLists.ListOffItsChain.selector, "wide", block.chainid));
         checker.resolveTokens("wide");
-        vm.expectRevert(abi.encodeWithSelector(ConfigureWeighted.ListOffItsChain.selector, "bnb", block.chainid));
+        vm.expectRevert(abi.encodeWithSelector(ScriptLists.ListOffItsChain.selector, "bnb", block.chainid));
         checker.resolveTokens("bnb");
         vm.chainId(1);
         ConfigureWeighted lists = new ConfigureWeighted();
@@ -843,6 +901,63 @@ contract CheckTokenTest is Test {
         assertEq(bnb.length, BnbChainAddresses.COUNT);
         assertEq(bnb[0], BnbChainAddresses.WBNB);
         assertEq(bnb[11], BnbChainAddresses.STABLE);
+        vm.chainId(BaseAddresses.CHAIN_ID);
+        address[] memory base = checker.resolveTokens("base");
+        assertEq(base.length, BaseAddresses.COUNT);
+        assertEq(base[0], BaseAddresses.WETH);
+        assertEq(base[15], BaseAddresses.RSR);
+        assertEq(base[16], BaseAddresses.CBBTC);
+        assertEq(base[31], BaseAddresses.TSLAC);
+    }
+
+    /// @dev A token that is a precompile of its chain has the byte 0xef for code, as Coinbase's stock tokens on Base
+    ///      do, and an EVM without that precompile cannot execute it: every read and transfer of the check would
+    ///      fail and read as the token's fault. The check says so and judges nothing; a token that answers is checked
+    ///      as any other, whatever its code.
+    function test_aPrecompileThisEvmCannotRunIsForReview() public {
+        address stock = BaseAddresses.NVDAC;
+        vm.etch(stock, hex"ef");
+        CheckToken.Report memory r = checker.check(stock, address(0), none);
+        assertEq(uint8(r.verdict), uint8(CheckToken.Verdict.Review));
+        assertEq(r.reason, "a precompile of its chain, which this EVM cannot execute: read it through the chain's node");
+        assertEq(uint8(r.transfers), uint8(CheckToken.Transfers.Untested), "nothing was probed");
+        checker.log(r);
+
+        // Two bytes are no bare precompile: the check runs, and refuses a token that answers no decimals.
+        address other = makeAddr("two bytes");
+        vm.etch(other, hex"ef00");
+        r = checker.check(other, address(0), none);
+        assertEq(uint8(r.verdict), uint8(CheckToken.Verdict.Refused));
+        assertEq(r.reason, "decimals outside the whitelist policy's 6 to 18");
+    }
+
+    /// @dev A `forge script` run against an OP Stack chain fails a state-changing call from an account that holds no
+    ///      ether before the call runs, so without it every probe on Base reads as a failed transfer. The check
+    ///      gives an account ether before it calls a token as it. A test run has no such rule: this token, which moves
+    ///      only for a caller that holds ether, stands in for it.
+    function test_theProbesCallersHoldEther() public {
+        MockEtherNeedyToken needy = new MockEtherNeedyToken();
+        address poor = makeAddr("no ether");
+        needy.mint(poor, 1);
+        vm.prank(poor);
+        vm.expectRevert("no ether");
+        needy.transfer(address(this), 1);
+
+        CheckToken.Transfers moved = checker.transfersOf(address(needy), 1e18, new address[](0));
+        assertEq(uint8(moved), uint8(CheckToken.Transfers.Exact), "every probe ran as an account that holds ether");
+    }
+
+    /// @dev The check resolves its tokens without creating a contract. Creating a `ConfigureWeighted` for
+    ///      them failed: a `forge script` run against an OP Stack chain fails a creation by the
+    ///      script contract, which holds no ether: every CHECK on Base reverted before it read a token. A test run
+    ///      has no such rule, so what is held here is the cause: the checker's nonce, which a creation would raise.
+    function test_resolvingTheTokensCreatesNoContract() public {
+        uint64 before = vm.getNonce(address(checker));
+        string memory two = string.concat(vm.toString(makeAddr("a")), ",", vm.toString(makeAddr("b")));
+        assertEq(checker.resolveTokens(two).length, 2);
+        vm.chainId(BaseAddresses.CHAIN_ID);
+        assertEq(checker.resolveTokens("base").length, BaseAddresses.COUNT);
+        assertEq(vm.getNonce(address(checker)), before, "resolving a list deploys nothing");
     }
 
     function test_run_readsTheEnvironment() public {

@@ -6,7 +6,8 @@ import {IUniversalRouterSwaps} from "./IUniversalRouterSwaps.sol";
 
 /// @title IIndexZap
 /// @notice Stateless convenience router: mint any index with USDC or USDT, and burn any index straight into USDC or
-///         USDT, swapping through Uniswap's Universal Router. Apps encode calls against this interface.
+///         USDT, swapping through Uniswap's Universal Router or, leg by leg, the chain's own DEX (PancakeSwap on BNB
+///         Chain, Aero on Base). Apps encode calls against this interface.
 /// @dev Legs
 ///      - Each leg names its own venue, in the `MintLeg` and `BurnLeg` of {IUniversalRouterSwaps}. The basket
 ///        builder uses the same format.
@@ -15,8 +16,8 @@ import {IUniversalRouterSwaps} from "./IUniversalRouterSwaps.sol";
 ///        whose component is already the token being paid or received; it carries none.
 ///
 ///      Currencies
-///      - A mint pays and a burn is paid in the zap's `USDC` or `USDT`, and nothing else (the owner's call of
-///        2026-11-18, which withdrew the ether entry points of 2026-10-29). No entry point takes ether.
+///      - A mint pays and a burn is paid in the zap's `USDC` or `USDT`, and nothing else. No entry point
+///        takes ether.
 ///
 ///      Permits
 ///      - `mintWithTokenPermit` and `burnToTokenWithPermit` take an EIP-2612 signature for the whole amount the
@@ -92,7 +93,8 @@ interface IIndexZap is IUniversalRouterSwaps {
     /// @notice The router sold less of `component` than the zap gave it, or already held some, and `amount` went to
     ///         `to` instead.
     ///         - `component` is the hop's input; on a multi-hop leg it can be a middle token.
-    ///         - `amount` is what the hop's sweep brought back and `to` received. It includes any balance of that
+    ///         - `amount` is what the hop's sweep brought back and the zap sent `to`, not measured at `to`: a middle
+    ///           token that charges on transfer delivers less (CA-S06). It includes any balance of that
     ///           token the router already held, which anyone could have swept, unless `to` could not receive it: that
     ///           part then stays in the zap, and only what the hop did not sell is sent.
     ///         Unsold `tokenOut` raises the payout instead, and is not reported here.

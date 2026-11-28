@@ -44,6 +44,9 @@ contract MockRouterInventory {
 ///      Prices are fixed per token in dollars, so a swap settles by value across the route's endpoints. The route's
 ///      middle is not simulated: what the middle is for is checked by the endpoint and hook rules in the zap, and on a
 ///      mainnet fork against real pools.
+///
+///      Set {setPancake} and it stands for PancakeSwap's Infinity Universal Router instead: the same V3 and SWEEP
+///      commands, its V2 commands too, and no V4, which the engine never sends it.
 contract MockUniversalRouter is IUniversalRouter {
     using SafeERC20 for IERC20;
 
@@ -70,6 +73,8 @@ contract MockUniversalRouter is IUniversalRouter {
     /// @notice Decimals per token, so a price can be turned into raw units.
     mapping(address token => uint8 decimals) public decimalsOf;
     Mode public mode;
+    /// @notice Whether this router stands for PancakeSwap's: V2 commands taken, V4 refused.
+    bool public pancake;
     /// @notice The commands of the last `execute`, so a test can assert the bytes the zap emitted rather than only
     ///         the effect they had.
     bytes public lastCommands;
@@ -93,6 +98,10 @@ contract MockUniversalRouter is IUniversalRouter {
 
     function setMode(Mode mode_) external {
         mode = mode_;
+    }
+
+    function setPancake(bool pancake_) external {
+        pancake = pancake_;
     }
 
     /// @notice Prices `token` at `price` dollars per whole token (1e18 = one dollar).
@@ -128,8 +137,12 @@ contract MockUniversalRouter is IUniversalRouter {
                 _v3ExactIn(inputs[i], i);
             } else if (command == Cmd.V3_SWAP_EXACT_OUT) {
                 _v3ExactOut(inputs[i], i);
-            } else if (command == Cmd.V4_SWAP) {
+            } else if (command == Cmd.V4_SWAP && !pancake) {
                 _v4Swap(inputs[i], i);
+            } else if (command == Cmd.V2_SWAP_EXACT_IN && pancake) {
+                _v2ExactIn(inputs[i], i);
+            } else if (command == Cmd.V2_SWAP_EXACT_OUT && pancake) {
+                _v2ExactOut(inputs[i], i);
             } else if (command == Cmd.SWEEP) {
                 _sweep(inputs[i]);
             } else {
@@ -165,6 +178,30 @@ contract MockUniversalRouter is IUniversalRouter {
         uint256 delivered = mode == Mode.UnderDeliverExactOut ? amountOut - 1 : amountOut;
         _spend(tokenIn, needed);
         inventory.pay(tokenOut, recipient, delivered);
+    }
+
+    /// @dev PancakeSwap's V2 commands: the path forward from the input, and a zero input meaning "already paid".
+    function _v2ExactIn(bytes calldata input, uint256 index) private {
+        (address recipient, uint256 amountIn, uint256 amountOutMin, address[] memory path, bool payerIsUser) =
+            abi.decode(input, (address, uint256, uint256, address[], bool));
+        _checkPayer(payerIsUser);
+        require(amountIn != 0, "MockUR: the engine never sends an amount of zero, PancakeSwap's already-paid mark");
+        uint256 out = quoteOut(path[0], path[path.length - 1], amountIn);
+        if (out < amountOutMin) _fail(index, abi.encodeWithSignature("V2TooLittleReceived()"));
+        _spend(path[0], amountIn);
+        inventory.pay(path[path.length - 1], recipient, out);
+    }
+
+    function _v2ExactOut(bytes calldata input, uint256 index) private {
+        (address recipient, uint256 amountOut, uint256 amountInMax, address[] memory path, bool payerIsUser) =
+            abi.decode(input, (address, uint256, uint256, address[], bool));
+        _checkPayer(payerIsUser);
+        (address tokenIn, address tokenOut) = (path[0], path[path.length - 1]);
+        prefunded.push(IERC20(tokenIn).balanceOf(address(this)));
+        uint256 needed = quoteIn(tokenIn, tokenOut, amountOut);
+        if (needed > amountInMax) _fail(index, abi.encodeWithSignature("V2TooMuchRequested()"));
+        _spend(tokenIn, needed);
+        inventory.pay(tokenOut, recipient, amountOut);
     }
 
     function _v4Swap(bytes calldata input, uint256 index) private {

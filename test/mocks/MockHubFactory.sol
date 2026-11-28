@@ -16,7 +16,7 @@ contract MockHubFactory {
     address public platform;
 
     constructor() {
-        IMPLEMENTATION = new WeightedHub(address(new WeightedMath()));
+        IMPLEMENTATION = new WeightedHub(address(new WeightedMath()), address(0));
     }
 
     function create(IWeightedHub.ComponentInit[] memory inits, IWeightedHub.Config memory cfg)
@@ -24,7 +24,7 @@ contract MockHubFactory {
         returns (WeightedHub index)
     {
         index = WeightedHub(Clones.clone(address(IMPLEMENTATION)));
-        index.initialize("Mock", "MOCK", inits, cfg);
+        index.initialize("Mock", "MOCK", inits, cfg, IWeightedHub.FirstIssue(address(0), 0, address(0)));
     }
 
     function set(bool allowed_, address creator_, address platform_) external {

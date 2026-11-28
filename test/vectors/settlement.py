@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The exact model of an oracle-free settlement, and the vectors `test/WeightedMath.vectors.t.sol` replays.
 
-The model is written from the spec (`design/2026-11-10-oracle-free-rebalance.md`, section 4), in exact rationals, not
+The model is written from the spec (`docs/design/rebalance.md`, section 4), in exact rationals, not
 from `src/WeightedMath.sol`: it never chains a `mulDiv`, it rounds each quantity once, where the spec says to. The test
 compares the contract's answer with the model's, word for word, on every vector.
 
@@ -26,6 +26,14 @@ of that proposal must then also bring in, at those prices, at least `1 - toleran
 so a quote can only refuse a fill the rule above accepts, never accept one it refuses. `quote_floor` is that check and
 the `quotes` of the output are its vectors.
 
+Every fill also meets Pyth's prices (`docs/design/pyth-check.md`): the same floor, at the
+values `PythPrices` reads, one per raw unit, with a tolerance that rises from nothing at the auction's first second to
+MAX_ORACLE_TOLERANCE at its last, rounded down,
+
+    tolerance(elapsed) = floor( MAX_ORACLE_TOLERANCE * elapsed / AUCTION_DURATION )
+
+so Pyth, too, can only refuse. `oracle_floor` is that check and the `oracles` of the output are its vectors.
+
 The generator is deterministic (SEED), so a rerun reproduces the committed file. Change the arithmetic, this model or
 the vectors together, and commit the three in one change.
 """
@@ -45,6 +53,7 @@ AUCTION_DURATION = 14_400  # twenty half-lives
 UINT96_MAX = 2**96 - 1
 MIN_RAW_UNITS = 10**4
 MAX_UNITS = UINT96_MAX >> 10  # the factory's bound at creation; a fill may grow a leg up to UINT96_MAX
+MAX_ORACLE_TOLERANCE = 20_000_000_000_000_000  # 2%: what a fill may fall short of, at Pyth's prices, at the last second
 SEED = 20261110
 
 SETTLES, EMPTY, BOUNDS, OVERFLOW, BELOW, LENGTH, ELAPSED = 0, 1, 2, 3, 4, 5, 6
@@ -129,6 +138,22 @@ def quote_floor(units, new_units, prices, tolerance):
     value_out = sum(p * (u - v) for u, v, p in zip(units, new_units, prices) if v < u)
     value_in = sum(p * (v - u) for u, v, p in zip(units, new_units, prices) if v > u)
     return value_out, value_in, ceil(Fraction(value_out * (WAD - tolerance), WAD))
+
+
+def oracle_tolerance(elapsed):
+    """The tolerance Pyth's check allows `elapsed` seconds into the auction; None past it, where the math refuses."""
+    if elapsed > AUCTION_DURATION:
+        return None
+    return floor(Fraction(MAX_ORACLE_TOLERANCE * elapsed, AUCTION_DURATION))
+
+
+def oracle_floor(units, new_units, values, elapsed):
+    """Pyth's check against a fill: (tolerance, value out, value in, floor), or None past the auction."""
+    tolerance = oracle_tolerance(elapsed)
+    if tolerance is None:
+        return None
+    value_out, value_in, floor_ = quote_floor(units, new_units, values, tolerance)
+    return tolerance, value_out, value_in, floor_
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -298,6 +323,36 @@ def boundary(rng):
         return pair
 
 
+def edges():
+    """RZ-33: settlements whose amounts pass through a product above 2^256, which only a full-precision mulDiv carries
+    (shares times units times scale, with a supply from 2e30 to 1e40 on legs near the 96-bit ceiling), and a leg growing
+    to exactly UINT96_MAX, which settles, or one raw unit past it, which overflows. From a generator of their own, so no
+    other vector moves."""
+    rng = random.Random(SEED + 4)
+    out = []
+    while len(out) < 24:
+        n = rng.choice([2, 3, 4])
+        weights = partition(rng, n)
+        units = [rng.randrange(UINT96_MAX // 2 + 1, UINT96_MAX) for _ in range(n)]
+        supply = log_uniform(rng, 2 * 10**30, 10**40)
+        new_units = trade(rng, units, weights, 0, 0.05)
+        over = len(out) % 3 == 2
+        new_units[rng.randrange(n)] = UINT96_MAX + (1 if over else 0)
+        first = first_second(units, new_units, weights)
+        elapsed = first if first is not None else AUCTION_DURATION
+        v = with_outcome(dict(kind="edge", elapsed=elapsed, supply=supply, scale=WAD, units=units, newUnits=new_units,
+                              weights=weights, keepMask=0))
+        if v["outcome"] != (OVERFLOW if over else SETTLES):
+            continue
+        out.append(v)
+    wide = [v for v in out if v["outcome"] == SETTLES and any(
+        v["supply"] * abs(b - a) * v["scale"] >= 2**256 for a, b in zip(v["units"], v["newUnits"]))]
+    assert len(wide) >= 12, ("settlements past 2^256", len(wide))
+    assert all(UINT96_MAX in v["newUnits"] for v in out if v["outcome"] == SETTLES), "each settles a leg at the ceiling"
+    assert sum(v["outcome"] == OVERFLOW and v["badUnits"] == UINT96_MAX + 1 for v in out) >= 6
+    return out
+
+
 def with_outcome(v):
     r = settle(v["elapsed"], v["supply"], v["scale"], v["units"], v["newUnits"], v["weights"], v["keepMask"])
     v = dict(v)
@@ -360,6 +415,66 @@ def quotes():
     return out
 
 
+HOLDS, BELOW_FLOOR, OVER = 0, 1, 2
+
+
+def oracle_vector(units, new_units, values, elapsed):
+    checked = oracle_floor(units, new_units, values, elapsed)
+    if checked is None:
+        return dict(units=units, newUnits=new_units, values=values, elapsed=elapsed, tolerance=0, valueOut=0,
+                    valueIn=0, floor=0, outcome=OVER)
+    tolerance, value_out, value_in, floor_ = checked
+    return dict(units=units, newUnits=new_units, values=values, elapsed=elapsed, tolerance=tolerance,
+                valueOut=value_out, valueIn=value_in, floor=floor_, outcome=HOLDS if value_in >= floor_ else BELOW_FLOOR)
+
+
+def oracles():
+    """Pyth's check's vectors, from a generator of their own, so neither the settlement's nor the quote's move."""
+    rng = random.Random(SEED + 3)
+    out = []
+    # Any units inside the caps, any values, any second of the auction or just past it.
+    for _ in range(30):
+        n = rng.randint(2, 8)
+        units = [int(10 ** rng.uniform(4, 28)) for _ in range(n)]
+        new_units = [rng.choice([u, rng.randint(*bounds(u, 0))]) for u in units]
+        values = [rng.choice([0, 1, UINT128_MAX, int(10 ** rng.uniform(0, 38))]) for _ in range(n)]
+        elapsed = rng.choice([0, 1, AUCTION_DURATION, AUCTION_DURATION + 1, rng.randrange(AUCTION_DURATION)])
+        out.append(oracle_vector(units, new_units, values, elapsed))
+    # Trades that give up part of what they take, at a second where the tolerance is about that part.
+    for _ in range(40):
+        n = rng.randint(2, 8)
+        values = [int(10 ** rng.uniform(10, 34)) for _ in range(n)]
+        units = [10**50 // v for v in values]
+        elapsed = rng.randrange(AUCTION_DURATION + 1)
+        kept = oracle_tolerance(elapsed) / WAD * rng.uniform(0.8, 1.2)
+        sold = rng.randint(1, n - 1)
+        part = rng.uniform(0.01, 0.15)
+        asked = part * sold / (n - sold) * (1 - kept)
+        new_units = [u - int(u * part) if i < sold else u + int(u * asked) for i, u in enumerate(units)]
+        out.append(oracle_vector(units, new_units, values, elapsed))
+    # On the floor to the unit and one unit under it, at the first second, the middle and the last.
+    for elapsed in (0, AUCTION_DURATION // 2, AUCTION_DURATION):
+        sold = 10**18
+        floor_ = ceil(Fraction(sold * (WAD - oracle_tolerance(elapsed)), WAD))
+        for bought in (floor_, floor_ - 1):
+            out.append(oracle_vector([10**24, 10**24], [10**24 - sold, 10**24 + bought], [1, 1], elapsed))
+    # The tolerance's own steps: the seconds where it rounds to one more unit.
+    for elapsed in (1, 719, 720, 7199, 14_399):
+        out.append(oracle_vector([10**24, 10**24], [10**24 - 10**20, 10**24 + 10**20], [1, 1], elapsed))
+    # Past the auction there is no tolerance to ask, whatever the fill.
+    for elapsed in (AUCTION_DURATION + 1, AUCTION_DURATION + 3600, 2**64):
+        out.append(oracle_vector([10**24, 10**24], [10**24 - 10**20, 10**24 + 10**20], [1, 1], elapsed))
+    # The widest sums the hub can pass: every leg at the top value, half sold a fifth and half doubled.
+    top = 2**96 - 1
+    units = [top // 2] * 100
+    new_units = [bounds(u, 0)[0] if i % 2 else bounds(u, 0)[1] for i, u in enumerate(units)]
+    out.append(oracle_vector(units, new_units, [UINT128_MAX] * 100, AUCTION_DURATION))
+    for outcome in (HOLDS, BELOW_FLOOR, OVER):
+        assert sum(o["outcome"] == outcome for o in out) >= 3, ("every outcome is met", outcome)
+    assert sum(o["outcome"] == HOLDS for o in out) >= 15 and sum(o["outcome"] == BELOW_FLOOR for o in out) >= 15
+    return out
+
+
 def main():
     rng = random.Random(SEED)
     plan = [("trade", 110), ("wide", 40), ("gift", 20), ("caps", 40), ("tiny", 30), ("kept", 40), ("dust", 15), ("share", 5),
@@ -367,6 +482,7 @@ def main():
     vectors = [with_outcome(make(rng, kind)) for kind, count in plan for _ in range(count)]
     for _ in range(20):
         vectors.extend(with_outcome(v) for v in boundary(rng))
+    vectors.extend(edges())
     counts = dict(
         settles=sum(v["outcome"] == SETTLES for v in vectors),
         empty=sum(v["outcome"] == EMPTY for v in vectors),
@@ -394,7 +510,7 @@ def main():
     assert counts["overflow"] >= 10 and counts["empty"] >= 3 and counts["length"] >= 4 and counts["elapsed"] >= 5, counts
     assert counts["kept"] >= 30 and counts["scaled"] >= 20 and counts["negativeGain"] >= 10, counts
     assert counts["turnoverBound"] >= 10 and counts["growthBound"] >= 10, counts
-    out = dict(seed=SEED, count=len(vectors), counts=counts, vectors=vectors, quotes=quotes())
+    out = dict(seed=SEED, count=len(vectors), counts=counts, vectors=vectors, quotes=quotes(), oracles=oracles())
     print(json.dumps(out, separators=(",", ":"), sort_keys=True))
 
 

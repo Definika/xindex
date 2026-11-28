@@ -7,9 +7,10 @@ import {IERC165} from "@openzeppelin/contracts/interfaces/IERC165.sol";
 import {IERC1820Registry} from "@openzeppelin/contracts/interfaces/IERC1820Registry.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
-import {ConfigureWeighted} from "./ConfigureWeighted.s.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
 import {BnbChainAddresses} from "./BnbChainAddresses.sol";
+import {BaseAddresses} from "./BaseAddresses.sol";
+import {ScriptLists} from "./ScriptLists.sol";
 import {ScriptUtils} from "./ScriptUtils.sol";
 import {IAdminReads} from "./interfaces/IAdminReads.sol";
 import {IPoolManagerStorage} from "./interfaces/IPoolManagerStorage.sol";
@@ -17,13 +18,14 @@ import {ISafeThreshold} from "./interfaces/ISafeThreshold.sol";
 import {IUniswapV3FactoryRead} from "./interfaces/IUniswapV3FactoryRead.sol";
 import {IUniswapV3PoolRead} from "./interfaces/IUniswapV3PoolRead.sol";
 
-/// @notice The admission check of `design/2026-10-05-wide-asset-support.md`, section 2.1: one report per token for the
+/// @notice The admission check of `docs/design/wide-asset-support.md`, section 2.1: one report per token for the
 ///         Safe's signers, run against an RPC before the token's listing is proposed. Read-only: it never broadcasts,
 ///         and what it simulates (a balance written into the token's storage, transfers between made-up accounts, a
 ///         day passing) is undone after each token.
 ///
 ///   CHECK=wide forge script script/CheckToken.s.sol --fork-url <mainnet rpc>
 ///   CHECK=bnb forge script script/CheckToken.s.sol --fork-url <bnb chain rpc>
+///   CHECK=base forge script script/CheckToken.s.sol --fork-url <base rpc>
 ///   CHECK=<token,...> forge script script/CheckToken.s.sol --fork-url <any evm rpc>
 ///
 /// What it checks, and what each finding does:
@@ -36,7 +38,7 @@ import {IUniswapV3PoolRead} from "./interfaces/IUniswapV3PoolRead.sol";
 ///     `owner()` or `getOwner()`, the proxy's admin or the beacon's owner, and an enumerable `DEFAULT_ADMIN_ROLE`,
 ///     each classified as a key, an EIP-7702 delegated key, a Safe, a timelock or another contract. All recorded; the
 ///     WBT rule refuses a token that can both blacklist a holder and destroy its balance
-///     (design/2026-09-30-wbt-check.md). A blacklist with a burn from another account is left for review, because
+///     (docs/design/wbt-check.md). A blacklist with a burn from another account is left for review, because
 ///     OpenZeppelin's `burnFrom` spends the holder's allowance and only the source says whether this one does.
 ///   - Depth, on Ethereum and BNB Chain: each Uniswap V3 pool against the wrapped coin and the chain's stablecoin
 ///     (WETH and USDC on Ethereum, WBNB and USDT on BNB Chain) at the four standard fees, and each hookless V4 pool
@@ -55,7 +57,8 @@ import {IUniswapV3PoolRead} from "./interfaces/IUniswapV3PoolRead.sol";
 ///
 /// Env:
 ///   CHECK          `default` or `wide`, the tokens of `ConfigureWeighted`'s Ethereum lists (chain 1 only), `bnb`,
-///                  its BNB Chain list (chain 56 only), or comma-separated token addresses.
+///                  its BNB Chain list (chain 56 only), `base`, its Base list (chain 8453 only), or comma-separated
+///                  token addresses.
 ///   CHECK_HOLDERS  Optional comma-separated `token:holder` pairs: an account the transfer check may take the test
 ///                  balance from when the token's balance slot cannot be written (balances kept elsewhere, or shares).
 ///                  On Ethereum and BNB Chain the token's own pools are tried after it.
@@ -153,6 +156,7 @@ contract CheckToken is Script {
         Party owner;
         Party admin;
         Party roleAdmin;
+        uint256 roleAdmins;
         Pool[] pools;
         Verdict verdict;
         string reason;
@@ -249,6 +253,8 @@ contract CheckToken is Script {
     /// @dev Gas for each read and each simulated call; far more than any ERC-20 read or transfer needs.
     uint256 private constant READ_GAS = 300_000;
     uint256 private constant CALL_GAS = 1_000_000;
+    /// @dev The ether an account holds while the check calls a token as it.
+    uint256 private constant CALLER_ETHER = 1 ether;
     /// @dev The answer bytes a read or a call keeps, in the scratch space below the free memory pointer.
     uint256 private constant ONE_WORD = 0x20;
     uint256 private constant TWO_WORDS = 0x40;
@@ -285,16 +291,16 @@ contract CheckToken is Script {
     }
 
     /// @notice CHECK's tokens: those of `ConfigureWeighted`'s `default` or `wide` list, which only chain 1 resolves,
-    ///         its `bnb` list, which only chain 56 resolves, or comma-separated addresses.
-    function resolveTokens(string memory raw) public returns (address[] memory tokens) {
-        ConfigureWeighted lists = new ConfigureWeighted();
-        if (!ScriptUtils.same(raw, "default") && !ScriptUtils.same(raw, "wide") && !ScriptUtils.same(raw, "bnb")) {
-            return lists.parseAddresses(raw);
-        }
-        return lists.resolveList(raw);
+    ///         its `bnb` list, which only chain 56 resolves, its `base` list, which only chain 8453 resolves, or
+    ///         comma-separated addresses.
+    ///         The lists come from `ScriptLists`, which this script carries: it creates no contract to resolve them,
+    ///         since a script run on an OP Stack chain fails a creation by the script contract, which holds no ether.
+    function resolveTokens(string memory raw) public view returns (address[] memory tokens) {
+        return ScriptLists.isNamed(raw) ? ScriptLists.resolve(raw) : ScriptLists.parse(raw);
     }
 
-    /// @notice Where depth is measured on this chain: Uniswap on Ethereum and on BNB Chain, and nowhere elsewhere.
+    /// @notice Where depth is measured on this chain: Uniswap on Ethereum, on BNB Chain and on Base, and nowhere
+    ///         elsewhere.
     function markets() public view returns (Markets memory m) {
         if (block.chainid == 1) {
             m = Markets({
@@ -309,6 +315,13 @@ contract CheckToken is Script {
                 poolManager: BnbChainAddresses.POOL_MANAGER,
                 weth: BnbChainAddresses.WBNB,
                 usdc: BnbChainAddresses.USDT
+            });
+        } else if (block.chainid == BaseAddresses.CHAIN_ID) {
+            m = Markets({
+                v3Factory: BaseAddresses.UNISWAP_V3_FACTORY,
+                poolManager: BaseAddresses.POOL_MANAGER,
+                weth: BaseAddresses.WETH,
+                usdc: BaseAddresses.USDC
             });
         }
     }
@@ -326,6 +339,13 @@ contract CheckToken is Script {
         }
         r.symbol = ScriptUtils.symbolOf(token);
         (r.decimalsAnswered, r.decimals) = ScriptUtils.decimalsOf(token);
+        // A precompile of its chain that this EVM cannot execute, as Coinbase's stock tokens on Base are under
+        // Foundry before v1.8.4: no read or transfer below would run, and each would read as the token's fault.
+        if (!r.decimalsAnswered && ScriptUtils.isBarePrecompile(token.code)) {
+            r.verdict = Verdict.Review;
+            r.reason = "a precompile of its chain, which this EVM cannot execute: read it through the chain's node";
+            return r;
+        }
         // forge-lint: disable-next-line(unused-return) a token with no total supply reports zero
         (, r.totalSupply) = _word(token, abi.encodeCall(IERC20.totalSupply, ()));
         (r.registry, r.erc777, r.erc1363) = hooksOf(token);
@@ -334,6 +354,8 @@ contract CheckToken is Script {
         r.owner = classify(_ownerOf(token));
         r.admin = classify(r.upgrader);
         r.roleAdmin = classify(_roleAdminOf(token));
+        // How many hold the role, zero when the token does not count them: the report names the first alone.
+        (, r.roleAdmins) = _word(token, abi.encodeCall(IAdminReads.getRoleMemberCount, (bytes32(0))));
         r.pools = depth(token, m);
         uint256 amount =
             r.decimalsAnswered && r.decimals <= MAX_SCALED_DECIMALS ? DECIMAL_BASE ** r.decimals : FALLBACK_AMOUNT;
@@ -472,10 +494,13 @@ contract CheckToken is Script {
     /// @dev Calls `token` as `from`; true when the call succeeded and answered nothing (Tether's style) or true. The call
     ///      gets CALL_GAS and only its answer's first word is kept: an old token's failed `assert` or `throw` burns all
     ///      the gas it is given, which would otherwise end the whole run.
+    ///      `from` is given ether first: a script run against an OP Stack chain fails a state-changing call from an
+    ///      account that holds none before the call runs, so every probe on Base read as a failed transfer.
     function _calls(address from, address token, bytes memory data) private returns (bool) {
         bool ok;
         uint256 size;
         uint256 word;
+        vm.deal(from, CALLER_ETHER);
         vm.prank(from);
         // Solidity copies a call's whole answer into memory; this keeps one word of it, in scratch space.
         // forge-lint: disable-next-line(inline-assembly)
@@ -634,7 +659,7 @@ contract CheckToken is Script {
                 || selector == 0x16c02129 // blacklists(address): a blacklist's view (PEPE)
                 || selector == 0xe5839836 // isFrozen(address): a freeze list's view (Paxos)
                 || selector == 0x4a393149 // onTransfer(address,address,uint256): MiniMe (LEO) asks its controller
-                || selector == 0xe5c7160b // blocklist(address): Gala (GALA), the source reading of 2026-10-18 (CF-4)
+                || selector == 0xe5c7160b // blocklist(address): Gala (GALA), from the source reading (CF-4)
                 || selector == 0x8e204c43 // isBlocklisted(address): a blocklist's view (GALA)
                 || selector == 0x052d9e7e // setWhitelistEnabled(bool): TokenSoft (wXRP), stops every holder not listed
                 || selector == 0x8ab1d681 // removeFromWhitelist(address): TokenSoft (wXRP)
@@ -898,7 +923,7 @@ contract CheckToken is Script {
         );
         console2.log(string.concat("owner: ", describe(r.owner)));
         if (r.roleAdmin.account != address(0)) {
-            console2.log(string.concat("DEFAULT_ADMIN_ROLE: ", describe(r.roleAdmin)));
+            console2.log(string.concat("DEFAULT_ADMIN_ROLE: ", roleAdminText(r.roleAdmin, r.roleAdmins)));
         }
         _logDepth(r);
     }
@@ -910,8 +935,9 @@ contract CheckToken is Script {
         if (r.pools.length == 0) {
             console2.log(
                 block.chainid == 1 || block.chainid == BnbChainAddresses.CHAIN_ID
+                    || block.chainid == BaseAddresses.CHAIN_ID
                     ? "  no standard V3 pool or hookless V4 pool"
-                    : "  measured on Ethereum and BNB Chain only"
+                    : "  measured on Ethereum, BNB Chain and Base only"
             );
         }
         for (uint256 i = 0; i < r.pools.length; ++i) {
@@ -944,11 +970,31 @@ contract CheckToken is Script {
         }
     }
 
+    /// @notice The DEFAULT_ADMIN_ROLE line of a report: the role's first holder, `first`, and how many hold it. The
+    ///         report read one holder and printed it as the role's, so a token administered by a Safe and by a key
+    ///         beside it read as the Safe's alone, or the key's, whichever was granted first (CA-R2-17).
+    function roleAdminText(Party memory first, uint256 holders) public view returns (string memory) {
+        string memory text = describe(first);
+        if (holders == 1) return text;
+        if (holders == 0) {
+            return
+                string.concat(
+                    text, "; the first holder, of a number the token does not give: read its RoleGranted events"
+                );
+        }
+        return string.concat(text, "; the first of ", vm.toString(holders), " holders: read each with getRoleMember");
+    }
+
     /// @notice What kind of account `party` is, in words.
     function kindText(Party memory party) public pure returns (string memory) {
         if (party.kind == Kind.Key) return "an externally owned key";
         if (party.kind == Kind.DelegatedKey) return "a key delegated under EIP-7702";
         if (party.kind == Kind.Safe) {
+            // A Safe needs at least one signature and has at least as many owners. Fewer owners than signatures is an
+            // owner list this check could not read, which it used to print as a count: "2 of 0" (CA-R2-18).
+            if (party.threshold == 0 || party.signers < party.threshold) {
+                return string.concat("a Safe, threshold ", vm.toString(party.threshold), ", its owners unread");
+            }
             return string.concat("a Safe, ", vm.toString(party.threshold), " of ", vm.toString(party.signers));
         }
         if (party.kind == Kind.Timelock) {
@@ -1003,6 +1049,8 @@ contract CheckToken is Script {
         if (pair == MainnetAddresses.USDC) return "USDC";
         if (pair == BnbChainAddresses.WBNB) return "WBNB";
         if (pair == BnbChainAddresses.USDT) return "USDT";
+        if (pair == BaseAddresses.WETH) return "WETH";
+        if (pair == BaseAddresses.USDC) return "USDC";
         return vm.toString(pair);
     }
 
@@ -1064,10 +1112,12 @@ contract CheckToken is Script {
         return word >> 160 == 0 ? address(SafeCast.toUint160(word)) : address(0);
     }
 
-    /// @dev The length of the address array `target` answers `query` with, or zero for no answer.
+    /// @dev The length of the address array `target` answers `query` with, or zero for no answer, and for an answer
+    ///      too short to hold the entries it announces: a length nothing backs is not a count (CA-R2-18).
     function _arrayLength(address target, bytes memory query) private view returns (uint256) {
         (bool ok, uint256 size,, uint256 second) = _read(target, query);
-        return ok && size >= 2 * ScriptUtils.WORD ? second : 0;
+        if (!ok || size < 2 * ScriptUtils.WORD) return 0;
+        return second <= (size - 2 * ScriptUtils.WORD) / ScriptUtils.WORD ? second : 0;
     }
 
     /// @dev The `size` bytes of `code` from `at`, big-endian, stopping at its end (a push cut off by the end of the code).

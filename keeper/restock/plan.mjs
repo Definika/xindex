@@ -13,7 +13,8 @@ export function bridgeable(amount, decimals) {
 }
 
 const usdOf = (units, decimals, price) => (Number(units) / 10 ** decimals) * price;
-const unitsOf = (usd, decimals, price) => BigInt(Math.floor((usd / price) * 10 ** decimals));
+/// `usd` of a coin of `decimals` at `price`, in its units, rounded down: how the plan sizes every trade.
+export const unitsOf = (usd, decimals, price) => BigInt(Math.floor((usd / price) * 10 ** decimals));
 const withBps = (x, bps) => x + (x * BigInt(bps)) / 10_000n;
 
 /// The round's actions, in the order to run them, and a note for every coin or chain left alone and why.
@@ -23,11 +24,13 @@ const withBps = (x, bps) => x + (x * BigInt(bps)) / 10_000n;
 ///   the keeper's board is missing, unreadable or stale: then no coin is bought, sold or bridged (RS-8).
 /// - `stock`: Map of copy address to `{balance, allowance}` in the executor.
 /// - `inflight`: Map of copy address to `{in, out}`, amounts crossing the bridge now (the journal's).
-/// - `home`: `{coins: Map symbol -> balance in the home wallet, the gas reserve left out; floats: Map chain -> the
-///   float's balance; gas: Map chain -> the gas coin's balance; funding: Map chain -> float on its way there}`.
+/// - `home`: `{coins: Map symbol -> balance in the home wallet, and for a local coin (`coins.mjs` LOCAL_COINS) the
+///   treasury's own balance of it on Ethereum;
+///   floats: Map chain -> the float's balance; gas: Map chain -> the gas coin's balance; funding: Map chain -> float on
+///   its way there}`.
 /// - `treasury`: `{usdc, allowance}`: the treasury's USDC on Ethereum and what it may still draw from the executor.
 /// - `prices`: Map symbol -> USD, from Pyth; a coin without one is left alone.
-/// - `spentUsd`: what buys cost over the last day.
+/// - `spentUsd`: the most the buys of the last day may have cost (the journal's sum of their `maxUsd`).
 /// - `restockAllowance`: Map of copy address to how much more of it arriving through the bridge may earn stock
 ///   allowance (the executor's `restockAllowance`, which only its owner sets, RS-1); a coin missing from it has none.
 /// - `busy`: Set of coin symbols, chains and "treasury" with a move of the journal's still to settle, left alone until
@@ -39,9 +42,17 @@ export function plan({ coins, needs, stock, inflight, home, treasury, prices, sp
   const notes = [];
   const float = new Map(home.floats);
   const fundWanted = new Map(); // chain -> float to send there
+  // RESTOCK_DAILY_USD bounds what the day's buys may cost, not what they buy: a buy of `usd` at Pyth may spend up to
+  // the loss bound more. Counted at its worth alone, a day of buys cost up to 1% over the budget (CA-M13).
+  const worst = 1 + cfg.maxLossBps / 10_000;
   let budget = cfg.dailyUsd - spentUsd;
 
-  const active = [...new Set(coins.map((c) => c.chain))];
+  // A local coin has no home chain: Ethereum is its home, the treasury its wallet and the treasury's USDC its float.
+  const active = [...new Set(coins.filter((c) => !c.local).map((c) => c.chain))];
+  // What the treasury may still spend on the local coins' UniswapX orders this round, what it holds and may draw, and
+  // what those orders take of it, which the fundings below and the draw count too.
+  let usdcFree = treasury.usdc + treasury.allowance;
+  let localUsdc = 0n;
   const noGas = new Set();
   for (const chain of active) {
     if ((home.gas.get(chain) ?? 0n) < (cfg.gasMin.get(chain) ?? 0n)) {
@@ -75,8 +86,80 @@ export function plan({ coins, needs, stock, inflight, home, treasury, prices, sp
     const want = need === 0n ? 0n : withBps(need, cfg.bufferBps);
     const blocked = noGas.has(c.chain);
 
+    if (c.local) {
+      // A coin Ethereum issues, which no pool sells: bought through UniswapX into the treasury, then deposited into
+      // the executor (`depositStock`), credited within the restock allowance as a bridged arrival is (RS-1). Nothing
+      // sells it or takes it out: what the treasury holds of it goes in, needed or not, worth RESTOCK_MIN_USD or the
+      // cover of a shortfall, since a hot wallet is no place to keep it, and spare stock waits in the executor for the
+      // next need or the owner.
+      const fromHome = atHome < room ? atHome : room;
+      const deposit = () => {
+        if (atHome > 0n && (usable < need || usdOf(atHome, c.decimals, price) >= cfg.minUsd)) {
+          actions.push({ kind: "deposit", coin: c.symbol, copy: c.copy, chain: c.chain, amount: atHome, usd: usdOf(atHome, c.decimals, price) });
+        }
+      };
+      if (usable >= need) {
+        deposit();
+        continue;
+      }
+      if (balance > usable) {
+        notes.push(
+          `${c.symbol}: the executor holds ${usdOf(balance - usable, c.decimals, price).toFixed(0)} USD of it beyond its stock allowance: the owner must raise it with setStockAllowance(${c.copy}, <amount>)`,
+        );
+        if (balance >= need) {
+          deposit();
+          continue;
+        }
+      }
+      deposit();
+      const short = want > balance + fromHome ? want - balance - fromHome : 0n;
+      const roomLeft = room - fromHome;
+      const minUnits = unitsOf(cfg.minUsd, c.decimals, price);
+      if (short === 0n || (short < minUnits && balance + fromHome >= need)) continue;
+      if (roomLeft < minUnits) {
+        notes.push(
+          `${c.symbol}: short ${usdOf(short, c.decimals, price).toFixed(0)} USD, but its restock allowance on the executor has ${usdOf(roomLeft, c.decimals, price).toFixed(0)} USD left, below RESTOCK_MIN_USD: the owner must raise it with setRestockAllowance(${c.copy}, <amount>)`,
+        );
+        continue;
+      }
+      if (busy.has("treasury")) {
+        notes.push(`${c.symbol}: its UniswapX order waits for the treasury's move to settle`);
+        continue;
+      }
+      // An exact USDC spend, so the order costs what it is worth at Pyth and the day's budget is charged no more.
+      const budgetLeft = budget > 0 ? unitsOf(budget, c.decimals, price) : 0n;
+      if (budgetLeft < minUnits) {
+        notes.push(`${c.symbol}: short ${usdOf(short, c.decimals, price).toFixed(0)} USD, past RESTOCK_DAILY_USD for the day`);
+        continue;
+      }
+      let amountOut = capUnits(short > minUnits ? short : minUnits, c, price, cfg.maxTransferUsd);
+      if (amountOut > roomLeft) amountOut = roomLeft;
+      if (amountOut > budgetLeft) amountOut = budgetLeft;
+      const usd = usdOf(amountOut, c.decimals, price);
+      const amountIn = unitsOf(usd, 6, 1);
+      if (usdcFree < amountIn) {
+        notes.push(`${c.symbol}: the treasury's USDC and its allowance on the executor are too small for its UniswapX order`);
+        continue;
+      }
+      usdcFree -= amountIn;
+      localUsdc += amountIn;
+      budget -= usd;
+      const minOut = unitsOf(usd * (1 - cfg.maxLossBps / 10_000), c.decimals, price);
+      actions.push({ kind: "order", coin: c.symbol, copy: c.copy, chain: c.chain, usd, maxUsd: usd, amountIn, maxIn: amountIn, amountOut, minOut });
+      continue;
+    }
+
     if (usable + credited < need) {
-      const short = want - usable - credited;
+      // Stock the executor holds beyond its stock allowance is there, but no fill may deliver it: what it lacks is
+      // allowance, which only the owner sets, not coins. Counted as missing, it was bought again, and once covered
+      // the coins over the need went home to be sold; the note sent the owner to the restock allowance (RZ-20).
+      if (balance > usable) {
+        notes.push(
+          `${c.symbol}: the executor holds ${usdOf(balance - usable, c.decimals, price).toFixed(0)} USD of it beyond its stock allowance: the owner must raise it with setStockAllowance(${c.copy}, <amount>)`,
+        );
+        if (balance + credited >= need) continue;
+      }
+      const short = want - balance - credited;
       if (open === 0n) {
         notes.push(
           `${c.symbol}: short ${usdOf(short, c.decimals, price).toFixed(0)} USD, but its restock allowance on the executor is spent: the owner must call setRestockAllowance(${c.copy}, <amount>)`,
@@ -87,28 +170,39 @@ export function plan({ coins, needs, stock, inflight, home, treasury, prices, sp
       // grows a little before the coins land does not start another round of buys.
       const gap = short < open ? short : open;
       const fromHome = atHome < gap ? atHome : gap;
-      const bring = bridgeable(fromHome, c.decimals);
-      if (bring > 0n && !blocked) {
-        const capped = bridgeable(capUnits(bring, c, price, cfg.maxTransferUsd), c.decimals);
-        actions.push({ kind: "bridgeIn", coin: c.symbol, copy: c.copy, chain: c.chain, amount: capped, usd: usdOf(capped, c.decimals, price) });
-      }
+      // What the home wallet holds comes in first, unless this round buys and it is worth less than RESTOCK_MIN_USD:
+      // then it waits for the buy's coins, which land beside it, and the next round brings both in one transfer. Sent
+      // on its own, it cost an Ethereum redeem for a sliver the buy did not shrink (RZ-21).
+      const bring = bridgeable(capUnits(bridgeable(fromHome, c.decimals), c, price, cfg.maxTransferUsd), c.decimals);
+      const bringUsd = usdOf(bring, c.decimals, price);
+      const bringIn = () => {
+        if (bring > 0n && !blocked) actions.push({ kind: "bridgeIn", coin: c.symbol, copy: c.copy, chain: c.chain, amount: bring, usd: bringUsd });
+      };
       const rest = gap - fromHome;
-      if (rest <= 0n) continue;
+      if (rest <= 0n) {
+        bringIn();
+        continue;
+      }
       // The buy, counted in the coin's units so that it lands on what is missing to the wei (RS-3): at least
       // RESTOCK_MIN_USD of the coin, so fees do not eat a small one, unless the home wallet's coins already cover the
       // need, when what only the buffer still lacks waits; at most RESTOCK_MAX_TRANSFER_USD, the restock allowance and
       // what is left of the day's budget, to which a larger one is cut rather than dropped (RS-7).
       const minUnits = unitsOf(cfg.minUsd, c.decimals, price);
-      if (rest < minUnits && usable + credited + fromHome >= need) continue;
+      if (rest < minUnits && balance + credited + fromHome >= need) {
+        bringIn();
+        continue;
+      }
       const roomLeft = open - fromHome;
       if (roomLeft < minUnits) {
+        bringIn();
         notes.push(
           `${c.symbol}: its restock allowance on the executor has ${usdOf(roomLeft, c.decimals, price).toFixed(0)} USD left, below RESTOCK_MIN_USD: the owner must raise it with setRestockAllowance(${c.copy}, <amount>)`,
         );
         continue;
       }
-      const budgetLeft = budget > 0 ? unitsOf(budget, c.decimals, price) : 0n;
+      const budgetLeft = budget > 0 ? unitsOf(budget / worst, c.decimals, price) : 0n;
       if (budgetLeft < minUnits) {
+        bringIn();
         notes.push(`${c.symbol}: short ${usdOf(rest, c.decimals, price).toFixed(0)} USD, past RESTOCK_DAILY_USD for the day`);
         continue;
       }
@@ -126,13 +220,16 @@ export function plan({ coins, needs, stock, inflight, home, treasury, prices, sp
       if (have < maxIn) {
         fundWanted.set(c.chain, (fundWanted.get(c.chain) ?? 0n) + maxIn - have);
         float.set(c.chain, 0n);
+        bringIn();
         notes.push(`${c.symbol}: waiting for ${fl.symbol} on ${c.chain}`);
         continue;
       }
       float.set(c.chain, have - maxIn);
-      budget -= usd;
+      budget -= usd * worst;
       const minOut = unitsOf(usd * (1 - cfg.maxLossBps / 10_000), c.decimals, price);
-      actions.push({ kind: "buy", coin: c.symbol, copy: c.copy, chain: c.chain, usd, amountIn, maxIn, amountOut, minOut });
+      if (bringUsd >= cfg.minUsd) bringIn();
+      else if (bring > 0n) notes.push(`${c.symbol}: ${bringUsd.toFixed(0)} USD at home waits to come in with the coins this round buys`);
+      actions.push({ kind: "buy", coin: c.symbol, copy: c.copy, chain: c.chain, usd, maxUsd: usd * worst, amountIn, maxIn, amountOut, minOut });
       continue;
     }
 
@@ -151,35 +248,44 @@ export function plan({ coins, needs, stock, inflight, home, treasury, prices, sp
       actions.push({ kind: "sell", coin: c.symbol, copy: c.copy, chain: c.chain, amount, minOut: unitsOf(usdOf(amount, c.decimals, price) * (1 - cfg.maxLossBps / 10_000), CHAINS[c.chain].float.decimals, 1) });
     }
     // Executor stock beyond what the needs want and the keep goes home: what it holds now, not what is on its way,
-    // which goes home in its turn once it lands, if still spare (RS-9).
+    // which goes home in its turn once it lands, if still spare (RS-9). Not to a chain short of gas, where the
+    // transfer could not be redeemed and the stock would wait at the bridge for a top-up (CA-R2-09).
     const spare = balance > want ? balance - want : 0n;
     const keep = unitsOf(cfg.keepUsd, c.decimals, price);
-    if (going === 0n && spare > keep && usdOf(spare - keep, c.decimals, price) >= cfg.minUsd) {
+    if (going === 0n && !blocked && spare > keep && usdOf(spare - keep, c.decimals, price) >= cfg.minUsd) {
       const amount = bridgeable(capUnits(spare - keep, c, price, cfg.maxTransferUsd), c.decimals);
       if (amount > 0n) actions.push({ kind: "bridgeOut", coin: c.symbol, copy: c.copy, chain: c.chain, amount, usd: usdOf(amount, c.decimals, price) });
     }
   }
 
-  // Floats: send what the buys wait for where CCTP runs, flag the rest, and bring back what sits idle.
+  // Floats: send what the buys wait for where CCTP runs, flag the rest, and bring back what sits idle. A funding is
+  // planned only out of what the treasury holds and may still draw, and what the buys wait for comes first: the
+  // float's target is topped up with what is left. Asked for as one sum, a target the treasury could not reach left
+  // a funding nothing could pay, round after round, and the buy it was for never ran (CA-R2-10).
   let fundTotal = 0n;
+  let available = usdcFree;
   for (const chain of active) {
     const ch = CHAINS[chain];
     if (busy.has(chain)) continue;
     const wanted = fundWanted.get(chain) ?? 0n;
     const onItsWay = home.funding?.get(chain) ?? 0n;
     if (wanted > 0n) {
-      if (ch.cctpDomain === null) {
-        notes.push(`${chain}: top up its ${ch.float.symbol} float by hand (no CCTP)`);
-      } else if (busy.has("treasury")) {
+      if (busy.has("treasury")) {
         notes.push(`${chain}: funding waits for the treasury's move to settle`);
       } else if (noGas.has(chain)) {
         notes.push(`${chain}: no float sent while it has no gas to receive it`);
       } else if (onItsWay === 0n) {
         // CCTP moves USDC in six decimals; top up to the target on top of what the buys wait for.
-        const amount = toUsdc(wanted, ch.float.decimals) + BigInt(Math.round(cfg.floatTargetUsd * 1e6));
-        const capped = amount < BigInt(Math.round(cfg.maxTransferUsd * 1e6)) ? amount : BigInt(Math.round(cfg.maxTransferUsd * 1e6));
-        actions.push({ kind: "fund", chain, amount: capped });
-        fundTotal += capped;
+        const most = BigInt(Math.round(cfg.maxTransferUsd * 1e6));
+        const least = min(toUsdc(wanted, ch.float.decimals), most);
+        if (available < least) {
+          notes.push(`${chain}: the treasury's USDC and its allowance on the executor are too small for what its buys wait for`);
+        } else {
+          const amount = min(least + BigInt(Math.round(cfg.floatTargetUsd * 1e6)), most, available);
+          actions.push({ kind: "fund", chain, amount });
+          fundTotal += amount;
+          available -= amount;
+        }
       }
       continue;
     }
@@ -193,18 +299,21 @@ export function plan({ coins, needs, stock, inflight, home, treasury, prices, sp
     }
   }
 
-  // The treasury: draw from the executor what the funding needs, and repay what it holds beyond its target.
+  // The treasury: draw from the executor what the funding and the local coins' orders need, first, so the USDC is
+  // there when an order is signed and when its filler takes it; and repay what it holds beyond its target.
   const target = BigInt(Math.round(cfg.treasuryTargetUsd * 1e6));
   if (busy.has("treasury")) return { actions, notes };
-  if (fundTotal > treasury.usdc) {
-    const short = fundTotal - treasury.usdc;
-    if (short > treasury.allowance) notes.push("treasury: its USDC allowance on the executor is too small for the funding");
-    else actions.unshift({ kind: "draw", amount: short });
-  } else if (fundTotal === 0n && treasury.usdc > target + target) {
+  const usdcWanted = fundTotal + localUsdc;
+  if (usdcWanted > treasury.usdc) {
+    // Within the allowance: every funding and order above was planned out of the treasury's USDC and what it may draw.
+    actions.unshift({ kind: "draw", amount: usdcWanted - treasury.usdc });
+  } else if (usdcWanted === 0n && treasury.usdc > target + target) {
     actions.push({ kind: "repay", amount: treasury.usdc - target });
   }
   return { actions, notes };
 }
+
+const min = (first, ...rest) => rest.reduce((least, x) => (x < least ? x : least), first);
 
 /// `amount` of coin `c`, cut to at most `maxUsd` at `price`.
 function capUnits(amount, c, price, maxUsd) {

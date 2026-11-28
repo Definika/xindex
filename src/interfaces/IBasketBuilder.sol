@@ -18,7 +18,10 @@ import {IUniversalRouterSwaps} from "./IUniversalRouterSwaps.sol";
 ///      - NotAStable: a buy's `tokenIn` or a sale's `tokenOut` that is neither the builder's USDC nor its USDT, or a
 ///        USDT equal to USDC at construction. A deposit and a withdrawal take any token.
 ///      - InvalidRecipient: a recipient that is the builder, the router, the PoolManager, the factory or an index
-///        (RT-21).
+///        (RT-21), or the very token a withdrawal or a sale pays out (CA-R2-15).
+///      - Underbacked: a deposit, a buy or a redeem that would credit a token the builder holds less of than its
+///        escrows, as after the token's issuer took part of the balance (CA-H2).
+///      - TransferShortfall: also a deposit whose transfer delivered nothing (CA-R2-16).
 ///      The one-unit send-out probe runs on every credit that brings a token in, by deposit, buy or redeem; a sale's
 ///      unsold input, credited back, is a token the builder just sent out (RX-43).
 ///      - LengthMismatch: routes that do not pair with their legs.
@@ -100,11 +103,17 @@ interface IBasketBuilder is IUniversalRouterSwaps {
     /// @notice What `user` holds of `token` here.
     function escrowOf(address user, address token) external view returns (uint256);
 
+    /// @notice The sum of every user's escrow of `token`. The builder's balance of `token` covers it unless the
+    ///         token's issuer took some away, and while it does not, nothing new is credited in `token` (CA-H2).
+    function totalEscrow(address token) external view returns (uint256);
+
     /// @notice Moves `amount` of `token` from the caller into its escrow. The caller must have approved the builder.
-    ///         What arrives is what is credited, so a fee-on-transfer token credits less.
+    ///         What arrives is what is credited, so a fee-on-transfer token credits less, and a transfer that
+    ///         delivers nothing reverts TransferShortfall.
     function deposit(address token, uint256 amount) external;
 
     /// @notice Sends `amount` of `token` from the caller's escrow to `to`, or the whole escrow when `amount` is 0.
+    ///         `to` cannot be `token` itself.
     function withdraw(address token, uint256 amount, address to) external;
 
     /// @notice Buys the named legs of `p.index`'s basket for `p.shares` into the caller's escrow, spending at most

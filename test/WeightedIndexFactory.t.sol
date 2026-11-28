@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
+import {WeightedMath} from "../src/WeightedMath.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Errors} from "@openzeppelin/contracts/utils/Errors.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
@@ -11,6 +12,12 @@ import {IWeightedHub} from "../src/interfaces/IWeightedHub.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {WeightedTest} from "./WeightedTest.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
+import {MockFeeToken} from "./mocks/MockFeeToken.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @notice The weighted factory: listings with price ids, creation, addresses and the guardian.
 contract WeightedIndexFactoryTest is WeightedTest {
@@ -37,17 +44,19 @@ contract WeightedIndexFactoryTest is WeightedTest {
     function test_constructorEmitsTheGuardian() public {
         vm.expectEmit();
         emit IWeightedIndexFactory.GuardianSet(address(0), guardian);
-        WeightedIndexFactory deployed = new WeightedIndexFactory(owner, guardian);
+        WeightedIndexFactory deployed =
+            new WeightedIndexFactory(owner, guardian, address(0), address(new WeightedMath()), address(0));
         assertEq(deployed.guardian(), guardian);
     }
 
     function test_hubConstructorRefusesAZeroMath() public {
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new WeightedHub(address(0));
+        new WeightedHub(address(0), address(0));
     }
 
     function test_aZeroGuardianIsNone() public {
-        WeightedIndexFactory unguarded = new WeightedIndexFactory(owner, address(0));
+        WeightedIndexFactory unguarded =
+            new WeightedIndexFactory(owner, address(0), address(0), address(new WeightedMath()), address(0));
         assertFalse(unguarded.isOwnerOrGuardian(address(0)));
         assertTrue(unguarded.isOwnerOrGuardian(owner));
     }
@@ -327,8 +336,10 @@ contract WeightedIndexFactoryTest is WeightedTest {
         vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.InvalidComponentCount.selector, 0));
         factory.createIndex("Weighted", "WGT", new IWeightedIndexFactory.ComponentSpec[](0), _params());
 
-        vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.InvalidComponentCount.selector, 101));
-        factory.createIndex("Weighted", "WGT", new IWeightedIndexFactory.ComponentSpec[](101), _params());
+        uint256 tooMany = factory.MAX_COMPONENTS() + 1;
+        assertEq(tooMany, 201);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.InvalidComponentCount.selector, tooMany));
+        factory.createIndex("Weighted", "WGT", new IWeightedIndexFactory.ComponentSpec[](tooMany), _params());
     }
 
     function test_createIndexRefusesAnUnlistedOrDelistedToken() public {
@@ -423,6 +434,22 @@ contract WeightedIndexFactoryTest is WeightedTest {
         factory.createIndex("Weighted", "WGT", specs, _params());
     }
 
+    /// @dev The duplicate check's marks, in transient storage, are cleared before a creation returns: a contract that
+    ///      creates two indexes of the same tokens in one call, so in one transaction, gets both, and a duplicate within
+    ///      one is still refused after them. Foundry clears transient storage between a test's own calls, so the two
+    ///      creations are made from one contract's one call.
+    function test_aCreationLeavesNoMarkForTheNext() public {
+        _listAll();
+        TwiceCreator twice = new TwiceCreator(factory);
+        _approveCreator(address(twice));
+        (address first, address second) = twice.createTwice(_defaultSpecs(), _params());
+        assertTrue(first != second && factory.isIndex(first) && factory.isIndex(second));
+        IWeightedIndexFactory.ComponentSpec[] memory specs = _defaultSpecs();
+        specs[2] = _spec(address(eth), 2000, ETH_UNITS);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.DuplicateToken.selector, address(eth)));
+        factory.createIndex("Third", "THR", specs, _params());
+    }
+
     /// @dev One component alone is always on its weight, so an index needs two (V5-L2).
     function test_aSingleComponentIsRefused() public {
         _listAll();
@@ -486,15 +513,18 @@ contract WeightedIndexFactoryTest is WeightedTest {
         assertEq(address(index).code, expected);
     }
 
-    function test_aHundredComponents() public {
-        IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](100);
-        for (uint256 i = 0; i < 100; ++i) {
+    /// @dev An index of exactly MAX_COMPONENTS, two hundred, is created; one more is refused
+    ///      (`test_createIndexRefusesAnEmptyOrOversizedBasket`).
+    function test_theMostComponents() public {
+        uint256 n = factory.MAX_COMPONENTS();
+        IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](n);
+        for (uint256 i = 0; i < n; ++i) {
             MockERC20 token = new MockERC20("T", "T", 18);
             _list(address(token));
-            specs[i] = _spec(address(token), 100, 1e18);
+            specs[i] = _spec(address(token), 10_000 / n, 1e18);
         }
         WeightedHub index = _create(specs);
-        assertEq(index.componentCount(), 100);
+        assertEq(index.componentCount(), 200);
     }
 
     // ---------------------------------------------------------------------
@@ -593,7 +623,8 @@ contract WeightedIndexFactoryTest is WeightedTest {
         assertEq(factory.pendingGuardianEta(), 0);
 
         // Without a guardian, nobody but the owner cancels a removal.
-        WeightedIndexFactory unguarded = new WeightedIndexFactory(owner, address(0));
+        WeightedIndexFactory unguarded =
+            new WeightedIndexFactory(owner, address(0), address(0), address(new WeightedMath()), address(0));
         vm.prank(owner);
         unguarded.proposeGuardian(address(0));
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, address(0)));
@@ -772,7 +803,7 @@ contract WeightedIndexFactoryTest is WeightedTest {
         factory.createIndex{value: 0.01 ether}("Weighted2", "WGT", specs, _params());
     }
 
-    /// @dev Only an account the owner approved creates an index (the owner's call of 2026-11-10). Neither role is
+    /// @dev Only an account the owner approved creates an index. Neither role is
     ///      approved by being a role.
     function test_onlyAnApprovedCreatorCreatesAnIndex() public {
         _listAll();
@@ -943,7 +974,447 @@ contract WeightedIndexFactoryTest is WeightedTest {
             "the recipient and the creation fee are not terms of the index"
         );
     }
+
+    // ---------------------------------------------------------------------
+    // Pausing mints
+    // ---------------------------------------------------------------------
+
+    /// @dev The owner or the guardian pauses minting, on one index or on every index, and only the owner resumes it:
+    ///      the guardian is a brake, and a pause the owner set stays until the owner lifts it.
+    function test_theOwnerOrGuardianPausesMintingAndOnlyTheOwnerResumes() public {
+        _listAll();
+        address index = address(_create(_defaultSpecs()));
+        address[2] memory nobodies = [stranger, creator];
+        for (uint256 i = 0; i < nobodies.length; ++i) {
+            vm.prank(nobodies[i]);
+            vm.expectRevert(abi.encodeWithSelector(IXindexErrors.Unauthorized.selector, nobodies[i]));
+            factory.pauseMinting(index);
+        }
+        assertFalse(factory.mintingPaused(index));
+
+        vm.expectEmit(address(factory));
+        emit IWeightedIndexFactory.MintingPaused(index, guardian);
+        vm.prank(guardian);
+        factory.pauseMinting(index);
+        assertTrue(factory.mintingPaused(index));
+        assertFalse(factory.mintingPaused(address(0)), "one index's pause is not every index's");
+
+        // The guardian that paused cannot resume, nor can anyone but the owner.
+        address[3] memory notOwner = [guardian, stranger, creator];
+        for (uint256 i = 0; i < notOwner.length; ++i) {
+            vm.prank(notOwner[i]);
+            vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, notOwner[i]));
+            factory.resumeMinting(index);
+        }
+        vm.expectEmit(address(factory));
+        emit IWeightedIndexFactory.MintingResumed(index);
+        vm.prank(owner);
+        factory.resumeMinting(index);
+        assertFalse(factory.mintingPaused(index));
+
+        // The owner pauses too, and zero names every index.
+        vm.expectEmit(address(factory));
+        emit IWeightedIndexFactory.MintingPaused(address(0), owner);
+        vm.prank(owner);
+        factory.pauseMinting(address(0));
+        assertTrue(factory.mintingPaused(address(0)));
+    }
+
+    /// @dev A pause names a factory index, or zero for all of them: a mistyped address pauses nothing unseen.
+    function test_aPauseNamesAnIndexOrEveryIndex() public {
+        vm.prank(guardian);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotIndex.selector, address(eth)));
+        factory.pauseMinting(address(eth));
+        assertFalse(factory.mintingPaused(address(eth)));
+    }
+
+    /// @dev One index's pause stops that index's issues and no other's; the pause of every index stops them all, a
+    ///      creation with a first issue with them, and each is lifted on its own. What `feeTerms` answers is what
+    ///      the index acts on.
+    function test_aPauseOfOneIndexAndThePauseOfAll() public {
+        _listAll();
+        IWeightedIndexFactory.ComponentSpec[] memory specs = _defaultSpecs();
+        WeightedHub one = _create(specs);
+        IWeightedIndexFactory.IndexParams memory p = _params();
+        p.creatorFeeBps = 1;
+        WeightedHub other = _create(specs, p);
+
+        vm.prank(guardian);
+        factory.pauseMinting(address(one));
+        (bool allowed,,) = factory.feeTerms(address(one), alice);
+        assertFalse(allowed, "the paused index issues to nobody");
+        (allowed,,) = factory.feeTerms(address(other), alice);
+        assertTrue(allowed, "another index is untouched");
+        _issue(other, alice, 1e18);
+
+        vm.prank(guardian);
+        factory.pauseMinting(address(0));
+        (allowed,,) = factory.feeTerms(address(other), alice);
+        assertFalse(allowed, "the pause of every index reaches it");
+        // A creation without shares still goes through; one that buys is an issue, and is refused.
+        p.creatorFeeBps = 2;
+        vm.prank(creator);
+        factory.createIndex("Weighted", "WGT", specs, p);
+        p.creatorFeeBps = 3;
+        uint256[] memory amounts = _firstBasket(specs, 2e18);
+        address predicted = factory.predictIndexAddress(creator, "Weighted", "WGT", specs, p);
+        _fund(creator, predicted, specs, amounts);
+        vm.prank(creator);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.NotAllowedMinter.selector, creator));
+        factory.createAndIssue("Weighted", "WGT", specs, p, 1e18, creator);
+
+        // Lifting the pause of every index leaves the one index's own in place.
+        vm.prank(owner);
+        factory.resumeMinting(address(0));
+        (allowed,,) = factory.feeTerms(address(other), alice);
+        assertTrue(allowed);
+        (allowed,,) = factory.feeTerms(address(one), alice);
+        assertFalse(allowed, "its own pause stands");
+        vm.prank(owner);
+        factory.resumeMinting(address(one));
+        (allowed,,) = factory.feeTerms(address(one), alice);
+        assertTrue(allowed);
+    }
+
+    /// @dev The pause sits before the gate: on a gated index even its creator and an allowed account are refused
+    ///      while it holds, and the gate is as it was once it lifts.
+    function test_aPauseStopsAGatedIndexsOwnMintersToo() public {
+        _listAll();
+        IWeightedIndexFactory.IndexParams memory p = _params();
+        p.gated = true;
+        address index = address(_create(_defaultSpecs(), p));
+        vm.prank(creator);
+        factory.setAllowedMinter(index, alice, true);
+        vm.prank(guardian);
+        factory.pauseMinting(index);
+        address[2] memory minters = [creator, alice];
+        for (uint256 i = 0; i < minters.length; ++i) {
+            (bool allowed,,) = factory.feeTerms(index, minters[i]);
+            assertFalse(allowed);
+        }
+        vm.prank(owner);
+        factory.resumeMinting(index);
+        (bool open,,) = factory.feeTerms(index, alice);
+        assertTrue(open, "the allowed account mints again");
+        (open,,) = factory.feeTerms(index, stranger);
+        assertFalse(open, "and the gate still refuses a stranger");
+    }
+
+    // ---------------------------------------------------------------------
+    // Creation with the first issue
+    // ---------------------------------------------------------------------
+
+    /// @dev The basket `gross` shares of an index of `specs` need: each component's units for that many shares,
+    ///      rounded up, as the index's own issue computes it.
+    function _firstBasket(IWeightedIndexFactory.ComponentSpec[] memory specs, uint256 gross)
+        internal
+        pure
+        returns (uint256[] memory amounts)
+    {
+        amounts = new uint256[](specs.length);
+        for (uint256 i = 0; i < specs.length; ++i) {
+            amounts[i] = Math.mulDiv(gross, specs[i].units, 1e18, Math.Rounding.Ceil);
+        }
+    }
+
+    /// @dev Gives `account` the basket `amounts` of `specs` and has it approve `spender`, the address its index will
+    ///      have, as a creator does before a creation with a first issue.
+    function _fund(
+        address account,
+        address spender,
+        IWeightedIndexFactory.ComponentSpec[] memory specs,
+        uint256[] memory amounts
+    ) internal {
+        vm.startPrank(account);
+        for (uint256 i = 0; i < specs.length; ++i) {
+            MockERC20(specs[i].token).mint(account, amounts[i]);
+            MockERC20(specs[i].token).approve(spender, amounts[i]);
+        }
+        vm.stopPrank();
+    }
+
+    /// @dev Creating an index is buying it: one call creates the index and issues its
+    ///      first shares, the basket pulled from the creator by the index itself, at the address the creator approved
+    ///      before it existed. The index is then an index like any other.
+    function test_creationIsTheFirstBuy() public {
+        _listAll();
+        IWeightedIndexFactory.ComponentSpec[] memory specs = _defaultSpecs();
+        uint256 shares = 40e18;
+        uint256[] memory amounts = _firstBasket(specs, shares);
+        assertEq(amounts[0], 1e18, "forty shares hold one ETH");
+        address predicted = factory.predictIndexAddress(creator, "Weighted", "WGT", specs, _params());
+        _fund(creator, predicted, specs, amounts);
+
+        vm.expectEmit(predicted);
+        emit IWeightedHub.Issued(creator, alice, shares, amounts);
+        vm.prank(creator);
+        WeightedHub index = WeightedHub(factory.createAndIssue("Weighted", "WGT", specs, _params(), shares, alice));
+
+        assertEq(address(index), predicted);
+        assertTrue(factory.isIndex(address(index)));
+        assertEq(factory.creatorOf(address(index)), creator);
+        assertEq(index.balanceOf(alice), shares, "the recipient holds the first shares");
+        assertEq(index.totalSupply(), shares);
+        for (uint256 i = 0; i < specs.length; ++i) {
+            MockERC20 token = MockERC20(specs[i].token);
+            assertEq(token.balanceOf(address(index)), amounts[i], "the index holds the basket");
+            assertEq(token.balanceOf(creator), 0, "paid by the creator");
+            assertEq(token.allowance(creator, address(index)), 0, "and the approval is spent");
+        }
+        // An index like any other: its holder leaves with the basket.
+        vm.prank(alice);
+        index.redeem(shares, alice);
+        assertEq(eth.balanceOf(alice), amounts[0]);
+        assertEq(index.totalSupply(), 0);
+    }
+
+    /// @dev A creation with a first issue names its shares. None would create the index empty, which `createIndex`
+    ///      does and says.
+    function test_createAndIssueRefusesZeroShares() public {
+        _listAll();
+        vm.prank(creator);
+        vm.expectRevert(IWeightedHub.ZeroShares.selector);
+        factory.createAndIssue("Weighted", "WGT", _defaultSpecs(), _params(), 0, creator);
+        assertEq(factory.allIndexesLength(), 0);
+    }
+
+    /// @dev The approval gate stands before both creations: paying for the first basket buys no right to create.
+    function test_createAndIssueIsAnApprovedCreatorsOnly() public {
+        _listAll();
+        IWeightedIndexFactory.ComponentSpec[] memory specs = _defaultSpecs();
+        uint256[] memory amounts = _firstBasket(specs, 1e18);
+        address predicted = factory.predictIndexAddress(stranger, "Weighted", "WGT", specs, _params());
+        _fund(stranger, predicted, specs, amounts);
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.CreatorNotApproved.selector, stranger));
+        factory.createAndIssue("Weighted", "WGT", specs, _params(), 1e18, stranger);
+        assertEq(factory.allIndexesLength(), 0);
+
+        _approveCreator(stranger);
+        vm.prank(stranger);
+        address index = factory.createAndIssue("Weighted", "WGT", specs, _params(), 1e18, stranger);
+        assertEq(index, predicted);
+    }
+
+    /// @dev A first issue its creator cannot pay reverts the creation with it: no index is left that its own creator
+    ///      could not back, and nothing is taken.
+    function test_aFirstIssueItsCreatorCannotPayLeavesNoIndex() public {
+        _listAll();
+        IWeightedIndexFactory.ComponentSpec[] memory specs = _defaultSpecs();
+        uint256 shares = 40e18;
+        uint256[] memory amounts = _firstBasket(specs, shares);
+        address predicted = factory.predictIndexAddress(creator, "Weighted", "WGT", specs, _params());
+        _fund(creator, predicted, specs, amounts);
+        // The last component's approval is one raw unit short.
+        vm.prank(creator);
+        usd.approve(predicted, amounts[2] - 1);
+
+        vm.prank(creator);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IERC20Errors.ERC20InsufficientAllowance.selector, predicted, amounts[2] - 1, amounts[2]
+            )
+        );
+        factory.createAndIssue("Weighted", "WGT", specs, _params(), shares, alice);
+
+        assertEq(predicted.code.length, 0, "no index is left behind");
+        assertFalse(factory.isIndex(predicted));
+        assertEq(factory.allIndexesLength(), 0);
+        assertEq(eth.balanceOf(creator), amounts[0], "and nothing was taken");
+    }
+
+    /// @dev An approval to an index's future address is its creator's to spend and nobody else's: the address commits
+    ///      to the creator, so another approved creator's identical creation lands elsewhere and pulls from itself.
+    function test_theFirstIssuePullsFromItsCreatorAlone() public {
+        _listAll();
+        _approveCreator(alice);
+        IWeightedIndexFactory.ComponentSpec[] memory specs = _defaultSpecs();
+        uint256 shares = 40e18;
+        uint256[] memory amounts = _firstBasket(specs, shares);
+        address alices = factory.predictIndexAddress(alice, "Weighted", "WGT", specs, _params());
+        _fund(alice, alices, specs, amounts);
+
+        // The same creation from another approved creator: its own address, and its own empty pockets.
+        address creators = factory.predictIndexAddress(creator, "Weighted", "WGT", specs, _params());
+        assertTrue(creators != alices);
+        vm.prank(creator);
+        vm.expectRevert(
+            abi.encodeWithSelector(IERC20Errors.ERC20InsufficientAllowance.selector, creators, 0, amounts[0])
+        );
+        factory.createAndIssue("Weighted", "WGT", specs, _params(), shares, creator);
+        assertEq(eth.balanceOf(alice), amounts[0], "her basket is untouched");
+        assertEq(eth.allowance(alice, alices), amounts[0], "and so is her approval");
+
+        _fund(creator, creators, specs, amounts);
+        vm.prank(creator);
+        factory.createAndIssue("Weighted", "WGT", specs, _params(), shares, creator);
+        assertEq(eth.balanceOf(creators), amounts[0], "the creator's own basket backs its index");
+        assertEq(eth.balanceOf(alice), amounts[0]);
+        assertEq(alices.code.length, 0);
+    }
+
+    /// @dev The first issue is an issue: it charges the index's fee, the creator's deposit backs the fee's shares, and
+    ///      the creation fee is forwarded as for any creation.
+    function test_theFirstIssueChargesTheIndexsFee() public {
+        _listAll();
+        vm.prank(owner);
+        factory.setFeePolicy(25, 0, 0, stranger, 0.01 ether);
+        IWeightedIndexFactory.ComponentSpec[] memory specs = _defaultSpecs();
+        IWeightedIndexFactory.IndexParams memory p = _params();
+        p.creatorFeeBps = 100;
+        // 79 shares at 1.25% of fee are backed as 80: 79 / (1 - 0.0125).
+        uint256 shares = 79e18;
+        uint256 gross = 80e18;
+        uint256[] memory amounts = _firstBasket(specs, gross);
+        address predicted = factory.predictIndexAddress(creator, "Weighted", "WGT", specs, p);
+        _fund(creator, predicted, specs, amounts);
+        vm.deal(creator, 0.01 ether);
+
+        vm.prank(creator);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedIndexFactory.WrongCreationFee.selector, 0, 0.01 ether));
+        factory.createAndIssue("Weighted", "WGT", specs, p, shares, alice);
+
+        vm.prank(creator);
+        WeightedHub index =
+            WeightedHub(factory.createAndIssue{value: 0.01 ether}("Weighted", "WGT", specs, p, shares, alice));
+
+        assertEq(index.totalSupply(), gross, "the fee's shares are minted on top");
+        assertEq(index.balanceOf(alice), shares);
+        assertEq(index.balanceOf(stranger), 0.2e18, "the platform's 25 of the 125 basis points");
+        assertEq(index.balanceOf(creator), 0.8e18, "the creator's 100");
+        for (uint256 i = 0; i < specs.length; ++i) {
+            assertEq(MockERC20(specs[i].token).balanceOf(address(index)), amounts[i], "the deposit backs every share");
+        }
+        assertEq(stranger.balance, 0.01 ether, "the creation fee is forwarded");
+        assertEq(address(factory).balance, 0);
+    }
+
+    /// @dev A gated index issues only to its creator until the creator allows others, and its first issue is no
+    ///      exception.
+    function test_aGatedIndexsFirstIssueGoesToItsCreator() public {
+        _listAll();
+        IWeightedIndexFactory.ComponentSpec[] memory specs = _defaultSpecs();
+        IWeightedIndexFactory.IndexParams memory p = _params();
+        p.gated = true;
+        uint256[] memory amounts = _firstBasket(specs, 1e18);
+        address predicted = factory.predictIndexAddress(creator, "Weighted", "WGT", specs, p);
+        _fund(creator, predicted, specs, amounts);
+
+        vm.prank(creator);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.NotAllowedMinter.selector, alice));
+        factory.createAndIssue("Weighted", "WGT", specs, p, 1e18, alice);
+
+        vm.prank(creator);
+        WeightedHub index = WeightedHub(factory.createAndIssue("Weighted", "WGT", specs, p, 1e18, creator));
+        assertEq(index.balanceOf(creator), 1e18);
+        assertTrue(factory.isGated(address(index)));
+    }
+
+    /// @dev The first issue runs every check of an issue: a component that arrives short reverts the creation.
+    function test_theFirstIssueRefusesAComponentThatArrivesShort() public {
+        MockFeeToken fee = new MockFeeToken();
+        _list(address(eth));
+        _list(address(fee));
+        IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](2);
+        specs[0] = _spec(address(eth), 5000, ETH_UNITS);
+        specs[1] = _spec(address(fee), 5000, 1e18);
+        uint256[] memory amounts = _firstBasket(specs, 1e18);
+        address predicted = factory.predictIndexAddress(creator, "Weighted", "WGT", specs, _params());
+        _fund(creator, predicted, specs, amounts);
+
+        vm.prank(creator);
+        vm.expectRevert(abi.encodeWithSelector(IWeightedHub.TransferAmountMismatch.selector, address(fee)));
+        factory.createAndIssue("Weighted", "WGT", specs, _params(), 1e18, creator);
+        assertEq(predicted.code.length, 0);
+    }
+
+    /// @dev The first issue runs under the index's reentrancy guard, as every issue does. An index already reads as
+    ///      initialized while its initializer runs, so without the guard a component that calls back could issue,
+    ///      redeem or start a rebalance in the middle of the first issue.
+    function test_theFirstIssueIsUnderTheGuard() public {
+        SenderHookToken hook = new SenderHookToken();
+        _list(address(eth));
+        _list(address(hook));
+        ReenteringCreator reenterer = new ReenteringCreator(factory);
+        _approveCreator(address(reenterer));
+        IWeightedIndexFactory.ComponentSpec[] memory specs = new IWeightedIndexFactory.ComponentSpec[](2);
+        specs[0] = _spec(address(eth), 5000, ETH_UNITS);
+        specs[1] = _spec(address(hook), 5000, 1e18);
+        eth.mint(address(reenterer), 1e18);
+        hook.mint(address(reenterer), 100e18);
+
+        WeightedHub index = WeightedHub(reenterer.create(specs, _params(), 1e18));
+
+        assertEq(reenterer.reentry(), abi.encodeWithSelector(ReentrancyGuard.ReentrancyGuardReentrantCall.selector));
+        assertEq(index.totalSupply(), 1e18, "one issue, the first");
+        assertEq(index.balanceOf(address(reenterer)), 1e18);
+    }
 }
 
 /// @dev Holds no `receive`, so ether sent to it fails.
 contract Refuser {}
+
+/// @notice Creates two indexes of the same components in one call.
+contract TwiceCreator {
+    IWeightedIndexFactory private immutable FACTORY;
+
+    constructor(IWeightedIndexFactory factory) {
+        FACTORY = factory;
+    }
+
+    function createTwice(
+        IWeightedIndexFactory.ComponentSpec[] calldata specs,
+        IWeightedIndexFactory.IndexParams calldata params
+    ) external returns (address first, address second) {
+        first = FACTORY.createIndex("First", "ONE", specs, params);
+        second = FACTORY.createIndex("Second", "TWO", specs, params);
+    }
+}
+
+interface ISenderHook {
+    function onTokenSent(address to) external;
+}
+
+/// @notice A token that calls its sender back before it moves, as an ERC-777 `tokensToSend` hook does. It is listed
+///         only here, to show that a creation's first issue runs under the index's guard.
+contract SenderHookToken is ERC20 {
+    constructor() ERC20("Sender Hook", "SHOOK") {}
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
+
+    function _update(address from, address to, uint256 value) internal override {
+        if (from.code.length != 0 && to != from) ISenderHook(from).onTokenSent(to);
+        super._update(from, to, value);
+    }
+}
+
+/// @notice An approved creator that, called back by its own component while its index is inside the first issue,
+///         tries to issue again.
+contract ReenteringCreator is ISenderHook {
+    IWeightedIndexFactory private immutable FACTORY;
+    /// @notice What the index answered the issue attempted from inside its first issue.
+    bytes public reentry;
+
+    constructor(IWeightedIndexFactory factory) {
+        FACTORY = factory;
+    }
+
+    function create(
+        IWeightedIndexFactory.ComponentSpec[] calldata specs,
+        IWeightedIndexFactory.IndexParams calldata params,
+        uint256 shares
+    ) external returns (address index) {
+        address predicted = FACTORY.predictIndexAddress(address(this), "Reentered", "RE", specs, params);
+        for (uint256 i = 0; i < specs.length; ++i) {
+            IERC20(specs[i].token).approve(predicted, type(uint256).max);
+        }
+        return FACTORY.createAndIssue("Reentered", "RE", specs, params, shares, address(this));
+    }
+
+    function onTokenSent(address index) external {
+        (, bytes memory answer) = index.call(abi.encodeWithSignature("issue(uint256,address)", 1, address(this)));
+        reentry = answer;
+    }
+}

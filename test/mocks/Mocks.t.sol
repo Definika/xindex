@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
+import {WeightedMath} from "../../src/WeightedMath.sol";
 import {Test} from "forge-std/Test.sol";
 import {ISwapRouter02} from "./ISwapRouter02.sol";
 import {MockERC20} from "./MockERC20.sol";
@@ -8,6 +9,9 @@ import {MockUSDT} from "./MockUSDT.sol";
 import {MockSwapRouter} from "./MockSwapRouter.sol";
 import {MockPausableToken} from "./MockPausableToken.sol";
 import {MockRouterInventory, MockUniversalRouter} from "./MockUniversalRouter.sol";
+import {MockMetarouter} from "./MockAero.sol";
+import {IAeroMetarouter} from "../../src/interfaces/IAeroMetarouter.sol";
+import {AeroCommands} from "../../src/libraries/AeroCommands.sol";
 import {UniversalRouterCommands as Cmd} from "../../src/libraries/UniversalRouterCommands.sol";
 import {
     PathKey,
@@ -21,6 +25,7 @@ import {MockWETH} from "./MockWETH.sol";
 import {MockPositionManager} from "./MockPositionManager.sol";
 import {INonfungiblePositionManager} from "../../script/interfaces/INonfungiblePositionManager.sol";
 import {MockMarket} from "./MockMarket.sol";
+import {MockPyth} from "./MockPyth.sol";
 import {WeightedIndexFactory} from "../../src/WeightedIndexFactory.sol";
 import {WeightedHub} from "../../src/WeightedHub.sol";
 import {IIndexHub} from "../../src/interfaces/IIndexHub.sol";
@@ -59,6 +64,28 @@ contract MocksTest is Test {
     // ---------------------------------------------------------------------
     // MockSwapRouter
     // ---------------------------------------------------------------------
+
+    /// @dev The mock Pyth answers a feed it was given, reverts on one it never heard of, and answers nothing at all
+    ///      while it is down, so a test can stand for a Pyth contract that has stopped.
+    function test_pyth_answersUntilItIsDown() public {
+        MockPyth pyth = new MockPyth();
+        bytes32 id = keccak256("feed");
+        assertFalse(pyth.priceFeedExists(id));
+        pyth.setPrice(id, 100, 1, -2, 1);
+        assertTrue(pyth.priceFeedExists(id));
+        assertEq(pyth.getPriceUnsafe(id).price, 100);
+        // a feed made known with no update yet has no price to give
+        bytes32 empty = keccak256("empty");
+        pyth.addFeed(empty);
+        assertTrue(pyth.priceFeedExists(empty));
+        vm.expectRevert(MockPyth.PriceFeedNotFound.selector);
+        pyth.getPriceUnsafe(empty);
+        pyth.setBroken(true);
+        vm.expectRevert("pyth is down");
+        pyth.getPriceUnsafe(id);
+        vm.expectRevert("pyth is down");
+        pyth.priceFeedExists(id);
+    }
 
     function test_router_quotesAreInverse() public view {
         // 3000 USDC -> 1 WETH, and 1 WETH costs 3000 USDC
@@ -121,6 +148,130 @@ contract MocksTest is Test {
         p.amountInMaximum = 0;
         vm.expectRevert("Too much requested");
         router.exactOutput(p);
+    }
+
+    // ---------------------------------------------------------------------
+    // MockUniversalRouter as PancakeSwap's, and MockMetarouter
+    // ---------------------------------------------------------------------
+
+    /// @dev Standing for PancakeSwap's router, the mock refuses an input of zero, a short output and a costly input
+    ///      on its V2 commands, as the real one does.
+    function test_router_pancakeV2Refuses() public {
+        MockUniversalRouter pancake = new MockUniversalRouter(address(0));
+        pancake.setPancake(true);
+        pancake.setPrice(address(usdc), 1e18, 6);
+        pancake.setPrice(address(weth), 3_000e18, 18);
+        weth.mint(address(pancake.inventory()), 10e18);
+        usdc.mint(address(pancake), 10_000e6);
+        address[] memory path = new address[](2);
+        (path[0], path[1]) = (address(usdc), address(weth));
+        bytes[] memory inputs = new bytes[](1);
+        bytes memory exactIn = abi.encodePacked(Cmd.V2_SWAP_EXACT_IN);
+        bytes memory exactOut = abi.encodePacked(Cmd.V2_SWAP_EXACT_OUT);
+
+        inputs[0] = abi.encode(address(this), uint256(0), uint256(0), path, false);
+        vm.expectRevert("MockUR: the engine never sends an amount of zero, PancakeSwap's already-paid mark");
+        pancake.execute(exactIn, inputs);
+        inputs[0] = abi.encode(address(this), uint256(3_000e6), uint256(2e18), path, false);
+        vm.expectRevert(abi.encodeWithSignature("V2TooLittleReceived()"));
+        pancake.execute(exactIn, inputs);
+        inputs[0] = abi.encode(address(this), uint256(1e18), uint256(2_000e6), path, false);
+        vm.expectRevert(abi.encodeWithSignature("V2TooMuchRequested()"));
+        pancake.execute(exactOut, inputs);
+    }
+
+    /// @dev The Aero mock refuses what the real Metarouter refuses and what the engine must never send.
+    function test_aero_refusesWhatTheRealOneRefuses() public {
+        MockMetarouter aero = new MockMetarouter();
+        aero.setPrice(address(usdc), 1e18, 6);
+        aero.setPrice(address(weth), 3_000e18, 18);
+        address pool = aero.CL().create(address(usdc), address(weth), 1);
+        address basic = aero.VOLATILE().create(address(usdc), address(weth));
+        address stray = aero.STABLE().create(address(usdc), address(unpriced));
+        weth.mint(address(aero.inventory()), 10e18);
+        bytes memory exactIn = abi.encodePacked(AeroCommands.CL_SWAP_EXACT_IN);
+        bytes memory exactOut = abi.encodePacked(AeroCommands.CL_SWAP_EXACT_OUT);
+        bytes[] memory inputs = new bytes[](1);
+
+        vm.expectRevert("MockAero: length");
+        aero.execute(exactIn, new bytes[](0), block.timestamp);
+        vm.expectRevert(MockMetarouter.Expired.selector);
+        aero.execute(exactIn, inputs, block.timestamp - 1);
+        vm.expectRevert("MockAero: the engine emitted a command it should not");
+        aero.execute(abi.encodePacked(uint8(0x05)), inputs, block.timestamp);
+        inputs[0] = abi.encode(address(usdc), address(aero), uint256(0));
+        vm.expectRevert("MockAero: InvalidRecipient");
+        aero.execute(abi.encodePacked(AeroCommands.SWEEP), inputs, block.timestamp);
+        inputs[0] = abi.encode(address(usdc), address(this), uint256(1));
+        vm.expectRevert("MockAero: InsufficientBalance");
+        aero.execute(abi.encodePacked(AeroCommands.SWEEP), inputs, block.timestamp);
+
+        address[] memory pools = new address[](1);
+        pools[0] = pool;
+        IAeroMetarouter.SwapExactInParams memory sale = IAeroMetarouter.SwapExactInParams({
+            pools: pools,
+            tokenIn: address(usdc),
+            amountIn: IAeroMetarouter.BalanceSpend({mode: IAeroMetarouter.SpendMode.Amount, value: 3_000e6}),
+            payerIsUser: true,
+            minAmountOut: 0,
+            recipient: address(this)
+        });
+        inputs[0] = abi.encode(sale);
+        vm.expectRevert("MockAero: the engine pays from the router's balance");
+        aero.execute(exactIn, inputs, block.timestamp);
+        (sale.payerIsUser, sale.amountIn.mode) = (false, IAeroMetarouter.SpendMode.Pips);
+        inputs[0] = abi.encode(sale);
+        vm.expectRevert("MockAero: the engine spends an exact amount");
+        aero.execute(exactIn, inputs, block.timestamp);
+        (sale.amountIn.mode, sale.minAmountOut) = (IAeroMetarouter.SpendMode.Amount, 2e18);
+        inputs[0] = abi.encode(sale);
+        vm.expectRevert(abi.encodeWithSelector(MockMetarouter.TooLittleReceived.selector, 2e18, 1e18));
+        aero.execute(exactIn, inputs, block.timestamp);
+        sale.minAmountOut = 0;
+        inputs[0] = abi.encode(sale);
+        vm.expectRevert("MockAero: not pre-funded");
+        aero.execute(exactIn, inputs, block.timestamp);
+        sale.pools = new address[](0);
+        inputs[0] = abi.encode(sale);
+        vm.expectRevert("MockAero: InvalidPath");
+        aero.execute(exactIn, inputs, block.timestamp);
+        pools[0] = basic; // a basic pool on a CL command
+        sale.pools = pools;
+        inputs[0] = abi.encode(sale);
+        vm.expectRevert(abi.encodeWithSelector(MockMetarouter.InvalidPool.selector, basic));
+        aero.execute(exactIn, inputs, block.timestamp);
+        pools[0] = stray; // a pool that holds no WETH: reached from WETH, the path breaks
+        sale.tokenIn = address(weth);
+        inputs[0] = abi.encode(sale);
+        vm.expectRevert(MockMetarouter.InvalidPath.selector);
+        aero.execute(abi.encodePacked(AeroCommands.V2_SWAP_EXACT_IN), inputs, block.timestamp);
+
+        pools[0] = pool;
+        IAeroMetarouter.SwapExactOutParams memory buy = IAeroMetarouter.SwapExactOutParams({
+            pools: pools,
+            tokenIn: address(usdc),
+            amountOut: 1e18,
+            payerIsUser: true,
+            maxAmountIn: 3_000e6,
+            recipient: address(this)
+        });
+        inputs[0] = abi.encode(buy);
+        vm.expectRevert("MockAero: the engine pays from the router's balance");
+        aero.execute(exactOut, inputs, block.timestamp);
+        (buy.payerIsUser, buy.maxAmountIn) = (false, 2_999e6);
+        inputs[0] = abi.encode(buy);
+        vm.expectRevert(MockMetarouter.TooMuchRequested.selector);
+        aero.execute(exactOut, inputs, block.timestamp);
+        // From the pool's second token: WETH sold into USDC.
+        aero.setPrice(address(unpriced), 1e18, 18);
+        pools[0] = pool;
+        sale.pools = pools;
+        (sale.tokenIn, sale.amountIn.value) = (address(weth), 1e18);
+        usdc.mint(address(aero.inventory()), 10_000e6);
+        weth.mint(address(aero), 1e18);
+        inputs[0] = abi.encode(sale);
+        aero.execute(exactIn, inputs, block.timestamp);
+        assertEq(usdc.balanceOf(address(this)), 3_000e6);
     }
 
     // ---------------------------------------------------------------------
@@ -632,7 +783,8 @@ contract MocksTest is Test {
     }
 
     function test_weightedExecutorV3_sellsBuysAndSettlesThroughARouter() public {
-        WeightedIndexFactory f = new WeightedIndexFactory(address(this), address(0));
+        WeightedIndexFactory f =
+            new WeightedIndexFactory(address(this), address(0), address(0), address(new WeightedMath()), address(0));
         f.setApprovedCreator(address(this), true);
         MockERC20 shrinking = new MockERC20("Shrinking", "SHR", 18);
         MockERC20 growing = new MockERC20("Growing", "GRO", 18);

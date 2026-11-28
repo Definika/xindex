@@ -75,7 +75,7 @@ contract SetupTestMarket is Script {
 
     /// @notice The only chain {run} accepts.
     uint256 public constant SEPOLIA_CHAIN_ID = 11_155_111;
-    /// @dev Checked on Sepolia on 2026-09-16: the position manager's `factory()` and `WETH9()` return these, and so
+    /// @dev Checked on Sepolia: the position manager's `factory()` and `WETH9()` return these, and so
     ///      does QuoterV2 0xEd1f6473345F45b75F8179591dd5bA1888cf2FB3.
     address public constant SEPOLIA_UNISWAP_V3_FACTORY = 0x0227628f3F023bb0B980b67D528571c95c6DaC1c;
     address public constant SEPOLIA_POSITION_MANAGER = 0x1238536071E1c677A632429e3655c799b22cDA52;
@@ -108,7 +108,7 @@ contract SetupTestMarket is Script {
     /// @notice `pool`'s square-root price moved more than 1% from the spec's before liquidity was added.
     error PoolPriceMoved(address pool, uint160 current, uint160 expected);
 
-    /// @notice The market, tUSDC first. Prices are mainnet Uniswap time-weighted prices on 2026-09-16, rounded, in
+    /// @notice The market, tUSDC first. Prices are mainnet Uniswap time-weighted prices when the market was set up, rounded, in
     ///         WETH. The reference supplies are the mainnet default whitelist's.
     function specs() public pure returns (Spec[] memory list) {
         list = new Spec[](4);

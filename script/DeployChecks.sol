@@ -3,26 +3,36 @@ pragma solidity 0.8.28;
 
 import {Script, console2} from "forge-std/Script.sol";
 import {IUniversalRouter} from "../src/interfaces/IUniversalRouter.sol";
+import {IUniversalRouterSwaps} from "../src/interfaces/IUniversalRouterSwaps.sol";
 import {ISafeThreshold} from "./interfaces/ISafeThreshold.sol";
 import {MainnetAddresses} from "./MainnetAddresses.sol";
 import {BnbChainAddresses} from "./BnbChainAddresses.sol";
+import {BaseAddresses} from "./BaseAddresses.sol";
 import {Listings} from "./Listings.sol";
 import {ScriptUtils} from "./ScriptUtils.sol";
 
 /// @notice The checks every deployment of a factory runs before it broadcasts: the owner, the guardian, the roles
 ///         against the market, and the market addresses themselves. `DeployWeighted` runs them on each chain it
-///         deploys to, so the rules on who may own a factory exist once. Two chains are pinned, each to its address
-///         book: Ethereum (1) to `MainnetAddresses` and BNB Chain (56) to `BnbChainAddresses`
-///         (`design/2026-11-13-bnb-chain-deployment.md`). On a pinned chain the market addresses are the book's and
+///         deploys to, so the rules on who may own a factory exist once. Three chains are pinned, each to its address
+///         book: Ethereum (1) to `MainnetAddresses`, BNB Chain (56) to `BnbChainAddresses`
+///         (`docs/design/bnb-chain.md`) and Base (8453) to `BaseAddresses`
+///         (`docs/design/base.md`). On a pinned chain the market addresses are the book's and
 ///         nothing else; elsewhere they come from the environment.
 abstract contract DeployChecks is Script {
+    /// @dev The addresses a `LocalVenue` names: its router and Aero's three factories.
+    uint256 internal constant DEX_ADDRESSES = 4;
+
     /// @notice Default {resolveRouter} uses on chain 1, from `MainnetAddresses`.
     address public constant MAINNET_UNIVERSAL_ROUTER = MainnetAddresses.UNIVERSAL_ROUTER;
     /// @notice Default {resolveRouter} uses on chain 56, from `BnbChainAddresses`.
     address public constant BNB_UNIVERSAL_ROUTER = BnbChainAddresses.UNIVERSAL_ROUTER;
+    /// @notice Default {resolveRouter} uses on chain 8453, from `BaseAddresses`.
+    address public constant BASE_UNIVERSAL_ROUTER = BaseAddresses.UNIVERSAL_ROUTER;
     /// @notice Fewest signatures a Safe owner may need on a mainnet: the design's 3-of-5 hardware wallets held by
-    ///         separate people (the owner's call on 2026-09-30).
+    ///         separate people.
     uint256 public constant MIN_OWNER_THRESHOLD = 3;
+    /// @notice Fewest signatures the guardian's Safe may need on a mainnet: more than one key's (CA-M4).
+    uint256 public constant MIN_GUARDIAN_THRESHOLD = 2;
     /// @notice Start of a Safe's module list.
     address public constant SENTINEL_MODULES = address(0x1);
     /// @notice How many of a Safe's modules the role checks compare as its keys: a page larger than any Safe in use.
@@ -46,6 +56,11 @@ abstract contract DeployChecks is Script {
     error GuardianRequired();
     /// @notice The guardian is the key broadcasting the deployment, or a Safe that key signs for.
     error GuardianIsBroadcaster(address guardian);
+    /// @notice On a pinned chain, the guardian is not a Safe: a key, an EIP-7702 delegated account, or a contract that
+    ///         answers no Safe threshold (CA-M4).
+    error GuardianMustBeASafe(address guardian);
+    /// @notice The guardian is a Safe that needs fewer than MIN_GUARDIAN_THRESHOLD signatures: one key (CA-M4).
+    error GuardianThresholdTooLow(address guardian, uint256 threshold);
     /// @notice The guardian signs for the owner Safe, so one key would both act as the owner and hold its veto (SA-06).
     error GuardianSignsForOwner(address guardian);
     /// @notice The guardian is a Safe that shares `signer` with the owner Safe, directly or through a signer that is
@@ -74,7 +89,7 @@ abstract contract DeployChecks is Script {
 
     /// @notice Rejects a missing owner and Foundry's default sender. On a pinned chain, a mainnet, the owner must be a
     ///         contract, not an EIP-7702 delegated account. A Safe must need at least MIN_OWNER_THRESHOLD (3)
-    ///         signatures, the owner's call on 2026-09-30 to match the design's 3-of-5, and have no enabled module,
+    ///         signatures to match the design's 3-of-5, and have no enabled module,
     ///         because a module acts as the Safe without signatures. Modules or guards added later are not checked, so
     ///         the Safe must keep none. Any other contract, a timelock as much as a smart account with one key, is
     ///         refused unless the operator acknowledges it (A7-08): nothing here can tell who signs for it.
@@ -92,7 +107,7 @@ abstract contract DeployChecks is Script {
         // empty answer from a fallback.
         // forge-lint: disable-next-line(low-level-calls)
         (bool ok, bytes memory data) = owner.staticcall(abi.encodeCall(ISafeThreshold.getThreshold, ()));
-        if (ok && data.length == 32) {
+        if (ok && data.length == ScriptUtils.WORD) {
             uint256 threshold = abi.decode(data, (uint256));
             if (threshold < MIN_OWNER_THRESHOLD) revert OwnerThresholdTooLow(owner, threshold);
             _checkNoModules(owner);
@@ -123,11 +138,16 @@ abstract contract DeployChecks is Script {
     ///         one level deep on each side, so a signer that is itself a Safe, such as a treasury, brings in its own.
     ///         A Safe's enabled modules count as its signers, since a module acts as the Safe without signatures
     ///         (RZ-24).
+    ///         On a pinned chain, a mainnet, the guardian must be a Safe that needs at least MIN_GUARDIAN_THRESHOLD
+    ///         signatures, as the deployment is documented. A single key in its place holds the cancel of every
+    ///         rebalance and listing, the keep mask and the quote, and it passed every comparison above, since a key
+    ///         has no signers to compare (CA-M4).
     /// @param owner The intended factory owner.
     /// @param guardian The intended guardian.
     function checkGuardian(address owner, address guardian) public view {
         if (guardian == address(0) || guardian == DEFAULT_SENDER || guardian == owner) revert GuardianRequired();
         if (guardian == msg.sender) revert GuardianIsBroadcaster(guardian);
+        _checkGuardianIsASafe(guardian);
         address[] memory guardianKeys = _signerKeys(guardian);
         for (uint256 j = 0; j < guardianKeys.length; ++j) {
             if (guardianKeys[j] == msg.sender) revert GuardianIsBroadcaster(guardian);
@@ -141,6 +161,19 @@ abstract contract DeployChecks is Script {
                 if (guardianKeys[j] == key) revert GuardianSharesOwnerSigner(guardian, key);
             }
         }
+    }
+
+    /// @dev On a pinned chain, reverts unless `guardian` is a Safe needing at least MIN_GUARDIAN_THRESHOLD signatures.
+    function _checkGuardianIsASafe(address guardian) private view {
+        if (!isPinnedChain()) return;
+        bytes memory code = guardian.code;
+        if (code.length == 0 || ScriptUtils.isDelegatedAccount(code)) revert GuardianMustBeASafe(guardian);
+        // A static call, as for the owner's threshold: a typed call would revert on a fallback's empty answer.
+        // forge-lint: disable-next-line(low-level-calls)
+        (bool ok, bytes memory data) = guardian.staticcall(abi.encodeCall(ISafeThreshold.getThreshold, ()));
+        if (!ok || data.length != ScriptUtils.WORD) revert GuardianMustBeASafe(guardian);
+        uint256 threshold = abi.decode(data, (uint256));
+        if (threshold < MIN_GUARDIAN_THRESHOLD) revert GuardianThresholdTooLow(guardian, threshold);
     }
 
     /// @dev `account`'s signers, each followed by its own signers when it is a Safe too: one level down, so a treasury
@@ -207,48 +240,80 @@ abstract contract DeployChecks is Script {
 
     /// @notice The contracts a deployment on this chain trades or prices through, none of which may hold a role.
     /// @param router The resolved Universal Router.
-    /// @return list The router and the PoolManager it settles against, then, on a pinned chain, every token and mint
-    ///         currency in that chain's address book.
+    /// @return list The router and the PoolManager it settles against, then, on a pinned chain, the chain's own DEX
+    ///         ({pinnedLocalVenue}: its router, and Aero's factories on Base), every token and mint currency in that
+    ///         chain's address book, and its Pyth contract.
     function marketContracts(address router) public view returns (address[] memory list) {
-        address[] memory book = onBnbChain() ? _bnbMarket() : isPinnedChain() ? _mainnetMarket() : new address[](0);
-        list = new address[](book.length + 2);
+        address[] memory book = onBase()
+            ? _baseMarket()
+            : onBnbChain() ? _bnbMarket() : isPinnedChain() ? _mainnetMarket() : new address[](0);
+        IUniversalRouterSwaps.LocalVenue memory local = pinnedLocalVenue();
+        address[DEX_ADDRESSES] memory dex = [local.router, local.clFactory, local.volatileFactory, local.stableFactory];
+        uint256 named = 0;
+        for (uint256 i = 0; i < dex.length; ++i) {
+            if (dex[i] != address(0)) ++named;
+        }
+        list = new address[](2 + named + book.length);
         list[0] = router;
         list[1] = IUniversalRouter(router).poolManager();
+        // The chain's own DEX, its router and, for Aero, its factories: as many as it names.
+        uint256 at = 2;
+        for (uint256 i = 0; i < dex.length; ++i) {
+            if (dex[i] != address(0)) list[at++] = dex[i];
+        }
         for (uint256 i = 0; i < book.length; ++i) {
-            list[i + 2] = book[i];
+            list[at + i] = book[i];
         }
     }
 
-    /// @dev Every token the Ethereum address book lists, the whole `Listings` table, then its two mint currencies.
+    /// @dev Every token the Ethereum address book lists, the whole `Listings` table, then its two mint currencies and
+    ///      Pyth.
     function _mainnetMarket() private pure returns (address[] memory) {
-        return _withStables(Listings.all(), MainnetAddresses.USDC, MainnetAddresses.USDT);
+        return _withStables(Listings.all(), MainnetAddresses.USDC, MainnetAddresses.USDT, MainnetAddresses.PYTH);
     }
 
-    /// @dev Every token the BNB Chain address book lists, then its two mint currencies.
+    /// @dev Every token the BNB Chain address book lists, then its two mint currencies and Pyth.
     function _bnbMarket() private pure returns (address[] memory) {
-        return _withStables(BnbChainAddresses.all(), BnbChainAddresses.USDC, BnbChainAddresses.USDT);
+        return
+            _withStables(
+                BnbChainAddresses.all(), BnbChainAddresses.USDC, BnbChainAddresses.USDT, BnbChainAddresses.PYTH
+            );
     }
 
-    /// @dev `tokens`, then the chain's two mint currencies.
-    function _withStables(address[] memory tokens, address usdc, address usdt)
+    /// @dev Every token the Base address book lists, then its two mint currencies and Pyth.
+    function _baseMarket() private pure returns (address[] memory) {
+        return _withStables(BaseAddresses.all(), BaseAddresses.USDC, BaseAddresses.USDT, BaseAddresses.PYTH);
+    }
+
+    /// @dev `tokens`, then the chain's two mint currencies and its Pyth contract.
+    function _withStables(address[] memory tokens, address usdc, address usdt, address pyth)
         private
         pure
         returns (address[] memory list)
     {
         uint256 n = tokens.length;
-        list = new address[](n + 2);
+        list = new address[](n + 3);
         for (uint256 i = 0; i < n; ++i) {
             list[i] = tokens[i];
         }
-        (list[n], list[n + 1]) = (usdc, usdt);
+        (list[n], list[n + 1], list[n + 2]) = (usdc, usdt, pyth);
     }
 
-    /// @notice Whether this chain's market addresses are pinned to an address book: Ethereum's or BNB Chain's. Keyed on
-    ///         the chain id and, which a chain-id override (`--chain-id`, FOUNDRY_CHAIN_ID, `chain_id` in foundry.toml)
-    ///         cannot change, on the chain's router having code here: a run against a mainnet's state keeps every
-    ///         mainnet check however the script's chain id is set, while forge still signs for that chain (RX-23).
+    /// @notice Whether this chain's market addresses are pinned to an address book: Ethereum's, BNB Chain's or
+    ///         Base's. Keyed on the chain id and, which a chain-id override (`--chain-id`, FOUNDRY_CHAIN_ID, `chain_id`
+    ///         in foundry.toml) cannot change, on a router having code here: a run against a mainnet's state keeps
+    ///         every mainnet check however the script's chain id is set, while forge still signs for that chain (RX-23).
     function isPinnedChain() public view returns (bool) {
-        return onBnbChain() || block.chainid == 1 || MAINNET_UNIVERSAL_ROUTER.code.length != 0;
+        return onBase() || onBnbChain() || block.chainid == 1 || MAINNET_UNIVERSAL_ROUTER.code.length != 0;
+    }
+
+    /// @notice Whether the pinned chain is Base: its own id, 8453, and nothing else. No router's code tells Base:
+    ///         Base's router address has code on Ethereum and on BNB Chain too, and theirs on Base (read on
+    ///         chain), each a replay that settles against nothing where it stands. A run against Base's state
+    ///         under another id is still pinned, by BNB Chain's router standing there: it resolves BNB Chain's book
+    ///         and stops at BNB Chain's USDC address, empty on Base.
+    function onBase() public view returns (bool) {
+        return block.chainid == BaseAddresses.CHAIN_ID;
     }
 
     /// @notice Whether the pinned chain is BNB Chain. A pinned chain's own id decides wherever the script runs under
@@ -256,7 +321,7 @@ abstract contract DeployChecks is Script {
     ///         id, BNB Chain's router having code here names it, and is asked before Ethereum's, so a chain-id
     ///         override cannot unpin a run against BNB Chain's state (RX-23). The order matters because Ethereum's
     ///         router address has code on BNB Chain too, a replay of Ethereum's deployment that settles against
-    ///         nothing there (read on 2026-11-13).
+    ///         nothing there.
     /// @dev The id has to win on chain 1: both routers are CREATE2 deployments from a factory anyone may call, so
     ///      anyone can put BNB Chain's router at its address on Ethereum, as someone did on Base, and a rule that
     ///      read that code first would hand a deployment on Ethereum BNB Chain's book, which stops it at BNB Chain's
@@ -264,7 +329,8 @@ abstract contract DeployChecks is Script {
     ///      it stays pinned, resolves Ethereum's book and stops at Ethereum's USDC address, empty on BNB Chain.
     function onBnbChain() public view returns (bool) {
         if (block.chainid == BnbChainAddresses.CHAIN_ID) return true;
-        return block.chainid != 1 && BNB_UNIVERSAL_ROUTER.code.length != 0;
+        // Base's id decides for Base as Ethereum's does for Ethereum: BNB Chain's router has code on Base.
+        return block.chainid != 1 && !onBase() && BNB_UNIVERSAL_ROUTER.code.length != 0;
     }
 
     /// @notice On a pinned chain, refuses Foundry's default sender as the broadcaster: with `--account` but no
@@ -275,19 +341,81 @@ abstract contract DeployChecks is Script {
         if (isPinnedChain() && msg.sender == DEFAULT_SENDER) revert BroadcasterRequired();
     }
 
-    /// @notice The pinned chain's Universal Router: BNB Chain's there, Ethereum's otherwise.
+    /// @notice The pinned chain's Universal Router: Base's there, BNB Chain's there, Ethereum's otherwise.
     function pinnedRouter() public view returns (address) {
+        if (onBase()) return BASE_UNIVERSAL_ROUTER;
         return onBnbChain() ? BNB_UNIVERSAL_ROUTER : MAINNET_UNIVERSAL_ROUTER;
+    }
+
+    /// @notice The chain's own DEX beside Uniswap, from its address book: PancakeSwap on BNB Chain, Aero on Base, none
+    ///         on Ethereum and off the pinned chains. Never taken from the
+    ///         environment: the engine encodes against these routers' command inputs, read from their verified source.
+    function pinnedLocalVenue() public view returns (IUniversalRouterSwaps.LocalVenue memory local) {
+        if (onBase()) {
+            return IUniversalRouterSwaps.LocalVenue({
+                dex: IUniversalRouterSwaps.LocalDex.Aero,
+                router: BaseAddresses.AERO_METAROUTER,
+                clFactory: BaseAddresses.AERO_CL_FACTORY,
+                volatileFactory: BaseAddresses.AERO_VOLATILE_FACTORY,
+                stableFactory: BaseAddresses.AERO_STABLE_FACTORY
+            });
+        }
+        if (onBnbChain()) {
+            local.dex = IUniversalRouterSwaps.LocalDex.PancakeSwap;
+            local.router = BnbChainAddresses.PANCAKE_UNIVERSAL_ROUTER;
+        }
+    }
+
+    /// @notice {pinnedLocalVenue}, each address of it required to have code.
+    function resolveLocalVenue() public view returns (IUniversalRouterSwaps.LocalVenue memory local) {
+        local = pinnedLocalVenue();
+        address[DEX_ADDRESSES] memory named =
+            [local.router, local.clFactory, local.volatileFactory, local.stableFactory];
+        for (uint256 i = 0; i < named.length; ++i) {
+            if (named[i] != address(0) && named[i].code.length == 0) revert AddressHasNoCode("LOCAL_VENUE", named[i]);
+        }
     }
 
     /// @notice The pinned chain's USDC.
     function pinnedUsdc() public view returns (address) {
+        if (onBase()) return BaseAddresses.USDC;
         return onBnbChain() ? BnbChainAddresses.USDC : MainnetAddresses.USDC;
     }
 
     /// @notice The pinned chain's USDT.
     function pinnedUsdt() public view returns (address) {
+        if (onBase()) return BaseAddresses.USDT;
         return onBnbChain() ? BnbChainAddresses.USDT : MainnetAddresses.USDT;
+    }
+
+    /// @notice The pinned chain's Pyth contract.
+    function pinnedPyth() public view returns (address) {
+        if (onBase()) return BaseAddresses.PYTH;
+        return onBnbChain() ? BnbChainAddresses.PYTH : MainnetAddresses.PYTH;
+    }
+
+    /// @notice The pinned chain's Ondo `SyntheticSharesOracle`, from which the factory's price reader takes an Ondo
+    ///         leg's sValue: Ethereum's and BNB Chain's address book's, and zero on Base, where Ondo has none.
+    function pinnedSharesOracle() public view returns (address) {
+        if (onBase()) return address(0);
+        return onBnbChain() ? BnbChainAddresses.ONDO_SHARES_ORACLE : MainnetAddresses.ONDO_SHARES_ORACLE;
+    }
+
+    /// @notice Ondo's oracle for the factory's price reader: the pinned chain's own ({pinnedSharesOracle}), and zero
+    ///         elsewhere, where no Ondo token is listed. Nothing in the environment sets it.
+    function resolveSharesOracle() public view returns (address) {
+        return isPinnedChain() ? pinnedSharesOracle() : address(0);
+    }
+
+    /// @notice Pyth's contract for the factory's price check. On a pinned chain it is the chain's own: zero takes it,
+    ///         and any other address is refused, so a mainnet factory always checks its fills against Pyth. Elsewhere
+    ///         zero is allowed and builds a factory whose fills no price checks, as a local test market may need; a
+    ///         given address must have code.
+    /// @param pyth Address from the environment.
+    /// @return The resolved address, zero for none.
+    function resolvePyth(address pyth) public view returns (address) {
+        if (pyth == address(0) && !isPinnedChain()) return address(0);
+        return _resolve("PYTH", pyth, pinnedPyth());
     }
 
     /// @notice Fills a zero router with the chain's default on a pinned chain only, and requires it to have code. On a

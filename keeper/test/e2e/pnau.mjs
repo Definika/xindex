@@ -1,7 +1,7 @@
 // Pyth price updates the real Pyth contract accepts on a fork: the end-to-end test installs its own five keys as the
-// guardian set of Pyth's receiver (since OP-PIP-132, 2026-08-26, Pyth on Ethereum verifies with the 5-key Pyth Pro set
+// guardian set of Pyth's receiver (since OP-PIP-132 Pyth on Ethereum verifies with the 5-key Pyth Pro set
 // at `RECEIVER`) and signs accumulator updates (PNAU, Wormhole Merkle) for whatever prices it chooses. Layout as Pyth's
-// PythAccumulator.sol and MerkleTree.sol and Wormhole's Messages.sol; checked on a fork of 2026-10-12 against Pyth 1.4.6.
+// PythAccumulator.sol and MerkleTree.sol and Wormhole's Messages.sol; checked on a fork against Pyth 1.4.6.
 import { concat, hexToBytes, keccak256, numberToHex, pad, toHex } from "viem";
 import { privateKeyToAccount, sign } from "viem/accounts";
 

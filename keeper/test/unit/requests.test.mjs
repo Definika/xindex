@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { MAX_REQUEST_CHECKS, applyScan, fillableRequests, requestUsd, stableLeg } from "../../bot/math.mjs";
+import { MAX_REQUEST_CHECKS, MAX_SCAN_READS, applyScan, fillableRequests, requestUsd, scanIds, stableLeg } from "../../bot/math.mjs";
 import { parseConfig } from "../../bot/config.mjs";
 
 const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
@@ -109,6 +109,40 @@ test("XS-11: a failed read keeps what was known and holds the scan before it", (
   assert.deepEqual(third.closed, [4n]);
 });
 
+test("RZ-10: a scan reads at most MAX_SCAN_READS requests, and every known one again within a few scans", () => {
+  const range = (from, to) => Array.from({ length: Number(to - from) + 1 }, (_, k) => from + BigInt(k));
+  // Few requests: everything is read, the forgotten one first, then the new ids, then the known ones.
+  const few = new Map([[1n, request()], [2n, request()]]);
+  assert.deepEqual(scanIds({ known: few, recheck: new Set([7n]), scanned: 4n, count: 6n }).ids, [7n, 5n, 6n, 1n, 2n]);
+  assert.deepEqual(scanIds({ known: few, recheck: new Set([2n]), scanned: 2n, count: 2n }).ids, [1n, 2n], "a recheck still known is read as known");
+
+  // A stranger's 5,000 new requests: the scan stops at the budget, the known ones keeping their share of it, and the
+  // frontier moves over what it read, in order.
+  const known = new Map(range(1n, 10n).map((id) => [id, request()]));
+  const flood = scanIds({ known, scanned: 10n, count: 5_010n });
+  assert.equal(flood.ids.length, MAX_SCAN_READS, "never past the budget");
+  assert.deepEqual(flood.ids.slice(0, 990), range(11n, 1_000n), "the new ids from the frontier, in order");
+  assert.deepEqual(flood.ids.slice(990), range(1n, 10n), "and every known one");
+  // With more known requests than half the budget, the new ones get the other half.
+  const crowd = new Map(range(1n, 2_000n).map((id) => [id, request()]));
+  const half = scanIds({ known: crowd, scanned: 2_000n, count: 9_000n });
+  assert.deepEqual(half.ids.slice(0, 500), range(2_001n, 2_500n));
+  assert.equal(half.ids.length, MAX_SCAN_READS);
+
+  // 5,000 of them open and known, with ten new: the new ten, then the known ones round their list, scan after scan.
+  const many = new Map(range(1n, 5_000n).map((id) => [id, request()]));
+  let cursor = 0;
+  const reread = new Set();
+  for (let scan = 0; scan < 6; scan++) {
+    const s = scanIds({ known: many, scanned: 5_000n + BigInt(10 * scan), count: 5_010n + BigInt(10 * scan), cursor });
+    assert.ok(s.ids.length <= MAX_SCAN_READS, "never past the budget");
+    assert.deepEqual(s.ids.slice(0, 10), range(5_001n + BigInt(10 * scan), 5_010n + BigInt(10 * scan)), "the new requests first");
+    for (const id of s.ids.slice(10)) reread.add(id);
+    cursor = s.cursor;
+  }
+  assert.equal(reread.size, 5_000, "every known request read again within six scans");
+});
+
 test("a stablecoin other than USDC is sold for a mint and bought for a redeem", () => {
   assert.equal(stableLeg(request(), USDC), null);
   assert.equal(stableLeg(request({ stable: USDC.toLowerCase() }), USDC), null);
@@ -149,4 +183,30 @@ test("RY-8: a request whose escrow over its limit cannot pay MIN_PROFIT_USD is n
   );
   assert.ok(picked.skipped.every((s) => /cannot pay MIN_PROFIT_USD/.test(s.reason)));
   assert.equal(fillableRequests(entries, 1_000n, [INDEX], infoOf(50)).chosen.length, 4, "with no minimum all four pay something");
+});
+
+test("a request made before its index's last settlement is not simulated, alone or in a batch", async () => {
+  const { batchGroups, movingReadFailed, settledSince } = await import("../../bot/math.mjs");
+  const at = (nonce) => new Map([[INDEX.toLowerCase(), { shareUsd: 50, mintAllowed: true, nonce }]]);
+  const made = (id, rebalanceNonce) => ({ id, request: { requester: `0x${"cc".repeat(20)}`, deadline: 2_000n, isMint: true, open: true, rebalanceNonce, index: INDEX, stable: USDC, escrow: 60_000_000n, limit: 10n ** 18n } });
+  const entries = [made(1n, 6), made(2n, 7), made(3n, 7)];
+
+  const alone = fillableRequests(entries, 1_000n, [INDEX], at(7n));
+  assert.deepEqual(alone.chosen.map((e) => e.id).sort(), [2n, 3n]);
+  assert.deepEqual(alone.skipped, [{ id: 1n, reason: "its index settled a rebalance since it was made: it can only be cancelled or refunded" }]);
+  assert.deepEqual(batchGroups(entries, 1_000n, [INDEX], at(7n))[0].members.map((m) => m.id).sort(), [2n, 3n]);
+
+  // A nonce that could not be read, or was never asked for, says nothing: the request is checked as before.
+  assert.equal(fillableRequests(entries, 1_000n, [INDEX], at(null)).chosen.length, 3);
+  assert.equal(batchGroups(entries, 1_000n, [INDEX], at(undefined))[0].members.length, 3);
+  assert.equal(settledSince({ rebalanceNonce: 7 }, { nonce: 7n }), false);
+  assert.equal(settledSince({ rebalanceNonce: 7n }, { nonce: 8n }), true);
+
+  // CA-R2-03: only a failed read of a leg the fill moves stops it.
+  const ok = { status: "success", result: 1n };
+  const bad = { status: "failure" };
+  assert.equal(movingReadFailed([0, 2], [ok, bad, ok], [ok, bad, ok]), false, "the leg left alone answers nothing, and nothing reads it");
+  assert.equal(movingReadFailed([0, 2], [ok, ok, ok], [ok, ok, bad]), true, "a moving leg's allowance");
+  assert.equal(movingReadFailed([1], [ok, bad, ok], [ok, ok, ok]), true, "a moving leg's balance");
+  assert.equal(movingReadFailed([], [bad], [bad]), false);
 });

@@ -5,6 +5,7 @@ Run from the repository root, standard library only:
     python3 -I test/mutants/run.py               # every mutant
     python3 -I test/mutants/run.py --only M3,V8  # some mutants, by id
     python3 -I test/mutants/run.py --check       # only that every edit still applies, without running forge
+    python3 -I test/mutants/run.py --table solana/mutants.json  # the Solana program's mutants
 
 A mutant is one or more exact edits to one file. Each edit's `old` text must occur exactly once in that file, so a
 mutant whose code has changed fails the gate as stale rather than turning into a no-op. The file is mutated in place
@@ -15,7 +16,11 @@ error. The run fails on any survivor, stale edit or error.
 
 A mutant's suite is a forge test path, or, with `"runner": "node"`, a node test file of the keeper bot's
 (keeper/test/unit), which Node's own runner reports in TAP: each `not ok` line names a failing test, and a test file
-whose process dies, as one that leaves an error unheard does, reports one too.
+whose process dies, as one that leaves an error unheard does, reports one too. With `"runner": "cargo"`, it is a test
+target of the Solana program under `root` (`solana`): the program is built again with the mutant (`anchor build
+--no-idl`), its suite is `cargo test --test <name>`, or `--lib` for `lib`, and each `test ... FAILED` line names a
+failing test. After a run the program is built once more from the restored sources, so no mutant's build is left in
+`target/deploy`.
 """
 
 import argparse
@@ -32,6 +37,8 @@ TABLE = pathlib.Path("test/mutants/mutants.json")
 FAILED = re.compile(r"^\[FAIL[^\n]*\] (\w+)\(", re.MULTILINE)
 # A failing test as Node's TAP reporter prints it, at any depth.
 NODE_FAILED = re.compile(r"^\s*not ok \d+ - (.+)$", re.MULTILINE)
+# A failing test as cargo's harness prints it.
+CARGO_FAILED = re.compile(r"^test (\S+) \.\.\. FAILED$", re.MULTILINE)
 TIMEOUT_S = 1800
 
 
@@ -43,8 +50,30 @@ def node_test(mutant):
     return done.returncode, output, sorted(set(NODE_FAILED.findall(output))), time.monotonic() - started
 
 
+def cargo_build(root):
+    done = subprocess.run(["anchor", "build", "--no-idl"], cwd=root, capture_output=True, text=True, timeout=TIMEOUT_S)
+    return done.returncode, done.stdout + done.stderr
+
+
+def cargo_test(mutant):
+    started = time.monotonic()
+    root = mutant.get("root") or "solana"
+    code, output = cargo_build(root)
+    if code != 0:
+        return code, output, [], time.monotonic() - started
+    target = ["--lib"] if mutant["test"] == "lib" else ["--test", mutant["test"]]
+    done = subprocess.run(["cargo", "test", *target], cwd=root, capture_output=True, text=True, timeout=TIMEOUT_S)
+    output = done.stdout + done.stderr
+    return done.returncode, output, sorted(set(CARGO_FAILED.findall(output))), time.monotonic() - started
+
+
 def suite_test(mutant):
-    return node_test(mutant) if mutant.get("runner") == "node" else forge_test(mutant)
+    runner = mutant.get("runner")
+    if runner == "node":
+        return node_test(mutant)
+    if runner == "cargo":
+        return cargo_test(mutant)
+    return forge_test(mutant)
 
 
 def forge_test(mutant):
@@ -92,9 +121,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--only", help="comma-separated mutant ids")
     parser.add_argument("--check", action="store_true", help="only check that every edit still applies")
+    parser.add_argument("--table", default=str(TABLE), help="the mutant table, test/mutants/mutants.json by default")
     args = parser.parse_args()
 
-    mutants = json.loads(TABLE.read_text())
+    mutants = json.loads(pathlib.Path(args.table).read_text())
     ids = [m["id"] for m in mutants]
     if len(set(ids)) != len(ids):
         raise SystemExit("duplicate mutant ids in the table")
@@ -123,10 +153,18 @@ def main():
         print(f"baseline {suite[0]}: passes ({seconds:.0f} s)", flush=True)
 
     results = []
-    for m in mutants:
-        verdict, detail = run(m)
-        results.append((m["id"], verdict, detail))
-        print(f"{m['id']:<5} {verdict:<9} {m['what']}: {detail}", flush=True)
+    try:
+        for m in mutants:
+            verdict, detail = run(m)
+            results.append((m["id"], verdict, detail))
+            print(f"{m['id']:<5} {verdict:<9} {m['what']}: {detail}", flush=True)
+    finally:
+        # a cargo mutant leaves its build in target/deploy; build the restored program once more
+        for root in sorted({m.get("root") or "solana" for m in mutants if m.get("runner") == "cargo"}):
+            code, output = cargo_build(root)
+            if code != 0:
+                print(output[-4000:])
+                raise SystemExit(f"the restored program under {root} does not build")
 
     bad = [r for r in results if r[1] != "killed"]
     print(f"\n{len(results) - len(bad)} of {len(results)} mutants killed")

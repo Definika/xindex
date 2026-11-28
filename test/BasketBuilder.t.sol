@@ -16,13 +16,14 @@ import {IWeightedHub} from "../src/interfaces/IWeightedHub.sol";
 import {IWeightedIndexFactory} from "../src/interfaces/IWeightedIndexFactory.sol";
 import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
-import {MockFeeToken} from "./mocks/MockFeeToken.sol";
+import {MockFeeToken, MockFlatFeeToken} from "./mocks/MockFeeToken.sol";
 import {MockHookToken, ITokenReceiverHook} from "./mocks/MockHookToken.sol";
 import {MockMarket} from "./mocks/MockMarket.sol";
 import {MockTwoAddressToken} from "./mocks/MockTwoAddressToken.sol";
 import {MockUniversalRouter} from "./mocks/MockUniversalRouter.sol";
 import {MockUSDT} from "./mocks/MockUSDT.sol";
 import {PathKey} from "../src/libraries/UniswapV4Types.sol";
+import {LocalVenues} from "./LocalVenues.sol";
 
 /// @notice The basket builder: an escrow per caller that the legs of a basket are bought into over several calls and
 ///         issued out of in one, and the mirror of it for selling. Routes and prices come from the mock router the
@@ -91,7 +92,7 @@ contract BasketBuilderTest is XindexTest {
     /// @dev Replaces the builder with one whose stablecoins are the suite's USDC and `usdt`, for a test whose
     ///      currency is a token of its own: Tether's pattern, a fee, a hook, two addresses behind one balance.
     function _payingIn(address usdt) internal {
-        builder = new BasketBuilder(IIndexFactory(address(factory)), router, address(usdc), usdt);
+        builder = new BasketBuilder(IIndexFactory(address(factory)), router, LocalVenues.none(), address(usdc), usdt);
     }
 
     function _noV4() internal pure returns (PathKey[] memory) {
@@ -116,7 +117,7 @@ contract BasketBuilderTest is XindexTest {
     }
 
     function _mintLeg(bytes memory v3Path) internal pure returns (IUniversalRouterSwaps.MintLeg memory) {
-        return IUniversalRouterSwaps.MintLeg({v3Path: v3Path, v4Path: _noV4(), maxAmountIn: 0});
+        return IUniversalRouterSwaps.MintLeg({localRoute: "", v3Path: v3Path, v4Path: _noV4(), maxAmountIn: 0});
     }
 
     function _burnLeg(bytes memory v3Path, uint256 minOut)
@@ -124,7 +125,7 @@ contract BasketBuilderTest is XindexTest {
         pure
         returns (IUniversalRouterSwaps.BurnLeg memory)
     {
-        return IUniversalRouterSwaps.BurnLeg({v3Path: v3Path, v4Path: _noV4(), minAmountOut: minOut});
+        return IUniversalRouterSwaps.BurnLeg({localRoute: "", v3Path: v3Path, v4Path: _noV4(), minAmountOut: minOut});
     }
 
     /// @dev The index's three legs from usdc: WBTC through WETH, WETH, LINK through WETH.
@@ -240,6 +241,11 @@ contract BasketBuilderTest is XindexTest {
             builder.escrowOf(alice, token) + builder.escrowOf(bob, token),
             "the builder holds every escrow"
         );
+        assertEq(
+            builder.totalEscrow(token),
+            builder.escrowOf(alice, token) + builder.escrowOf(bob, token),
+            "and its total of them is their sum (CA-H2)"
+        );
     }
 
     // ---------------------------------------------------------------------
@@ -254,15 +260,17 @@ contract BasketBuilderTest is XindexTest {
         assertEq(builder.USDC(), address(usdc));
         assertTrue(usdt != address(0) && usdt != address(usdc));
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new BasketBuilder(IIndexFactory(address(0)), router, address(usdc), usdt);
+        new BasketBuilder(IIndexFactory(address(0)), router, LocalVenues.none(), address(usdc), usdt);
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new BasketBuilder(IIndexFactory(address(factory)), IUniversalRouter(address(0)), address(usdc), usdt);
+        new BasketBuilder(
+            IIndexFactory(address(factory)), IUniversalRouter(address(0)), LocalVenues.none(), address(usdc), usdt
+        );
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new BasketBuilder(IIndexFactory(address(factory)), router, address(0), usdt);
+        new BasketBuilder(IIndexFactory(address(factory)), router, LocalVenues.none(), address(0), usdt);
         vm.expectRevert(IXindexErrors.ZeroAddress.selector);
-        new BasketBuilder(IIndexFactory(address(factory)), router, address(usdc), address(0));
+        new BasketBuilder(IIndexFactory(address(factory)), router, LocalVenues.none(), address(usdc), address(0));
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotAStable.selector, address(usdc)));
-        new BasketBuilder(IIndexFactory(address(factory)), router, address(usdc), address(usdc));
+        new BasketBuilder(IIndexFactory(address(factory)), router, LocalVenues.none(), address(usdc), address(usdc));
     }
 
     // ---------------------------------------------------------------------
@@ -469,7 +477,7 @@ contract BasketBuilderTest is XindexTest {
         p.tokenIn = address(0);
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotAStable.selector, address(0)));
         builder.buy(p);
-        // Only the builder's USDC and USDT pay for a buy (the owner's call of 2026-11-18).
+        // Only the builder's USDC and USDT pay for a buy.
         p.tokenIn = address(weth);
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotAStable.selector, address(weth)));
         builder.buy(p);
@@ -530,7 +538,9 @@ contract BasketBuilderTest is XindexTest {
         p.legs[1] = _mintLeg(_path2(address(weth), address(link)));
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.BadRoute.selector, 1));
         builder.buy(p);
-        p.legs[1] = IUniversalRouterSwaps.MintLeg({v3Path: "", v4Path: _v4Path1(address(usdc)), maxAmountIn: 0});
+        p.legs[1] = IUniversalRouterSwaps.MintLeg({
+            localRoute: "", v3Path: "", v4Path: _v4Path1(address(usdc)), maxAmountIn: 0
+        });
         p.legs[1].v4Path[0].hooks = address(1);
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.BadRoute.selector, 1));
         builder.buy(p);
@@ -546,7 +556,9 @@ contract BasketBuilderTest is XindexTest {
     function test_buyWithAV4Leg() public {
         uint256[] memory need = index.previewIssue(1e18);
         IBasketBuilder.BuyParams memory p = _buyParams(index, 1e18, address(usdc), 200e6, _one(1));
-        p.legs[0] = IUniversalRouterSwaps.MintLeg({v3Path: "", v4Path: _v4Path1(address(usdc)), maxAmountIn: 0});
+        p.legs[0] = IUniversalRouterSwaps.MintLeg({
+            localRoute: "", v3Path: "", v4Path: _v4Path1(address(usdc)), maxAmountIn: 0
+        });
         usdc.mint(alice, 200e6);
         vm.startPrank(alice);
         usdc.approve(address(builder), 200e6);
@@ -934,7 +946,9 @@ contract BasketBuilderTest is XindexTest {
         _redeemFor(alice, 1e18);
         uint256 held = builder.escrowOf(alice, address(weth));
         IBasketBuilder.SellParams memory p = _sellParams(address(usdc), 1, _one(address(weth)), bob);
-        p.legs[0] = IUniversalRouterSwaps.BurnLeg({v3Path: "", v4Path: _v4Path1(address(usdc)), minAmountOut: 0});
+        p.legs[0] = IUniversalRouterSwaps.BurnLeg({
+            localRoute: "", v3Path: "", v4Path: _v4Path1(address(usdc)), minAmountOut: 0
+        });
         vm.prank(alice);
         uint256 amountOut = builder.sell(p);
         assertEq(amountOut, router.quoteOut(address(weth), address(usdc), held));
@@ -962,7 +976,7 @@ contract BasketBuilderTest is XindexTest {
         p.tokenOut = address(0);
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotAStable.selector, address(0)));
         builder.sell(p);
-        // Only the builder's USDC and USDT are a sale's proceeds (the owner's call of 2026-11-18).
+        // Only the builder's USDC and USDT are a sale's proceeds.
         p.tokenOut = address(wbtc);
         vm.expectRevert(abi.encodeWithSelector(IXindexErrors.NotAStable.selector, address(wbtc)));
         builder.sell(p);
@@ -1110,7 +1124,8 @@ contract BasketBuilderTest is XindexTest {
         (throughWeth[0], throughWeth[1]) = (_hop(address(weth)), _hop(second));
         bytes memory refusal = abi.encodeWithSelector(IXindexErrors.SharedBalance.selector, second, address(token));
 
-        p.legs[0] = IUniversalRouterSwaps.BurnLeg({v3Path: "", v4Path: _v4Path1(second), minAmountOut: 0});
+        p.legs[0] =
+            IUniversalRouterSwaps.BurnLeg({localRoute: "", v3Path: "", v4Path: _v4Path1(second), minAmountOut: 0});
         vm.prank(bob);
         vm.expectRevert(refusal);
         builder.sell(p);
@@ -1145,6 +1160,173 @@ contract BasketBuilderTest is XindexTest {
     // Reentrancy
     // ---------------------------------------------------------------------
 
+    // ---------------------------------------------------------------------
+    // The escrows' total, the token as a recipient, a deposit of nothing (the consolidated audit, CA)
+    // ---------------------------------------------------------------------
+
+    /// @dev CA-H2: every user's escrow of a token sits in one balance, and nothing compared that balance with the
+    ///      escrows. After the token's issuer burned part of the builder's balance, a newcomer's deposit, bought leg
+    ///      or redeemed leg passed every check, and an earlier user's withdrawal took it. Each credit is now refused
+    ///      while the balance is below the escrows, not one unit short. What is left still leaves, first come, first
+    ///      served; another token goes on as before; and made whole, the builder credits again.
+    function test_CAH2_nothingIsCreditedIntoAnUncoveredEscrow() public {
+        _depositFor(alice, link, 10e18);
+        link.burn(address(builder), 4e18);
+        bytes4 short = IXindexErrors.Underbacked.selector;
+
+        link.mint(bob, 5e18);
+        usdc.mint(bob, 200e6);
+        _issueTo(bob, 1e18);
+        uint256 bought = index.previewIssue(1e18)[2];
+        uint256 redeemed = index.previewRedeem(1e18)[2];
+        IBasketBuilder.BuyParams memory buy = _buyParams(index, 1e18, address(usdc), 200e6, _one(2));
+        vm.startPrank(bob);
+        link.approve(address(builder), 5e18);
+        usdc.approve(address(builder), 200e6);
+        index.approve(address(builder), 1e18);
+        vm.expectRevert(abi.encodeWithSelector(short, address(link), 6e18 + 5e18, 10e18 + 5e18));
+        builder.deposit(address(link), 5e18);
+        vm.expectRevert(abi.encodeWithSelector(short, address(link), 6e18 + bought, 10e18 + bought));
+        builder.buy(buy);
+        vm.expectRevert(abi.encodeWithSelector(short, address(link), 6e18 + redeemed, 10e18 + redeemed));
+        builder.redeem(address(index), 1e18);
+        vm.stopPrank();
+        assertEq(link.balanceOf(bob), 5e18, "the newcomer keeps its coins");
+        assertEq(index.balanceOf(bob), 1e18, "and its shares");
+
+        _depositFor(bob, weth, 1e18);
+        assertEq(builder.escrowOf(bob, address(weth)), 1e18, "another token is another balance");
+
+        vm.prank(alice);
+        builder.withdraw(address(link), 6e18, alice);
+        assertEq(link.balanceOf(address(builder)), 0, "what was left went to the first to ask");
+        assertEq(builder.totalEscrow(address(link)), 4e18, "and the rest of her escrow is still owed");
+
+        link.mint(address(builder), 4e18 - 1);
+        vm.prank(bob);
+        vm.expectRevert(abi.encodeWithSelector(short, address(link), 4e18 - 1 + 5e18, 4e18 + 5e18));
+        builder.deposit(address(link), 5e18);
+
+        link.mint(address(builder), 1);
+        vm.prank(bob);
+        builder.deposit(address(link), 5e18);
+        vm.prank(alice);
+        builder.withdraw(address(link), 0, alice);
+        vm.prank(bob);
+        builder.withdraw(address(link), 0, bob);
+        assertEq(link.balanceOf(alice), 10e18, "made whole, the earlier escrow is paid from its own coins");
+        assertEq(link.balanceOf(bob), 5e18, "and the newcomer's from its own");
+        _assertCovered(address(link));
+    }
+
+    /// @dev CA-H2: the total of a token is its escrows and nothing else, through every credit and every debit: a
+    ///      deposit, a buy, a mint, a redeem, a sale with part of it unsold, and a withdrawal.
+    function test_CAH2_theTotalIsTheEscrows() public {
+        _depositFor(alice, weth, 3e18);
+        _assertTotals();
+        _buyFor(bob, 2e18, 400e6, _all());
+        _assertTotals();
+        vm.prank(bob);
+        builder.mint(address(index), 1e18, bob, address(0), block.timestamp);
+        _assertTotals();
+        _redeemFor(bob, 1e18);
+        _assertTotals();
+
+        // The router sells half of bob's WETH and sweeps the rest back, which returns to his escrow.
+        router.setMode(MockUniversalRouter.Mode.PartialFirstHop);
+        IBasketBuilder.SellParams memory p = _sellParams(address(usdc), 1, _one(address(weth)), bob);
+        vm.prank(bob);
+        builder.sell(p);
+        router.setMode(MockUniversalRouter.Mode.Normal);
+        assertGt(builder.escrowOf(bob, address(weth)), 0, "the unsold half came back");
+        _assertTotals();
+
+        vm.prank(alice);
+        builder.withdraw(address(weth), 1e18, alice);
+        _assertTotals();
+        assertEq(builder.totalEscrow(address(weth)), 2e18 + builder.escrowOf(bob, address(weth)));
+    }
+
+    function _assertTotals() internal view {
+        _assertCovered(address(wbtc));
+        _assertCovered(address(weth));
+        _assertCovered(address(link));
+    }
+
+    /// @dev CA-H2: a leg that is the paying stablecoin itself is credited while the call's unspent stablecoin still
+    ///      stands in the builder's balance, which hid a shortfall from the check made at the credit. The check is
+    ///      made again once the refund has left, and reads the balance the escrows are really left with.
+    function test_CAH2_aPassThroughLegIsCheckedOnceTheRefundHasLeft() public {
+        _depositFor(alice, usdc, 100e6);
+        usdc.burn(address(builder), 40e6);
+        uint256 need = stableIndex.previewIssue(1e18)[1];
+        IBasketBuilder.BuyParams memory p = _buyParams(stableIndex, 1e18, address(usdc), 200e6, _one(1));
+        p.legs[0] = _mintLeg("");
+
+        usdc.mint(bob, 200e6);
+        vm.startPrank(bob);
+        usdc.approve(address(builder), 200e6);
+        vm.expectRevert(
+            abi.encodeWithSelector(IXindexErrors.Underbacked.selector, address(usdc), 60e6 + need, 100e6 + need)
+        );
+        builder.buy(p);
+        vm.stopPrank();
+
+        usdc.mint(address(builder), 40e6);
+        vm.prank(bob);
+        builder.buy(p);
+        assertEq(builder.escrowOf(bob, address(usdc)), need, "made whole, the leg is credited");
+        assertEq(usdc.balanceOf(address(builder)), 100e6 + need);
+        _assertCovered(address(usdc));
+    }
+
+    /// @dev CA-R2-15: a withdrawal or a sale paid to the very token it pays out left the escrow debited and the coins
+    ///      in a contract nobody can move them from, a mistake the zap already refuses for a payout (RY-1). Any other
+    ///      contract is an ordinary recipient.
+    function test_CAR215_theTokenPaidOutIsNoRecipient() public {
+        _depositFor(alice, weth, 2e18);
+        IBasketBuilder.SellParams memory p = _sellParams(address(usdc), 1, _one(address(weth)), address(usdc));
+        vm.startPrank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, address(weth)));
+        builder.withdraw(address(weth), 1e18, address(weth));
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.InvalidRecipient.selector, address(usdc)));
+        builder.sell(p);
+        assertEq(builder.escrowOf(alice, address(weth)), 2e18, "nothing left the escrow");
+
+        builder.withdraw(address(weth), 1e18, address(link));
+        assertEq(weth.balanceOf(address(link)), 1e18, "another token's contract is a recipient like any other");
+        p.to = address(weth);
+        uint256 paid = builder.sell(p);
+        vm.stopPrank();
+        assertEq(usdc.balanceOf(address(weth)), paid);
+    }
+
+    /// @dev CA-R2-16: a deposit credits what arrived, and arriving nothing was no error: with a token that takes a flat
+    ///      fee, a deposit no larger than the fee succeeded, credited nothing and announced a deposit of zero, as long
+    ///      as the builder already held enough of the token for its own probe. It reverts now, as MintRequests does.
+    function test_CAR216_aDepositThatDeliversNothingIsRefused() public {
+        MockFlatFeeToken flat = new MockFlatFeeToken();
+        uint256 fee = flat.FLAT_FEE();
+        flat.mint(bob, 100);
+        flat.mint(alice, 100);
+        vm.startPrank(bob);
+        flat.approve(address(builder), 100);
+        builder.deposit(address(flat), 100);
+        vm.stopPrank();
+        assertEq(builder.escrowOf(bob, address(flat)), 100 - fee, "a larger deposit credits what arrived");
+
+        vm.startPrank(alice);
+        flat.approve(address(builder), 100);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.TransferShortfall.selector, address(flat)));
+        builder.deposit(address(flat), fee);
+        vm.expectRevert(abi.encodeWithSelector(IXindexErrors.TransferShortfall.selector, address(flat)));
+        builder.deposit(address(flat), fee - 1);
+        builder.deposit(address(flat), fee + 1);
+        vm.stopPrank();
+        assertEq(builder.escrowOf(alice, address(flat)), 1, "one unit past the fee is one unit credited");
+        assertEq(flat.balanceOf(address(builder)), builder.totalEscrow(address(flat)));
+    }
+
     function test_theGuardHoldsThroughAWithdrawal() public {
         MockHookToken hook = new MockHookToken();
         BuilderReenterer probe = new BuilderReenterer(builder);
@@ -1166,11 +1348,13 @@ contract BasketBuilderTest is XindexTest {
     // Gas
     // ---------------------------------------------------------------------
 
-    /// @dev A hundred-leg basket, beyond what one zap transaction can swap, is bought in three calls and issued in
-    ///      one, each under EIP-7825's cap with every account cold. The mock router swaps for far less than a real
-    ///      pool, so the buys' figures are a floor; the mint's is the builder's own work and the index's.
-    function test_aHundredLegBasketFitsInThreeBuysAndAMint() public {
-        uint256 n = 100;
+    /// @dev The widest basket, MAX_COMPONENTS' two hundred legs, far beyond what one zap transaction can swap, is
+    ///      bought in six calls and issued in one, each under EIP-7825's cap with every account cold. The mock router
+    ///      swaps for far less than a real pool, so the buys' figures are a floor; the mint's is the builder's own work
+    ///      and the index's.
+    function test_theWidestBasketFitsInSixBuysAndAMint() public {
+        uint256 n = factory.MAX_COMPONENTS();
+        assertEq(n, 200);
         address[] memory tokens = new address[](n);
         uint256[] memory units = new uint256[](n);
         for (uint256 i = 0; i < n; ++i) {
@@ -1183,12 +1367,12 @@ contract BasketBuilderTest is XindexTest {
         }
         WeightedHub wide = _createIndex("Wide", "WIDE", tokens, units);
 
-        usdc.mint(alice, 1_000e6);
+        usdc.mint(alice, 2_000e6);
         vm.prank(alice);
-        usdc.approve(address(builder), 1_000e6);
+        usdc.approve(address(builder), 2_000e6);
         uint256 from = 0;
-        uint256[3] memory batch = [uint256(34), 33, 33];
-        for (uint256 b = 0; b < 3; ++b) {
+        uint256[6] memory batch = [uint256(34), 34, 33, 33, 33, 33];
+        for (uint256 b = 0; b < 6; ++b) {
             uint256[] memory components = new uint256[](batch[b]);
             IUniversalRouterSwaps.MintLeg[] memory legs = new IUniversalRouterSwaps.MintLeg[](batch[b]);
             for (uint256 k = 0; k < batch[b]; ++k) {

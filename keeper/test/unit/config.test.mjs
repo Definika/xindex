@@ -44,7 +44,7 @@ test("CHAIN_ID picks the chain's addresses, and the Sepolia keeper can serve req
   assert.equal(c.fillRequests, true);
   assert.equal(marketOf(c.chain).usdc, CHAINS[11155111].usdc);
   assert.deepEqual(ETHEREUM_MARKET, marketOf(MAINNET));
-  assert.throws(() => parseConfig({ ...VALID, CHAIN_ID: "56" }), /CHAIN_ID must be one of 1, 11155111/);
+  assert.throws(() => parseConfig({ ...VALID, CHAIN_ID: "10" }), /CHAIN_ID must be one of 1, 56, 8453, 11155111/);
   assert.throws(() => parseConfig({ ...VALID, FILL_AUCTIONS: "yes" }), /FILL_AUCTIONS must be 0 or 1/);
   assert.throws(
     () => parseConfig({ ...VALID, FILL_AUCTIONS: "0", FILL_REQUESTS: "0" }),
@@ -110,20 +110,33 @@ test("RX-2: the share-priced ids are PythIds.sol's", async () => {
   const { readFileSync } = await import("node:fs");
   const source = readFileSync(new URL("../../../script/PythIds.sol", import.meta.url), "utf8");
   const share = [...source.matchAll(/\((Equity\.(?:US|Index)\.)[^)]*\)[^\n]*\n\s*bytes32 internal constant \w+ = (0x[0-9a-f]{64})/g)].map((m) => m[2]);
-  assert.equal(share.length, 12);
+  assert.equal(share.length, 344);
   assert.deepEqual([...SHARE_PRICED_IDS].sort(), share.sort());
+});
+
+test("an Ondo token priced at a feed of its own is priced at Pyth's feed of that Ondo token, never a namesake's", async () => {
+  // An earlier listing priced Ondo's AT&T (Ton) and Li Auto (LIon) at Crypto.TON/USD and Crypto.LION/USD, Toncoin's and a
+  // token called Loaded Lions: a symbol match, not the Ondo token. Pyth names its own Ondo feeds "... ONDO TOKENIZED".
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(new URL("../../../script/PythIds.sol", import.meta.url), "utf8");
+  const own = [...source.matchAll(/\/\/\/ @dev ([^\n]*)\(Crypto\.(\w+)\/USD\): the Ondo token's own feed\.\n\s*bytes32 internal constant (\w+) =/g)];
+  assert.equal(own.length, 9, "NVDA, AAPL, GOOGL, MSFT, TSLA, HOOD, MSTR, COIN and CRCL");
+  for (const [, description, symbol, name] of own) {
+    assert.match(description, /ONDO TOKENIZED/, `${name} is priced at ${symbol}, which is not an Ondo token's feed`);
+    assert.equal(symbol, name, `${name}'s feed is the Ondo token's own`);
+  }
 });
 
 test("the keeper values a chain's own coins, and PRICE_IDS adds to them or changes one", () => {
   const token = `0x${"Cd".repeat(20)}`;
   const id = `0x${"ab".repeat(32)}`;
   const weth = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2";
-  assert.equal(Object.keys(parseConfig(VALID).priceIds).length, 80);
+  assert.equal(Object.keys(parseConfig(VALID).priceIds).length, 414);
   assert.equal(parseConfig(VALID).priceIds[weth], "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace");
   const c = parseConfig({ ...VALID, PRICE_IDS: `${token}=${id}, ${weth}=${id}` });
   assert.equal(c.priceIds[token.toLowerCase()], id);
   assert.equal(c.priceIds[weth], id, "an entry replaces the catalogue's");
-  assert.equal(Object.keys(c.priceIds).length, 81);
+  assert.equal(Object.keys(c.priceIds).length, 415);
   assert.equal(Object.keys(parseConfig({ ...VALID, CHAIN_ID: "11155111" }).priceIds).length, 4, "Sepolia's test tokens");
   for (const bad of ["junk", `${token}`, `${token}=0x12`, `${token}=${id}=${id}`, `0x12=${id}`]) {
     assert.throws(() => parseConfig({ ...VALID, PRICE_IDS: bad }), /PRICE_IDS has an entry that is not token=id/, bad);

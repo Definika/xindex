@@ -1,0 +1,458 @@
+# Red team of the oracle-free mechanism (RW)
+
+A red team of the contracts under `src/` on `feat/bnb-chain-deployment` at `4e4751f`, the oracle-free rebalance of
+2026-11-10 with its quote, run on 2026-11-14 by reviewers who did not design it: the red team `CLAUDE.md` asks for
+before any mainnet. The owner's brief was ten agents. Nine hunted in parallel, one lens each: solvency and rounding,
+the auction's arithmetic, timers and governance, fees and the gate, reentrancy and hostile contracts, the builder's
+escrow, the zap and `MintRequests`, the Universal Router integration, and falsifying the NatSpec. The tenth
+cross-examined every finding at its lines, chased the forty leads the nine left open, and looked for chains.
+
+**The brief was `src/` and nothing else**: no test, no record, not this folder. So the team could not know what
+earlier reviews had recorded, and it found several of those things again. The table's verdict column says which. That
+was learned the same day, when the fixes were ported into the suite and the records were read. One of the ten is new,
+RW-5, and so is the chain that makes RW-1 pay; RW-2, RW-3 and RW-9 each add a consequence to something recorded;
+RW-1, RW-4, RW-6, RW-7, RW-8 and RW-10 were known, as a limitation, an open id, or a lead.
+
+Method: each finding was reproduced as an executed Foundry test against the unmodified contracts, 17 tests, and the
+arithmetic of RW-1 to RW-3 in an exact integer port of `WeightedMath` as well; both are kept outside the repository.
+RW-9 and RW-10 ran against a mock router that keeps the two behaviours they rest on (the router pays a pool from its
+own balance, and a sweep sends its whole balance), not against a fork. The fixes were drafted, attacked by eleven
+reviewers in two rounds, which changed four of them, applied to the working tree at the owner's go-ahead, and ported
+into the suite with their mutants. The port was read in turn by three reviewers, one each for this record, the
+documents and the repository's standard; three of the tests and nine of the mutants below, and most of the lines
+changed in the documents, are theirs to ask for.
+
+**Result.** No path takes funds at rest from an index with real, dispersed supply, from a zap user, or from a builder
+escrow of an ordinary token. The solvency invariant, the reentrancy guards, the pre-fund bound and the escrow ledger
+held. One chain took a requester's stablecoins: on an index of a few raw shares the units could be rewritten for
+nothing (RW-1), and a mint request priced on one basket could be filled after a settlement had made it another
+(RW-2). Seven findings are fixed in `src/` and three are recorded by documentation, where every rule tried cost more
+than the finding.
+
+Each id is `RW-…`. A fixed finding's test carries its id, and its mutants are W1 to W29 in
+`test/mutants/mutants.json`.
+
+| Id | Verdict | Finding | Status |
+|---|---|---|---|
+| RW-1 | Confirmed, medium. Its core was a known limitation since 2026-11-10, "A dust index's units can be walked" | On a supply of a few raw shares a fill's gain cost nothing: its amounts scale with the supply and its gain does not, so anyone could walk an unseeded, abandoned or gated-and-empty index's units off its weights for a few raw units per fill | Fixed: `WeightedMath.settlement` refuses a supply under `SHARE_UNIT`. One test, mutants W6, W21 and W22, and the vectors' `dust` and `share` kinds (V15) |
+| RW-2 | Confirmed, medium chained with RW-1 and low alone. That a request is an option its fillers hold is SA-12, a known limitation; that a settlement moves the share under it, and that the filler can make that settlement, is new | A request in `MintRequests` fixed its limit in shares for up to 30 days and nothing tied it to the basket: a fill after a settlement delivered shares of another basket at the old limit | Fixed: a request records `rebalanceNonce` and a fill reverts `StaleRebalanceNonce`. Four tests, mutants W1, W2 and W23 |
+| RW-3 | Confirmed, low. The sliver fill is a known limitation; that a quote makes it certain is new | Any fill without a keep mask restarts the whole interval, up to 91 days, and the least a fill can give is 4.77e-7 of the index. The owner or guardian can post a quote that refuses every trade worth making and still lets that gift through | Recorded by documentation; two code rules were tried and withdrawn. No test |
+| RW-4 | Already recorded: RY-3, open | A minter names itself referrer and takes the referral share of the platform's part | Open, the fee policy's question, as RY-3. The NatSpec says so now. No test here (`test_RT3_aMinterCanReferItself` was RY-3's probe) |
+| RW-5 | Confirmed, low. New | A holder of nearly the whole supply adds to its position through a fill that grows every leg: no entry fee, no gate | Recorded by documentation: no price-free rule tells a top-up from a trade. No test |
+| RW-6 | Confirmed, low. The 2026-10-18 red team's F-29, contested there and rated informational | `acceptCreator` accrued nothing, and the hub pays whoever is creator at the accrual, so a new creator collected the streaming fee the old one had earned | Fixed: `acceptCreator` accrues the index first. Two tests, mutants W7, W9 and W29 |
+| RW-7 | Confirmed, low. The 2026-10-18 red team's "lead nobody verified" | `fill(id, amount)` names only an id: after a re-org, or a front-run of a pending request, a filler's delivery lands on another request | Fixed as that record proposed: an overload, `fill(id, amount, expected)`, and `requestHash`. `fill(id, amount)` stays. Four tests, mutants W3 to W5, W24 and W28 |
+| RW-8 | Confirmed, low. RZ-25, which the owner's call of 2026-11-02 left to the app | `issue` pulled a leg without proving the index can send it, so a deposit could enter a leg a sender-blocking blacklist had frozen for the index | Fixed in the hub: `_issue` makes the probe a fill makes (RX-12). The owner's to confirm against the call of 2026-11-02. One test, mutants W8, W10, W25 and W26 |
+| RW-9 | Confirmed, low. RX-45 recorded that a stray forces the zap's payout to `to`; that the forced payout reverts for a recipient the token refuses is new | One raw unit a stranger left in the router made a zap burn revert when its recipient could not receive that hop token, and the revert left the unit there for the next try | Fixed: the engine tells the stray from the hop's unsold input, and the zap offers the stray instead of forcing it. Seven tests, mutants W11 to W14, W20 and W27 |
+| RW-10 | Confirmed, low. The 2026-10-18 red team's F-27, contested there: "it argues for a listing rule" | With one ledger behind two addresses, a swap measured at both counted the same tokens twice, and the builder paid the difference out of other users' escrows | Fixed for every swap that pre-funds anything: `SharedBalance`. The listing rule is written for the two shapes no probe sees. Five tests on a new mock, mutants W15 to W19 |
+
+## RW-1: a few raw shares rewrote an index's units for nothing (confirmed, medium)
+
+`WeightedMath.settlement` refused a supply of zero and no other. The two halves of a settlement scale differently:
+whether a fill is accepted (`_gain`) reads the ratios of the units, and the supply does not appear; what a fill costs
+(`_legAmounts`) is `supply · |v − u| · scale / 1e36`, rounded down when it leaves and up when it comes back. On a
+supply of one or two raw shares an amount is a few raw units at most: at the reproduction's units every amount going
+out floors to zero and the first amounts coming in are one raw unit. So an accepted fill cost a few raw units, and
+growth, which is what the bar rewards, was free: doubling every leg scores
+0.5333e18, above `BAR_MAX`, and settles in the auction's first second.
+
+Reproduced on a WETH/USDC index, 50/50, units `[5e17, 1250e6]`, created and not seeded. `issue(1, attacker)`; once
+the interval has passed, a start, which anyone may make; then a fill at `[1e18, 1e9]`, whose gain
+155093333333333333 clears the bar 155034722222222223 with `amountsOut = [0, 0]` and `amountsIn = [1, 0]`. Ten fills
+leave the units at `[5.12e20, 134217728]`, a split of 99.99 to 0.01, for 512 raw units of WETH. On an index of 1,000
+shares the first of those fills costs 500 WETH and the ten 511,500: real supply was the only thing that priced it.
+
+What it did:
+
+- The next minters bought the skewed basket, and the distance back to the weights was paid to whoever filled the
+  later auctions. The walk back is as slow as the walk out: a fill moves the ratio of two legs by at most 2.5 times.
+- The factory checks its unit bounds at creation alone. Legs doubled each interval made one raw share worth real
+  money, which the fee rounding was not sized for: an exit of 79 raw shares or fewer paid no exit fee and the
+  platform's part of four fee shares or fewer rounded to zero (shown in the exact port only).
+- A leg driven to 4 raw units could never shrink again, `⌈0.8 · 4⌉ = 4`, and legs driven to `2^96 − 1` took no fill.
+- No funds already in an index were taken by this alone. With RW-2 a requester's were.
+
+What was known: the spec's section 8 and `docs/known-limitations.md` recorded on 2026-11-10 that a dust index's
+units can be walked, answered by the app showing an index's coins against its weights, and
+`test_RT12_SA07_anEmptyExecutorIsPaidNothingOnASubTokenSupply` filled a rebalance on 40 raw shares on purpose. What
+was not: that the walk is free at the caps' full speed, what it does to the fee rounding and the unit ceiling, and
+that `MintRequests` turned it into a profit.
+
+**Fix.** `if (supply < SHARE_UNIT) revert IWeightedHub.NothingToRebalance();`, the owner's call to keep it once the
+RT-12 test was shown to reverse. The preview goes through the same function, so the two still agree. The line is one
+whole share because the factory's unit bounds are sized per share; lower, and a fill's cost falls with it. The hub's
+bytecode does not change. The exact model follows (`test/vectors/settlement.py`: `supply < WAD` is `EMPTY`, supplies
+are drawn from one share up, the `dust` kind adds one raw share under a whole one, a new `share` kind settles five
+vectors at exactly one), `test/vectors/settlement.json` holds 431 vectors, and the keeper's vector test follows: its
+harness restates the floor (`keeper/test/unit/units.test.mjs`), since the bot's port holds no supply rule.
+`test_XS16_handlerReachesEveryPath` issues two shares before its first rebalance.
+
+**RT-12 and SA-07 are re-targeted.** Their test, `test_RT12_SA07_anEmptyExecutorIsPaidNothingOnASubTokenSupply`,
+filled a rebalance on 40 raw shares to pin the per-leg rounding of a settlement's amounts. A supply under one share
+no longer settles, so the test keeps its name and pins the refusal, for the preview and for both executors. The
+rounding those ids fixed is pinned where it can still be reached, by the settlement vectors and mutants V9, V10 and
+V20.
+
+Checked against the mutants: with the line put back to `supply == 0` (W6),
+`test_RW1_oneWholeShareIsTheLeastSupplyThatRebalances` and `test_RT12_SA07_...` fail with `next call did not revert
+as expected`; with the line deleted (V15) the vectors fail. The boundary either side, `supply <= SHARE_UNIT` (W21)
+and `supply < SHARE_UNIT - 1` (W22), fails the RW-1 test, which refuses at one raw share under a whole one and
+settles at exactly one.
+
+**What it does not close.** Whoever holds an index's whole supply, one share or more, pays every fill to itself, so it
+can still move the units at no net cost; it has to lock one share's basket where it locked one raw unit. No line on
+the supply closes that in a contract that reads no price. RW-2 removes the one path found where that holder profits.
+The limitation is rewritten as "An index one holder owns can be walked". The keeper's bot still skips only an index
+with no supply before it starts one (`keeper/keeper.mjs`, `startChecks`); `MIN_TVL_USD` keeps it off a dust index in
+practice, and a start it did make on one could not be filled, by anyone.
+
+## RW-2: a request was not tied to the basket it priced (confirmed, medium with RW-1)
+
+A mint request fixes its limit as a count of shares, for up to `MAX_REQUEST_DURATION`. `fill` checked that the
+request was open and unexpired and that the requester received at least the limit. Nothing recorded what a share was
+when the requester set it. The zap and the builder revert `StaleRebalanceNonce` when the units changed after a quote,
+and the keeper's executor pins the nonce of its own fills (RX-4), which protects the filler. Nothing protected the
+requester.
+
+Reproduced with RW-1 on an index of A and B, 50/50, never seeded. The attacker mints dust and walks the units over
+five intervals to `[32e18, 0.32768e18]`. The first real user posts `requestMint` of 323,277 USDC for 10,000 shares,
+the limit an app derives from the units of that moment. In the next auction's last second the attacker settles
+`[25.6e18, 409749127770593102]`, a gain equal to the bar, for one raw unit: a share is now worth 19.54% less. It
+issues 10,000 shares in kind for about 263,400 USD and fills. It holds 323,277 USDC; the requester holds shares worth
+about 260,100. On an index with real supply the same gap is bounded by what a lone executor can take from all holders
+in one settlement.
+
+**Fix.** `Request` gains `uint40 rebalanceNonce`, read from the index when the request is made; it packs into the
+struct's first slot (160 + 40 + 8 + 8 + 40 bits), so a request costs no more storage. A fill reverts
+`StaleRebalanceNonce(recorded, current)`, the error the zap and the builder raise for the same reason. Both kinds are
+pinned: for a redeem request the rule protects the filler, who would otherwise pay the agreed stablecoins for shares
+a settlement ahead of it had re-denominated. `cancel` and `refund` read no nonce, so a stale request's escrow always
+comes back.
+
+Checked against the mutants: without the nonce check (W1) the mint and the redeem test, and the order test, fail with
+`next call did not revert as expected`; with a request recording nonce 0 (W2)
+`test_RW2_aRequestRecordsTheNonceItWasMadeAt` fails `0 != 1`. The tests settle one rebalance and pin nonces 0 and 1.
+
+**What it costs.** `getRequest` returns one more field, so every decoder of a `Request` follows
+(`abi/MintRequests.json` is regenerated). A settlement makes every open request on that index unfillable: the
+requester cancels and asks again, and the app shows such a request as stale. An index settles at most once a week.
+
+## RW-3: a sliver fill restarts the whole interval, and a quote makes it certain (confirmed, low)
+
+At an auction's last second the bar is 476837158204, 4.77e-7. Adding 953674771156 units per 1e18 to a 50% leg clears
+it exactly: 0.95 of a token per million shares. Any fill without a keep mask sets `lastRebalance`, so the index
+waits its whole interval again; XS-3 shortens that to a week for a fill with a keep mask only. For a stranger it
+lands only when no executor filled in four hours, and what it costs is a gift to the holders, which
+`docs/known-limitations.md` already records under "Rebalances clear only when the distance pays for the fill".
+
+New: the owner or the guardian can make it certain. A start with no keep mask and a quote that prices the legs the
+market would take out far above the rest, `[2^128 − 1, 1]` on two legs, refuses every trade worth making:
+`quoteCheck` wants the value coming in at the quoted prices to cover the value going out, and still passes a fill
+that only adds. The same role then fills the sliver. `_maskedFill` stays false, so XS-3's week does not apply, and
+unlike a cancel the hold needs no further action. A guardian being replaced can so hold an index off for up to 91
+days where a keep mask holds it a week.
+
+**No code change.** Two rules were drafted and withdrawn, and a third weighed:
+
+| Rule | Why not |
+|---|---|
+| A quoted fill restarts one week, as a masked one does | Three reviewers showed that every honest quoted rebalance would then open the index to an unquoted auction a week later, whatever its interval |
+| The owner and guardian may start a week after any settlement | `test_theRebalanceIntervalIsTheIndexs` and the invariant handler pin that the guardian cannot start before the interval: a new power for both roles on every index |
+| A least gain before a fill restarts the whole interval | A tuning constant, and only a price list for the hold |
+
+The NatSpec of `WeightedHub` and `IWeightedHub` says it plainly now, and "The guardian can stall rebalancing" records
+it. The owner's to decide whether that is enough.
+
+**Fixed in the hub on 2026-11-23**, by the second rule of the table, narrowed: once a fill has settled, the owner and
+guardian may start `MIN_REBALANCE_INTERVAL` after it, and a stranger still waits out the index's interval. Before an
+index's first fill nobody starts early (mutant RS4). The owner had
+left the choice open and on 2026-11-23 delegated it ("you decide every archiectural thing but i need only safest");
+the rule was taken because it lets either role reopen an index a sliver closed, and gives a hostile one nothing a
+chain of keep-mask fills did not already give it every week. `test_theRebalanceIntervalIsTheIndexs` and the
+invariant handler's model follow it, `test_RW3_aSliverUnderAQuoteHoldsTheRolesOffAWeekNotAQuarter` and
+`test_theOwnerOrGuardianRestartsAWeekAfterAnyFill` pin it (`test/WeightedHub.rebalance.t.sol`), and the mutants are
+RS1 to RS4.
+
+## RW-4: self-referral (already recorded, RY-3)
+
+`issue(shares, to, referrer)` checks the referrer against the gate (AU-1) and against an address that cannot hold
+shares, never against the caller or `to`. Nothing here is new against RY-3, which the owner deferred to the fee
+policy on 2026-11-02: a check on chain is dodged by a second wallet or a mint through the zap. One figure for that
+policy: the factory allows a `referralShareBps` of 10,000, at which the platform earns nothing on any mint that names
+a wallet of the minter's own. The NatSpec now calls the share what it is, a rebate any minter can take.
+
+## RW-5: a holder tops up through a fill (confirmed, low)
+
+A fill that grows every leg sends nothing out and is accepted by construction. What it adds is shared by every
+share, so it is free only to a holder of nearly all of them. On an index charging 1.25% a holder of 1,000 shares
+doubled its position in the auction's first second for 1,000.13 WETH where `issue` costs 1,012.66: the 0.013% went to
+the other fee shares, no fee share was minted, and no gate was read.
+
+**No code change.** Refusing a fill in which no leg shrinks is dodged by shrinking one leg by one raw unit, and
+charging the entry fee on what a fill adds taxes every honest rebalance, which adds by rounding. The NatSpec and the
+fee rule of `CLAUDE.md` say that only an issue and a redeem charge the entry and exit fee.
+
+## RW-6: the handover paid the newcomer what the outgoing creator earned (confirmed, low)
+
+The hub reads the creator from the factory at each accrual (`feeTerms`), and `acceptCreator` wrote `creatorOf` and
+accrued nothing. A new creator that called `acceptCreator` and `accrueFees` in one transaction collected everything
+earned since the last accrual: on an index of 10M USD at 500 bps with thirty days unaccrued, about 41,000 USD. The
+2026-10-18 red team recorded it as F-29 and left it contested, since the outgoing creator can accrue first; it also
+noted that nothing told that creator to.
+
+**Fix.** `acceptCreator` calls the index's `accrueFees()` before it writes `creatorOf`. The index is the factory's own
+clone, the outgoing creator can always hold shares, and nothing can re-enter: the function's comment gives each reason,
+and the three analyzers that see a call before an effect, forge lint, Wake and Aderyn, are answered there. What it
+changes: the handover reverts while the index is inside one of its own calls, a rebalance callback for one, and succeeds
+in the next; it costs an accrual's gas; the accrual's events precede `CreatorTransferred`. A change of the platform's
+recipient through `setFeePolicy` still accrues nothing first: both recipients are the platform's.
+
+Checked against the mutants: with the call removed (W7), and with the call moved below the write of `creatorOf` (W9),
+`test_RW6_theHandoverAccruesToTheOutgoingCreator` fails at `the thirty days it earned`. The test restates the hub's
+arithmetic and asserts by equality. `test_RW6_theHandoverWaitsWhileTheIndexIsInsideItsOwnCall` pins the new revert path:
+an executor the role was offered to calls `acceptCreator` from its rebalance callback and is refused with exactly
+`ReentrancyGuardReentrantCall`, the fill settles all the same, neither `creatorOf` nor `pendingCreatorOf` moves, and the
+same account accepts with a direct call afterwards. With a failed accrual swallowed (W29) the handover goes through
+inside the fill, and the test fails.
+
+## RW-7: a fill named an id, not a request (confirmed, low)
+
+Ids come from `++requestCount`, and `fill(id, amount)` names only the id. A filler that prices a request and sends
+its fill can find another request behind that id: after a re-org of the block that made the request, or when it acts
+on a pending request and an attacker's dust request is ordered first. It then delivers its whole amount for whatever
+that request escrowed: 950 shares for one raw unit of USDC in the red team's reproduction; the suite's test shows it
+with one share. The 2026-10-18 red team left this as "a lead nobody verified" and named the fix, an overload of
+`fill` that also names the request's terms. The keeper's executor is exposed in the one case that lead named. It
+reads the request in the same call, checks its side, deadline and nonce (a batch also its index and stablecoin) and
+holds its USDC float to a floor, which stops a swapped request on a mint and on a routed redeem, but not on a
+`fillRedeem` whose basket is kept as stock. It still calls `fill(id, amount)`.
+
+**Fix.** `fill(id, amount, expected)` reverts `RequestChanged(id)` unless `keccak256(abi.encode(request))` is
+`expected`, and `requestHash(id)` reports that hash. The checks run in this order: open, hash, deadline, nonce, so a
+closed request still answers `RequestNotOpen`. The hash leaves the id out, so a hash taken before a re-org fills the
+same request at its new id. A filler computes the hash from the request it priced, or for a pending one from its
+terms with `open` true and the index's current nonce: `requestHash(id)` called at fill time hashes whatever sits there
+and proves nothing.
+
+Checked against the mutants: without the hash check (W3) both RW-7 tests and the order test fail; without the open
+check (W4) a closed request answers `RequestChanged(1)` where the test expects `RequestNotOpen(1)`; with
+`requestHash` hashing the id as well (W5) the view no longer hashes what `getRequest` returns.
+`test_RW2_RW7_aBoundFillChecksTheHashThenTheDeadlineThenTheNonce` pins the order of the checks: the nonce check
+moved ahead of the deadline's (W23), and the hash compared after both (W24), each fail it.
+`test_RW7_theBoundFillSharesTheGuard` pins the guard on the new entry point both ways, with re-entries that would run
+to completion without it: a filler paid through the bound fill is refused a fill by id alone, and one paid through
+the fill by id alone is refused a bound fill, each with exactly `ReentrancyGuardReentrantCall`; with the guard
+dropped from the bound fill (W28) both go through.
+
+**What went wrong on the way.** The first draft was this overload. A reviewer argued that a caller who does not opt
+in stays exposed, and the second draft removed `fill(id, amount)`. That broke `keeper/src/KeeperExecutor.sol` at its
+four call sites, and nobody saw it, because the fix rounds built and tested the root project alone; it was found at
+the port, when the keeper's gates were first run. The two-argument `fill` was restored the same day, the owner's
+call, and the keeper is unchanged. Any change to an ABI the keeper calls runs the keeper's gates before it is called
+done, and gate 3 of `CLAUDE.md` says so now.
+
+## RW-8: an issue could deposit into a leg the index cannot send (confirmed, low; RZ-25)
+
+A fill proves that a leg it bought can leave (RX-12), the builder that it can send a token before it credits an
+escrow of it (XS-10), `MintRequests` the same at a request (SA-01). `issue` pulled each leg and made no such test.
+Tether's blacklist checks the sender alone, so `transferFrom` into a blacklisted index succeeds, the shares are
+minted, and that leg can leave only as a claim that pays if the issuer lifts the block. Nobody but the issuer can
+bring it about, so it is a trap and not an attack, and the zap and the builder walked their users into it.
+
+This is RZ-25. The owner's call of 2026-11-02 left the hub as it was and put the check in the app, for two reasons:
+a probe costs gas on every leg, and the hub then had 98 spare bytes. The second went with Pyth: the hub is 21,341
+bytes with this fix, 3,235 under EIP-170. The first stands, and is measured: a mint of ten components goes from
+340,879 gas to 387,171 and of a hundred from 2,836,679 to 3,299,722, about 4,600 a component, 14% to 16%.
+
+**Fix.** After each leg arrives `_issue` calls `_checkCanSendOut(token, arrived)`, the helper a fill's probe now
+shares: the index sends itself one raw unit and reverts `CannotSendOut(token)` if the call fails or the balance is
+lower after it. A direct caller is covered, which the app's check never did. A token that refuses a transfer to
+oneself can now be neither bought by a fill nor issued; the admission check refuses such a token since RB-1.
+
+**The owner's to confirm.** The fix was applied with the others on the owner's go-ahead, which was given on the gas
+figure and before RZ-25's call was read. Reverting it is the probe's lines in `_issue`, mutant W8's edit; the
+app's check stays useful either way, as the quote's `frozen_leg`.
+
+Checked against the mutants: without the probe (W8) the mint into the blocked leg does not revert; with the probe
+measured against the balance before the deposit (W10) the token that loses the probe's unit passes. The test blocks
+the last leg of one index and loses a unit on the first leg of another, so a probe that skips the last leg (W25) or
+the first (W26) fails it. A probe that skips only a middle leg is not pinned.
+
+## RW-9: a stray in the router reverted a burn its recipient could not be paid (confirmed, low)
+
+A sale hop pre-funds the router, swaps, and sweeps the router's whole balance of the hop's input back. Since CR-L02
+what came back is measured as it arrived, a stranger's leftover included, and the zap then made a hard transfer of
+all of it to the burn's recipient. RX-45 recorded that a one-unit donation so forces the zap's payout to `to`, and
+RY-4 that strays only enlarge a caller's own refund. Neither followed it to a recipient the token will not pay: an
+address Circle has blacklisted, burning to WETH through a USDC hop. One raw unit of USDC sent to the router made that
+burn revert, and the revert undid the sweep, so the unit stayed for the next try. The holder's in-kind `redeem` was
+never blocked.
+
+**Fix.** `_prefund` reads the router's balance of the hop's input before it sends, and `_returnUnsold` hands the one
+hook, `_onUnsold(token, unsold, stray, ctx)`, both amounts: what the hop did not sell and what the router already
+held, the stray never more than came back. The builder credits both to the seller's escrow in one write, as before.
+The zap sends both in one transfer when the token allows it (`trySafeTransfer`), as before; when the token refuses,
+it sends the unsold part alone with a hard transfer, since that part is the recipient's, and keeps the stray. So the
+zap can end a call holding a token nobody is owed; nothing can move it and no later call pays it out. The first
+draft used two hooks, which made the builder emit `Unsold` twice and write the escrow twice for one hop.
+
+Checked against the mutants: with everything the sweep brought back handed on as unsold input (W11), the engine as it
+was, both frozen-recipient tests, the refused-offer test and the reverting test fail; without the cap on the stray (W12)
+`test_RW9_aSweepOfLessThanTheRouterHeldDoesNotRevertTheBurn` fails with `Panic(0x11)`; with the unsold part only offered
+(W13) the burn that must revert goes through; with an accepted offer sending the stray alone (W14) the ordinary
+recipient's test and the refused-offer test fail; without the early return for nothing unsold (W20) both
+frozen-recipient tests fail. One hand mutation survives and changes no outcome: `stray != 0 &&` dropped from the offer.
+The refused-offer test makes the token refuse one transfer with `vm.mockCallRevert`, and the reverting test counts a
+call inside a reverted frame with `vm.expectCall`, which holds on the pinned forge 1.8.1. The builder's half has a test
+of its own, `test_RW9_theBuilderCreditsTheSellerTheUnsoldInputAndTheStray` in `test/BasketBuilder.t.sol`: the seller's
+escrow and the one `Unsold` event carry the unsold input and the stray together, and another user's escrow of the token
+is whole; with the builder crediting the unsold input alone (W27) it fails.
+
+## RW-10: one ledger behind two addresses was counted twice (confirmed, low; F-27)
+
+The builder keys its escrows by token address and measures every movement as a balance change at one address. With
+a token whose ledger two addresses write, a sale from one to the other read the same balance as its input and its
+output: the seller was credited the pool's whole output as unsold input under one address and paid the proceeds under
+the other, so the ledger ended above the balance by `out − given`, out of other users' escrow of that token. It needs
+such a token in escrow and a pool between its two addresses. The 2026-10-18 red team recorded it as F-27, contested,
+with no listed token of that kind, and said it argued for a listing rule.
+
+**Fix.** A swap whose pre-fund lowers a balance it is about to be measured against reverts
+`SharedBalance(token, other)`: on a sale hop the hop's output and, unless the hop's input is the leg's `tokenOut`
+itself, the leg's `tokenOut`; on a buy, the component. The first draft compared a hop's input with its own output
+alone; the reviewers found the two shapes that still drained an escrow, a hop's input sharing a ledger with the
+leg's `tokenOut` on a path of several hops, and a buy's `tokenIn` sharing one with the component. Each sale hop costs
+one to three more `balanceOf` calls (three on a V3 hop before its leg's last, two on a V4 leg, one on a last V3 hop)
+and each buy leg one.
+
+**What no probe sees.** A buy leg with a budget of zero pre-funds nothing, so its check cannot fire; a guard for it
+changed the error `test_CRI31_aBudgetExactlyCoveringThePassThroughLegIsEnough` pins on purpose, and was removed. And
+an index that names both addresses of one ledger is credited twice by `BasketBuilder.redeem`. Both need the owner to
+list both addresses, so the listing rule now says a token of this kind is never listed (the factory's header and
+the whitelist policy of `CLAUDE.md`). Capping each credit at `previewRedeem` would close the second in code and tie
+every redeem to the preview being exact; left out.
+
+Checked against the mutants: without the buy's check (W15) the buy test, without the hop-output check (W16) the
+one-hop, the passing-through and the V4 test, without the `tokenOut` check (W17) the two-hop test, and with the
+hop-output check on a leg's last hop alone (W18) the passing-through test fail with `next call did not revert as
+expected`: the leg completes and pays twice. Dropping the exemption for a hop that spends `tokenOut` itself (W19)
+fails `test_XA08_unsoldTokenOutIsPaidOutAndAnEmptyHopReverts` in `test/Security.t.sol` with
+`SharedBalance(usdc, usdc)`; no builder test routes back through `tokenOut`. The tests run on
+`test/mocks/MockTwoAddressToken.sol`, a token and a second address that forwards to its ledger, and in each a victim
+holding the token in escrow withdraws all of it afterwards.
+
+## Status of the fixes (2026-11-14)
+
+Every test is in the suite of what it checks. A mutant's suite is the suite of the test that kills it: its finding's,
+except W19's (`test/Security.t.sol`) and W27's (`test/BasketBuilder.t.sol`, the builder's half of RW-9).
+
+| Id | Fix | Tests | Mutants |
+|---|---|---|---|
+| RW-1 | `WeightedMath.settlement` refuses a supply under `SHARE_UNIT` | `test_RW1_oneWholeShareIsTheLeastSupplyThatRebalances` in `test/WeightedHub.rebalance.t.sol`; the vectors' `dust` and `share` kinds in `test/WeightedMath.vectors.t.sol`. `test_RT12_SA07_anEmptyExecutorIsPaidNothingOnASubTokenSupply` is re-targeted to the refusal (RW-1's section) | W6, W21, W22; V15 |
+| RW-2 | A request records `rebalanceNonce`; a fill reverts `StaleRebalanceNonce` | `test_RW2_aRequestRecordsTheNonceItWasMadeAt`, `test_RW2_aMintRequestIsNotFilledAfterASettlement`, `test_RW2_aRedeemRequestIsNotFilledAfterASettlement` and `test_RW2_RW7_aBoundFillChecksTheHashThenTheDeadlineThenTheNonce` in `test/MintRequests.t.sol` | W1, W2, W23 |
+| RW-3 | Documentation: the NatSpec of `WeightedHub` and `IWeightedHub`, the quote's rule in `CLAUDE.md`, and "The guardian can stall rebalancing" | none | none |
+| RW-4 | Documentation, as RY-3: open | none | none |
+| RW-5 | Documentation: the NatSpec, the fee rule of `CLAUDE.md`, "Fees in shares only" | none | none |
+| RW-6 | `acceptCreator` accrues the index before it writes `creatorOf` | `test_RW6_theHandoverAccruesToTheOutgoingCreator` and `test_RW6_theHandoverWaitsWhileTheIndexIsInsideItsOwnCall` in `test/WeightedHub.fees.t.sol` | W7, W9, W29 |
+| RW-7 | `fill(id, amount, expected)` and `requestHash`, beside `fill(id, amount)` | `test_RW7_aBoundFillRefusesAnotherRequestBehindTheId`, `test_RW7_aBoundFillTakesOnlyTheHashOfItsRequest`, `test_RW7_theBoundFillSharesTheGuard` and the two-id test above, in `test/MintRequests.t.sol` | W3, W4, W5, W24, W28 |
+| RW-8 | `_issue` probes each leg it pulls (`_checkCanSendOut`) | `test_RW8_anIssueCannotDepositALegTheIndexCannotSend` in `test/WeightedHub.rebalance.t.sol` | W8, W10, W25, W26; H11 and H12 follow the shared helper |
+| RW-9 | The engine hands the hook the unsold input and the stray apart; the zap offers the stray; the builder credits both | `test_RW9_aStrayInTheRouterDoesNotBlockAFrozenRecipientsBurn`, `test_RW9_aStrayInTheRouterDoesNotBlockAFrozenRecipientsV4Burn`, `test_RW9_anOrdinaryRecipientReceivesTheUnsoldInputAndTheStrayInOneTransfer`, `test_RW9_unsoldInputAFrozenRecipientCannotReceiveStillRevertsTheBurn`, `test_RW9_aRefusedOfferStillPaysTheRecipientWhatTheHopDidNotSell` and `test_RW9_aSweepOfLessThanTheRouterHeldDoesNotRevertTheBurn` in `test/IndexZap.t.sol`; `test_RW9_theBuilderCreditsTheSellerTheUnsoldInputAndTheStray` in `test/BasketBuilder.t.sol` | W11, W12, W13, W14, W20; W27 |
+| RW-10 | A pre-fund that lowers the balance a swap is measured against reverts `SharedBalance` | `test_RW10_aSaleBetweenTwoAddressesOfOneBalanceIsRefused`, `test_RW10_aTwoHopSaleEndingAtItsInputsOtherAddressIsRefused`, `test_RW10_aSalePassingThroughItsInputsOtherAddressIsRefused`, `test_RW10_aV4SaleBetweenTwoAddressesOfOneBalanceIsRefused` and `test_RW10_aBuyPaidThroughTheComponentsOtherAddressIsRefused` in `test/BasketBuilder.t.sol`, on `test/mocks/MockTwoAddressToken.sol` | W15, W16, W17, W18; W19 in `test/Security.t.sol` |
+
+The port changed `src/` three times more, none in what a caller sees. `_returnUnsold` caps the stray with
+`Math.min(stray, returned)` where it had an `if`; the cap is real, since a token that delivers short makes the router
+pay partly out of what it held, and W12 pins it. And the markers in `acceptCreator` were rearranged so that forge lint,
+Wake and Aderyn each read theirs: Wake's is a block around the call, the first in `src/`. `previewRebalance`'s NatSpec
+names the one-share refusal among its reverts. The four release hashes in
+`script/DeployWeighted.s.sol` are this build's (`test_CF5_theReleaseHashesAreThisBuilds`).
+
+## Informational, not changed
+
+No id, since nothing here is fixed or tested; each is for the owner.
+
+- **The guardian's veto over its own removal covers only the zero address.** The guardian can cancel a proposal that
+  names nobody; the owner can name a keyless address instead, which removes the role in effect
+  (`WeightedIndexFactory`, the guardian's section). The rebalance review of 2026-10-28 records the rule as intended
+  ("the guardian can veto only its own removal, never a replacement"); the comment that the owner cannot leave the
+  factory without a guardian over its objection says more than the code keeps.
+- **`rebalanceQuote()` reports an expired proposal's quote.** It tests `_eta == 0`, not the expiry, where
+  `currentBar()` and `canStartRebalance()` read the same state as not pending. Nothing on chain reads it.
+- **The recipient checks differ.** The zap takes another index as `to` where the builder refuses every index (RB-5,
+  open); the builder's `sell` and `withdraw` take the paid token's own contract where the zap refuses it. The
+  caller's own funds and the caller's own mistake.
+- **The streaming fee is linear in the gap.** One accrual after two years charges twice the yearly rate, a little
+  more than compounding would. `IWeightedHub` gives the mechanism; "never pay more than the rate" is loose.
+- **NatSpec the code does not keep.** `GainBelowBar` says a fill is accepted "once the bar has fallen to it", and
+  the bar never falls below 4.77e-7. `executeRebalance` refers to a `currentUnits` that `previewRebalance` does not
+  have. `IWeightedMath` orders two reverts that the loop interleaves per leg. `CLAUDE.md`'s "Invariant" rule and
+  `UniversalRouterSwaps`' header still say a rebalance rounds new units up (DA-01, retired): since 2026-11-10 the
+  executor names the units and only a leg's lower cap rounds up.
+- **Two zap edges.** The strict equality of the transfer checks refuses a currency whose balances rebase. A V3 sale
+  hop whose pool takes no input surfaces the router's own revert.
+
+Reported and not confirmed: inflating the supply to price competing executors out of an auction, then redeeming and
+filling alone. The source facts hold (the amounts come from `totalSupply()` in the settling block, and issue and
+redeem stay open during the auction); the profit rests on a model of market depth `src/` cannot settle, and with no
+fees an issue, fill and redeem in one transaction nets what no inflation at all nets.
+
+## What was attacked and held
+
+The hunters' results; the rounding argument and the reentrancy layout were re-read at their lines, the fuzzers were
+not rerun.
+
+- **The hub's solvency.** About 750,000 randomized operations in exact arithmetic (issue, redeem, `redeemSkipping`,
+  claim, accrual, settlement; 2 to 100 components; a supply of 1 to 1e40; units of 1 to `2^96 − 1`) never broke
+  `balance ≥ ⌊supply · units · scale / 1e36⌋ + claims`, and every preview matched what its call moved.
+- **The gain rule.** About 40 million accepted fills at extreme weights and tiny units: none lowered the weighted
+  product. `L(x) ≤ ln(1 + x)` held on the whole interval after flooring.
+- **Reentrancy.** Every mint, burn, claim and rebalance path shares the clone's guard; sequences across contracts
+  inside the executor's callback, the zap's ether refund and the router's execution move the attacker's own funds.
+- **The builder's escrow**, for a token with one address: about 450,000 fuzzed steps with donations, partial fills
+  and fee-on-transfer tokens; no path credited more than arrived or paid more than it debited.
+- **The router integration.** Commands, actions, tuple layouts and the pre-fund bound agree with Universal Router
+  2.0.0 and v4-periphery as the reviewers recalled them, not as read on a fork. No route spends more than its
+  pre-fund or leaves funds in the router.
+- **Timers.** Every equality in the rebalance, listing and guardian clocks agrees between a call and its view.
+
+## Gates
+
+Run on 2026-11-14 on the tree this record was written with, the keeper's project included:
+
+- `forge fmt --check`, `forge build --sizes --deny warnings` and `forge lint -D notes`: clean. The hub is 21,341
+  bytes, 3,235 under EIP-170.
+- The five committed ABIs are what `forge inspect` writes.
+- `forge test`: 555 passed, none failed, the 6 fork suites skipped.
+- The keeper: `forge fmt --check`, `forge build --deny warnings` and `forge lint -D notes` clean under
+  `--root keeper`; its suites 80 passed and its fork suite skipped; `node --test keeper/test/unit/*.test.mjs` 213 of
+  213.
+- `forge coverage --report summary --no-match-path 'test/fork/*'`: 100% of lines, statements, branches and functions
+  on all 51 files.
+- `wake detect all src`: no detection. `aderyn .`: nothing reported.
+- The mutation gate, `python3 -I test/mutants/run.py`: 139 of 139 mutants killed, W1 to W29 among them, the
+  keeper's and the node suites' included.
+- `python3 -I test/vectors/settlement.py` writes `test/vectors/settlement.json` byte for byte.
+- No file names a path on its author's machine.
+- **Not run: the fork suites** (gate 4), for want of `MAINNET_RPC_URL` and `BNB_RPC_URL`. See "Open".
+
+## Open
+
+- **The fork suites.** `test/fork/` did not run: no RPC URL here. `CLAUDE.md` requires them for a change to the
+  zap, the engine, the hub's rebalancing or token behaviour: RW-9 and RW-10, tested on mock routers alone, RW-1, and
+  RW-8, whose probe has met no real token. `Security.fork` and the BNB Chain suite are also what fills requests on
+  the real stablecoins (RW-2, RW-7). Run them before this is merged.
+- **RW-8 against RZ-25**, the owner's to confirm (above), and **RW-3**, the owner's to accept as documented or to
+  pick a rule for.
+- **The decoders.** The app, the backend and anything else that decodes a `Request` or the five ABIs follow; the app
+  marks a request whose index has settled as stale. The keeper's bot loads `abi/MintRequests.json` and was run only
+  through its unit suites.
+- **A new deployment is a whole one.** All four release hashes moved (CF-5), and deployed contracts are not reached:
+  `WeightedMath` and the hub's implementation are the factory's, and `MintRequests`, the zap and the builder have no
+  upgrade. Sepolia's deployment predates every fix here, and the keeper of this build decodes no request there: a
+  `Request` has nine fields now and Sepolia's `MintRequests` returns eight (`docs/deployment.md`).
+- **The keeper's executor** still calls `fill(id, amount)`. Moving `fillRedeem` to the bound fill, with the hash of
+  the request the bot priced, closes the case the 2026-10-18 lead named (RW-7).
+- **The keeper's bot** does not read a request's `rebalanceNonce`: after a settlement a stale request is still
+  simulated, and refused, until it is cancelled or expires. Skipping it is a line in `keeper/bot/requests.mjs`. Its
+  start check skips only an index with no supply (RW-1, above).
+- **Not run:** the Halmos harness, and the keeper's end-to-end test.
+- A stalled sequencer, on a chain that has one: the first transaction after it fills at whatever bar the clock has
+  reached. Not examined beyond the note.

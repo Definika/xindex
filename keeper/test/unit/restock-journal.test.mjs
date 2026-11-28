@@ -4,7 +4,7 @@ import { mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as nodeFs from "node:fs";
-import { createJournal, fileStore, resumeOrder } from "../../restock/journal.mjs";
+import { createJournal, fileStore, movedOn, resumeOrder, subjectOf } from "../../restock/journal.mjs";
 
 const XRP = `0x${"c7".repeat(20)}`;
 
@@ -41,7 +41,7 @@ test("a move only moves forward, never past its settlement, and only an unsent o
   const id = j.open({ kind: "buy", coin: "XRP", chain: "bsc", usd: 200, amountIn: 9n }, {});
   assert.throws(() => j.advance(id, "signed"), /cannot go from signed to signed/);
   j.advance(id, "sent");
-  assert.throws(() => j.drop(id, "expired"), /only an unsent or reverted move is dropped/);
+  assert.throws(() => j.drop(id, "expired"), /only an unsent, reverted or expired move is dropped/);
   j.advance(id, "done");
   assert.throws(() => j.advance(id, "done"), /has settled/);
   const unsent = j.open({ kind: "sell", coin: "XRP", chain: "bsc", amount: 1n }, {});
@@ -62,6 +62,9 @@ test("buys count against the day's budget until a day has passed, dropped ones n
   const dropped = j.open({ kind: "buy", coin: "XRP", chain: "bsc", usd: 900, amountIn: 1n }, {});
   j.drop(dropped, "expired");
   assert.equal(j.spentUsd(), 300);
+  // CA-M13: a buy counts at the most it may cost, its loss bound included, where the plan names it.
+  j.open({ kind: "buy", coin: "XRP", chain: "bsc", usd: 100, maxUsd: 101, amountIn: 1n }, {});
+  assert.equal(j.spentUsd(), 401);
   s.t += 86_400 + 1;
   assert.equal(j.spentUsd(), 0);
 });
@@ -158,4 +161,90 @@ test("PD-9: a round resumes every signed move before it takes any other step, so
   assert.deepEqual(journal.pending().map((m) => m.id), [redeem, receipt, swap, burn]);
   assert.deepEqual(resumeOrder(journal.pending()).map((m) => m.id), [swap, burn, redeem, receipt]);
   assert.deepEqual(resumeOrder([]), []);
+});
+
+test("CA-M12: the journal has one writer at a time, and a lock nobody holds is taken over", async () => {
+  const { lockJournal } = await import("../../restock/journal.mjs");
+  const { mkdtempSync, existsSync, writeFileSync, readFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const path = join(mkdtempSync(join(tmpdir(), "journal-")), "journal.json");
+  const lock = `${path}.lock`;
+  const alive = (pid) => pid === 111;
+
+  const release = lockJournal(path, { pid: 111, alive });
+  assert.equal(readFileSync(lock, "utf8").trim(), "111");
+  assert.throws(() => lockJournal(path, { pid: 222, alive }), /another restock process \(pid 111\) holds the journal/);
+  assert.equal(readFileSync(lock, "utf8").trim(), "111", "the second writer leaves the first's lock alone");
+  release();
+  assert.equal(existsSync(lock), false);
+
+  // A lock whose process is gone, one that names no process, and this very pid from an earlier run: all taken over.
+  for (const left of ["333", "not a pid", "222"]) {
+    writeFileSync(lock, `${left}\n`);
+    const again = lockJournal(path, { pid: 222, alive });
+    assert.equal(readFileSync(lock, "utf8").trim(), "222");
+    again();
+    assert.equal(existsSync(lock), false);
+  }
+
+  // A release never removes a lock another process has taken since.
+  const stale = lockJournal(path, { pid: 222, alive });
+  writeFileSync(lock, "111\n");
+  stale();
+  assert.equal(readFileSync(lock, "utf8").trim(), "111");
+});
+
+test("RZ-19: a move that moved on within a round keeps its coin, its chain or the treasury out of that round's plan", () => {
+  const moves = [
+    { id: "a", kind: "bridgeIn", coin: "AVAX", chain: "avalanche", stage: "sent" },
+    { id: "b", kind: "bridgeOut", coin: "OP", chain: "optimism", stage: "sent" },
+    { id: "c", kind: "buy", coin: "AERO", chain: "base", stage: "sent" },
+    { id: "d", kind: "fund", chain: "base", stage: "sent" },
+    { id: "e", kind: "sweep", chain: "optimism", stage: "attested" },
+    { id: "f", kind: "draw", stage: "sent" },
+    { id: "g", kind: "repay", stage: "sent" },
+    { id: "h", kind: "sell", coin: "XRP", chain: "bsc", stage: "sent" },
+  ];
+  assert.deepEqual(moves.map(subjectOf), ["AVAX", "OP", "AERO", "base", "optimism", "treasury", "treasury", "XRP"]);
+
+  // The bridge transfer of AVAX was redeemed this round, and base's funding was received: both settled just now,
+  // which the journal's own busy set, of moves still to settle, no longer shows. The rest stayed where they were.
+  const now = { a: "redeemed", b: "sent", c: "sent", d: "received", e: "attested", f: "sent", g: "sent", h: "sent" };
+  assert.deepEqual([...movedOn(moves, (id) => now[id])].sort(), ["AVAX", "base"]);
+  // A move dropped or pruned in the round moved on too; one that stayed, however long it has waited, did not.
+  assert.deepEqual([...movedOn(moves.slice(5, 6), () => undefined)], ["treasury"]);
+  assert.equal(movedOn(moves, (id) => moves.find((m) => m.id === id).stage).size, 0);
+  assert.equal(movedOn([], () => "sent").size, 0);
+});
+
+test("a UniswapX order holds its coin and the treasury until it settles, counts against the day's budget, and is dropped only once expired", () => {
+  const s = store();
+  const j = s.open();
+  const order = { kind: "order", coin: "NVDAON", copy: XRP, chain: "ethereum", amountIn: 1_980_000_000n, usd: 1_980, maxUsd: 1_980 };
+  const id = j.open(order, { nonce: "7", deadline: 2_000, signature: "0xsig" });
+  assert.deepEqual([...j.busy()].sort(), ["NVDAON", "treasury"], "its USDC is the treasury's until it settles");
+  assert.equal(j.spentUsd(), 1_980, "a buy for the day's budget");
+  assert.deepEqual(j.inflight(), new Map(), "nothing crosses a bridge");
+  j.advance(id, "sent", { posted: true });
+  assert.ok(j.busy().has("treasury"), "posted, it may still take the USDC");
+  assert.throws(() => j.drop(id, "expired"), /only an unsent, reverted or expired move is dropped/, "a posted order is not dropped before it expires");
+  j.note(id, { status: "expired" });
+  j.drop(id, "its order passed its deadline unfilled");
+  assert.deepEqual([...j.busy()], []);
+  assert.equal(j.spentUsd(), 0, "an order that never filled spent nothing");
+  assert.deepEqual(movedOn([{ ...j.get(id), stage: "sent" }], () => "dropped"), new Set(["NVDAON", "treasury"]), "RZ-19: a settled order keeps both out of the round");
+
+  const filled = j.open(order, { nonce: "8", deadline: 2_000 });
+  j.advance(filled, "sent");
+  j.advance(filled, "done");
+  assert.equal(j.spentUsd(), 1_980, "a filled one counts");
+
+  const deposit = j.open({ kind: "deposit", coin: "NVDAON", copy: XRP, chain: "ethereum", amount: 5n, usd: 900 }, { hash: "0xd" });
+  assert.equal(subjectOf(j.get(deposit)), "NVDAON");
+  j.advance(deposit, "sent", { status: "success" });
+  assert.deepEqual([...j.busy()], ["NVDAON"], "a deposit holds its coin until it is done, not the treasury");
+  j.advance(deposit, "done");
+  assert.deepEqual([...j.busy()], []);
+  assert.equal(j.spentUsd(), 1_980, "a deposit buys nothing");
 });

@@ -2,7 +2,7 @@
   {
     "id": "M1",
     "what": "_permissionlessAt returns the expiry term alone, ignoring restartAllowedAt",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
@@ -15,7 +15,7 @@
   {
     "id": "M2",
     "what": "_permissionlessAt returns restartAllowedAt alone, ignoring the expiry",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
@@ -28,20 +28,20 @@
   {
     "id": "M3",
     "what": "a start is refused only while now < end, so the auction's last second lets one in",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
       {
-        "old": "if (pendingEta != 0 && block.timestamp <= pendingEta + AUCTION_DURATION) {\n            revert RebalancePending(",
-        "new": "if (pendingEta != 0 && block.timestamp < pendingEta + AUCTION_DURATION) {\n            revert RebalancePending("
+        "old": "        if (block.timestamp < earliest) revert RebalanceTooSoon(earliest);\n        uint256 pendingEta = _eta;\n        if (pendingEta != 0 && block.timestamp <= pendingEta + AUCTION_DURATION) {\n            revert RebalancePending(",
+        "new": "        if (block.timestamp < earliest) revert RebalanceTooSoon(earliest);\n        uint256 pendingEta = _eta;\n        if (pendingEta != 0 && block.timestamp < pendingEta + AUCTION_DURATION) {\n            revert RebalancePending("
       }
     ]
   },
   {
     "id": "M4",
     "what": "a fill is refused from end on, instead of after it",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
@@ -54,7 +54,7 @@
   {
     "id": "M5",
     "what": "a fill is refused at eta, instead of before it",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
@@ -67,7 +67,7 @@
   {
     "id": "M6",
     "what": "a cancel always sets restartAllowedAt = now + REBALANCE_DELAY, an expiry's cancel included (VR-04 undone)",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
@@ -80,7 +80,7 @@
   {
     "id": "M7",
     "what": "a start checks the caller before the mask",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
@@ -93,7 +93,7 @@
   {
     "id": "M8",
     "what": "a cancel checks the caller before the proposal",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
@@ -106,7 +106,7 @@
   {
     "id": "M9",
     "what": "a fill does not write lastRebalance",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
@@ -119,7 +119,7 @@
   {
     "id": "M10",
     "what": "a fill does not clear the proposal",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
@@ -132,7 +132,7 @@
   {
     "id": "M12",
     "what": "canStartRebalance drops its interval check",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
@@ -145,7 +145,7 @@
   {
     "id": "M13",
     "what": "a stranger may pass a keep mask once nothing holds",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
@@ -158,7 +158,7 @@
   {
     "id": "M14",
     "what": "a masked fill does not record _maskedFill, so the index's own interval follows it",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
@@ -171,7 +171,7 @@
   {
     "id": "M15",
     "what": "currentBar reports 0 at the auction's last second",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
@@ -184,7 +184,7 @@
   {
     "id": "M16",
     "what": "canStartRebalance drops its initialized check",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
@@ -197,7 +197,7 @@
   {
     "id": "M17",
     "what": "a start at earliest is too soon",
-    "origin": "design/2026-10-29-rebalance-state-machine.md",
+    "origin": "docs/design/rebalance-state-machine.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.states.t.sol",
     "edits": [
@@ -210,7 +210,7 @@
   {
     "id": "V1",
     "what": "the lower cap rounds down",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -223,7 +223,7 @@
   {
     "id": "V2",
     "what": "no turnover cap",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -236,7 +236,7 @@
   {
     "id": "V3",
     "what": "no growth cap",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -249,7 +249,7 @@
   {
     "id": "V4",
     "what": "a kept leg may move inside the caps",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -262,7 +262,7 @@
   {
     "id": "V5",
     "what": "a growing leg's change rounds up",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -275,7 +275,7 @@
   {
     "id": "V6",
     "what": "a shrinking leg's change rounds toward zero",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -288,7 +288,7 @@
   {
     "id": "V7",
     "what": "a leg's score rounds toward zero",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -301,7 +301,7 @@
   {
     "id": "V8",
     "what": "the gain rounds toward zero",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -314,7 +314,7 @@
   {
     "id": "V9",
     "what": "amountsOut round up",
-    "origin": "design/2026-10-29-settlement-vectors.md",
+    "origin": "docs/design/settlement-vectors.md",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -327,7 +327,7 @@
   {
     "id": "V10",
     "what": "amountsIn round down",
-    "origin": "design/2026-10-29-settlement-vectors.md",
+    "origin": "docs/design/settlement-vectors.md",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -340,7 +340,7 @@
   {
     "id": "V11",
     "what": "the score's fourth-order term at 7/30, above the logarithm's 1/4",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -353,7 +353,7 @@
   {
     "id": "V12",
     "what": "no check that the new units fit 96 bits",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -366,7 +366,7 @@
   {
     "id": "V13",
     "what": "the bar rounds down",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -379,7 +379,7 @@
   {
     "id": "V14",
     "what": "the bar starts at a quarter",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -392,7 +392,7 @@
   {
     "id": "V15",
     "what": "an index with less than one whole share settles",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -405,7 +405,7 @@
   {
     "id": "V16",
     "what": "a gain exactly on the bar is refused",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -418,7 +418,7 @@
   {
     "id": "V17",
     "what": "a list of another length is not refused",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -431,20 +431,20 @@
   {
     "id": "V21",
     "what": "the bar is answered past the auction's end",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
       {
-        "old": "        if (elapsed > AUCTION_DURATION) revert IWeightedHub.AuctionOver(elapsed);\n",
-        "new": ""
+        "old": "        if (elapsed > AUCTION_DURATION) revert IWeightedHub.AuctionOver(elapsed);\n        uint256 halvings",
+        "new": "        uint256 halvings"
       }
     ]
   },
   {
     "id": "V22",
     "what": "a fill may triple a leg",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -457,7 +457,7 @@
   {
     "id": "V23",
     "what": "the bar's half-life is ten minutes",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -470,7 +470,7 @@
   {
     "id": "V24",
     "what": "the score's second-order term dropped",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -483,7 +483,7 @@
   {
     "id": "V18",
     "what": "the scale ignored in the amounts",
-    "origin": "design/2026-10-29-settlement-vectors.md",
+    "origin": "docs/design/settlement-vectors.md",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -496,7 +496,7 @@
   {
     "id": "V19",
     "what": "MAX_TURNOVER at 25%",
-    "origin": "design/2026-10-29-settlement-vectors.md",
+    "origin": "docs/design/settlement-vectors.md",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -535,7 +535,7 @@
   {
     "id": "H2",
     "what": "the fill's clock runs a second ahead, so a fill clears a second early",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
@@ -548,7 +548,7 @@
   {
     "id": "H3",
     "what": "the keep mask is not passed to the math, so a kept leg may move",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 4",
+    "origin": "docs/design/rebalance.md, section 4",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
@@ -561,7 +561,7 @@
   {
     "id": "H4",
     "what": "the fill checks the executor's units against the supply before the streaming fee accrues",
-    "origin": "audit/2026-10-16-security-audit.md, XS-2",
+    "origin": "audits/internal/security-audit-xs.md, XS-2",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.fees.t.sol",
     "edits": [
@@ -574,7 +574,7 @@
   {
     "id": "H7",
     "what": "the initializer's duplicate-token check removed",
-    "origin": "audit/2026-10-05-v5-review.md, the initializer's own checks",
+    "origin": "audits/internal/v5-review.md, the initializer's own checks",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.t.sol",
     "edits": [
@@ -587,13 +587,13 @@
   {
     "id": "H8",
     "what": "the factory's duplicate-token check removed",
-    "origin": "audit/2026-10-05-v5-review.md, the factory's own checks",
+    "origin": "audits/internal/v5-review.md, the factory's own checks",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedIndexFactory.t.sol",
     "edits": [
       {
-        "old": "                if (inits[j].token == token) revert DuplicateToken(token);\n",
-        "new": "                inits[j];\n"
+        "old": "            if (_seen(token)) revert DuplicateToken(token);\n",
+        "new": "            _seen(token);\n"
       }
     ]
   },
@@ -626,7 +626,7 @@
   {
     "id": "H11",
     "what": "the probe's balance re-read dropped (RB-2, RX-12)",
-    "origin": "audit/2026-10-28-rebalance-review.md",
+    "origin": "audits/internal/rebalance-review-rb.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
@@ -639,7 +639,7 @@
   {
     "id": "H12",
     "what": "no probe: a leg the fill buys need not be able to leave (RX-12)",
-    "origin": "audit/2026-10-18-red-team.md",
+    "origin": "audits/internal/red-team-rx.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
@@ -652,7 +652,7 @@
   {
     "id": "H13",
     "what": "issue does not check the backing before a deposit (RX-8)",
-    "origin": "audit/2026-10-18-red-team.md",
+    "origin": "audits/internal/red-team-rx.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.t.sol",
     "edits": [
@@ -665,7 +665,7 @@
   {
     "id": "H16",
     "what": "a gated index pays a referrer its gate refuses (AU-1)",
-    "origin": "audit/2026-10-31-review.md",
+    "origin": "audits/internal/review-au.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.fees.t.sol",
     "edits": [
@@ -678,7 +678,7 @@
   {
     "id": "H18",
     "what": "a redeem fill reads balances before paying the stablecoin (AU-3)",
-    "origin": "audit/2026-10-31-review.md",
+    "origin": "audits/internal/review-au.md",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.t.sol",
     "edits": [
@@ -690,205 +690,9 @@
     "root": "keeper"
   },
   {
-    "id": "P1",
-    "what": "Jupiter's answer may call its program more than once (PD-1)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/solana/checks.mjs",
-    "test": "keeper/test/unit/restock-solana.test.mjs",
-    "edits": [
-      {
-        "old": "if (calls.length !== 1) throw new Error(",
-        "new": "if (calls.length === 0) throw new Error("
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P2",
-    "what": "the wallet's other token accounts are left out of the simulation's bounds (PD-1)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/solana/checks.mjs",
-    "test": "keeper/test/unit/restock-solana.test.mjs",
-    "edits": [
-      {
-        "old": "const all = [...bounds, ...owned.filter((a) => !named.has(a)).map((address) => ({ address, min: 0n, max: 0n, held: true }))];",
-        "new": "const all = [...bounds];"
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P3",
-    "what": "an instruction with bytes after its arguments is read, a decoy among them (PD-2)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/solana/idl-decode.mjs",
-    "test": "keeper/test/unit/restock-solana.test.mjs",
-    "edits": [
-      {
-        "old": "  if (r.offset !== bytes.length - 8) throw new Error(`${ix.name} carries ${bytes.length - 8 - r.offset} bytes after its arguments`);\n",
-        "new": ""
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P4",
-    "what": "Jupiter's on-chain minimum is not held to the floor (PD-2)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/solana/checks.mjs",
-    "test": "keeper/test/unit/restock-solana.test.mjs",
-    "edits": [
-      {
-        "old": "if (onChainMin < minOut) throw new Error(",
-        "new": "if (onChainMin < 0n) throw new Error("
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P5",
-    "what": "a Cetus route may name any aggregator package (PD-3)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/sui/checks.mjs",
-    "test": "keeper/test/unit/restock-sui.test.mjs",
-    "edits": [
-      {
-        "old": "if (theirs !== ours) throw new Error(",
-        "new": "if (theirs === undefined) throw new Error("
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P6",
-    "what": "the swap's output goes to the wallet with no floor split off it (PD-3)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/sui/checks.mjs",
-    "test": "keeper/test/unit/restock-sui.test.mjs",
-    "edits": [
-      {
-        "old": "  const [floor] = tx.splitCoins(output, [tx.pure.u64(share)]);\n  tx.transferObjects([floor, output], address);",
-        "new": "  tx.transferObjects([output], address);"
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P7",
-    "what": "a hash lookup on a node behind the account read counts a move expired (PD-4)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/aptos/checks.mjs",
-    "test": "keeper/test/unit/restock-aptos.test.mjs",
-    "edits": [
-      {
-        "old": "    if (BigInt(byHash.ledgerVersion) < BigInt(account.ledgerVersion)) return { state: \"pending\" };\n",
-        "new": ""
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P8",
-    "what": "any error reading a gas coin counts it gone (PD-5)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/sui/checks.mjs",
-    "test": "keeper/test/unit/restock-sui.test.mjs",
-    "edits": [
-      {
-        "old": "export const missingObject = (error) => error?.code === \"notExists\" || error?.reason === \"notFound\";",
-        "new": "export const missingObject = (error) => error !== undefined;"
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P9",
-    "what": "a 4xx refusal is taken for a transport failure, and a refused step stays in flight (PD-6)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/inflight.mjs",
-    "test": "keeper/test/unit/restock-inflight.test.mjs",
-    "edits": [
-      {
-        "old": "  return status >= 400 && status < 500 && ![404, 408, 409, 425, 429].includes(status);",
-        "new": "  return false;"
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P10",
-    "what": "a move goes to the signer without its digest and expiry, so it is not held in flight when sent (PD-6)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/signer-home.mjs",
-    "test": "keeper/test/unit/restock-signer-home.test.mjs",
-    "edits": [
-      {
-        "old": "const sendRequest = (data) => ({ raw: data.raw, signature: data.hash, expiry: data.expiry });",
-        "new": "const sendRequest = (data) => ({ raw: data.raw });"
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P11",
-    "what": "an attestation always creates a copy, even one that exists (PD-7)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/attest.mjs",
-    "test": "keeper/test/unit/restock-attest.test.mjs",
-    "edits": [
-      {
-        "old": "await submit(created ? \"createWrapped\" : \"updateWrapped\", vaa);",
-        "new": "await submit(\"createWrapped\", vaa);"
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P12",
-    "what": "a null status from a node behind the finalized slot drops a move (PD-8)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/solana-sending.mjs",
-    "test": "keeper/test/unit/restock-solana.test.mjs",
-    "edits": [
-      {
-        "old": "if (statusSlot === null || finalizedSlot === null || BigInt(statusSlot) < BigInt(finalizedSlot)) {",
-        "new": "if (false) {"
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P13",
-    "what": "a null status from a node without the history drops a move (PD-8)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/solana-sending.mjs",
-    "test": "keeper/test/unit/restock-solana.test.mjs",
-    "edits": [
-      {
-        "old": "if (sentSlot === null || firstAvailableSlot === null || BigInt(firstAvailableSlot) > BigInt(sentSlot)) {",
-        "new": "if (false) {"
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P14",
-    "what": "a move whose fate is unknown is sent again silently (PD-8)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/signer-home.mjs",
-    "test": "keeper/test/unit/restock-signer-home.test.mjs",
-    "edits": [
-      {
-        "old": "    if (s.state === \"unknown\") throw new Error(`whether it landed is unknown: ${s.reason}`);\n",
-        "new": ""
-      }
-    ],
-    "runner": "node"
-  },
-  {
     "id": "P15",
     "what": "a round takes moves oldest first, a completing step before a signed move (PD-9)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "origin": "audits/internal/protocol-docs-review-pd.md",
     "file": "keeper/restock/journal.mjs",
     "test": "keeper/test/unit/restock-journal.test.mjs",
     "edits": [
@@ -902,7 +706,7 @@
   {
     "id": "P16",
     "what": "a Circle signature past its expiry is an error, never re-attested (PD-10)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "origin": "audits/internal/protocol-docs-review-pd.md",
     "file": "keeper/restock/advance.mjs",
     "test": "keeper/test/unit/restock-advance.test.mjs",
     "edits": [
@@ -916,7 +720,7 @@
   {
     "id": "P17",
     "what": "a VAA that no longer verifies is redeemed as stored (PD-10)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "origin": "audits/internal/protocol-docs-review-pd.md",
     "file": "keeper/restock/advance.mjs",
     "test": "keeper/test/unit/restock-advance.test.mjs",
     "edits": [
@@ -930,7 +734,7 @@
   {
     "id": "P18",
     "what": "a stored Circle signature is received without checking it is still valid (PD-10)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "origin": "audits/internal/protocol-docs-review-pd.md",
     "file": "keeper/restock/advance.mjs",
     "test": "keeper/test/unit/restock-advance.test.mjs",
     "edits": [
@@ -942,23 +746,9 @@
     "runner": "node"
   },
   {
-    "id": "P19",
-    "what": "a signer's input closing under a write is left unheard (PD-11)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/signer-home.mjs",
-    "test": "keeper/test/unit/restock-signer-home.test.mjs",
-    "edits": [
-      {
-        "old": "    self.stdin.on(\"error\", fail);\n",
-        "new": ""
-      }
-    ],
-    "runner": "node"
-  },
-  {
     "id": "P20",
     "what": "a burn allows no fee whatever the route's standard rate (PD-12)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
+    "origin": "audits/internal/protocol-docs-review-pd.md",
     "file": "keeper/restock/attestations.mjs",
     "test": "keeper/test/unit/restock-attestations.test.mjs",
     "edits": [
@@ -970,65 +760,9 @@
     "runner": "node"
   },
   {
-    "id": "P21",
-    "what": "Panora's splits need not add up to the amount (PD-13)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/aptos/checks.mjs",
-    "test": "keeper/test/unit/restock-aptos.test.mjs",
-    "edits": [
-      {
-        "old": "if (total !== amountIn) throw new Error(",
-        "new": "if (total < 0n) throw new Error("
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P22",
-    "what": "Panora's swap may pay an integrator fee (PD-13)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/aptos/checks.mjs",
-    "test": "keeper/test/unit/restock-aptos.test.mjs",
-    "edits": [
-      {
-        "old": "if (String(args[18]) !== PANORA_NO_FEE.amount || normAddress(args[19]) !== PANORA_NO_FEE.recipient) {",
-        "new": "if (false) {"
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P23",
-    "what": "a node's cap on simulated accounts fails the move instead of chunking it (PD-1)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/solana/checks.mjs",
-    "test": "keeper/test/unit/restock-solana.test.mjs",
-    "edits": [
-      {
-        "old": "    if (!(max > 0)) throw error;\n",
-        "new": "    throw error;\n"
-      }
-    ],
-    "runner": "node"
-  },
-  {
-    "id": "P24",
-    "what": "a transaction may change who controls a token account the move does not name (PD-1)",
-    "origin": "audit/2026-11-01-protocol-docs-review.md",
-    "file": "keeper/restock/solana/checks.mjs",
-    "test": "keeper/test/unit/restock-solana.test.mjs",
-    "edits": [
-      {
-        "old": "if (controlOf(is) !== controlOf(was)) throw new Error(",
-        "new": "if (false) throw new Error("
-      }
-    ],
-    "runner": "node"
-  },
-  {
     "id": "Y1",
     "what": "a request that cannot pay MIN_PROFIT_USD at its limit is simulated and asks the restock for stock (RY-8)",
-    "origin": "audit/2026-10-31-red-team.md",
+    "origin": "audits/internal/red-team-ry.md",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/requests.test.mjs",
     "edits": [
@@ -1042,7 +776,7 @@
   {
     "id": "Y2",
     "what": "an auction's margin at its best price ignores what it takes in, so any auction asks for stock (RY-8)",
-    "origin": "audit/2026-10-31-red-team.md",
+    "origin": "audits/internal/red-team-ry.md",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/math.test.mjs",
     "edits": [
@@ -1056,7 +790,7 @@
   {
     "id": "U1",
     "what": "the bot rounds a shrinking leg's change toward zero, so it counts a gain the hub does not",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 2: the keeper's port of the rule",
+    "origin": "docs/design/rebalance.md, section 2: the keeper's port of the rule",
     "file": "keeper/bot/units.mjs",
     "test": "keeper/test/unit/units.test.mjs",
     "edits": [
@@ -1070,7 +804,7 @@
   {
     "id": "U2",
     "what": "the bot returns units it did not check against the bar",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 2: the keeper's port of the rule",
+    "origin": "docs/design/rebalance.md, section 2: the keeper's port of the rule",
     "file": "keeper/bot/units.mjs",
     "test": "keeper/test/unit/units.test.mjs",
     "edits": [
@@ -1084,7 +818,7 @@
   {
     "id": "U3",
     "what": "the bot's lower cap rounds down, one unit under what the hub accepts",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 2: the keeper's port of the rule",
+    "origin": "docs/design/rebalance.md, section 2: the keeper's port of the rule",
     "file": "keeper/bot/units.mjs",
     "test": "keeper/test/unit/units.test.mjs",
     "edits": [
@@ -1098,7 +832,7 @@
   {
     "id": "U4",
     "what": "the bot's score truncates toward zero, above the hub's for a shrinking leg",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 2: the keeper's port of the rule",
+    "origin": "docs/design/rebalance.md, section 2: the keeper's port of the rule",
     "file": "keeper/bot/units.mjs",
     "test": "keeper/test/unit/units.test.mjs",
     "edits": [
@@ -1112,7 +846,7 @@
   {
     "id": "F1",
     "what": "createIndex without the approval check, so anyone creates an index",
-    "origin": "CLAUDE.md, Product decisions: only approved wallets create an index (2026-11-10)",
+    "origin": "CLAUDE.md, Product decisions: only approved wallets create",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedIndexFactory.t.sol",
     "edits": [
@@ -1125,7 +859,7 @@
   {
     "id": "F2",
     "what": "setApprovedCreator without onlyOwner, so anyone approves a creator",
-    "origin": "CLAUDE.md, Product decisions: only approved wallets create an index (2026-11-10)",
+    "origin": "CLAUDE.md, Product decisions: only approved wallets create",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedIndexFactory.t.sol",
     "edits": [
@@ -1138,7 +872,7 @@
   {
     "id": "Q1",
     "what": "a fill is never checked against its proposal's quote",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 10: the quote posted with a start",
+    "origin": "docs/design/rebalance.md, section 10: the quote posted with a start",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.quote.t.sol",
     "edits": [
@@ -1151,7 +885,7 @@
   {
     "id": "Q2",
     "what": "a quote outlives its proposal and binds a later start that posted none",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 10: the quote posted with a start",
+    "origin": "docs/design/rebalance.md, section 10: the quote posted with a start",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.quote.t.sol",
     "edits": [
@@ -1164,7 +898,7 @@
   {
     "id": "Q3",
     "what": "anyone posts a quote with a start, not only the owner or guardian",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 10: the quote posted with a start",
+    "origin": "docs/design/rebalance.md, section 10: the quote posted with a start",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.quote.t.sol",
     "edits": [
@@ -1177,7 +911,7 @@
   {
     "id": "Q4",
     "what": "a moving component is quoted at zero, so selling it asks nothing back",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 10: the quote posted with a start",
+    "origin": "docs/design/rebalance.md, section 10: the quote posted with a start",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.quote.t.sol",
     "edits": [
@@ -1190,7 +924,7 @@
   {
     "id": "Q5",
     "what": "a tolerance of 100% is accepted, a quote that asks nothing",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 10: the quote posted with a start",
+    "origin": "docs/design/rebalance.md, section 10: the quote posted with a start",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.quote.t.sol",
     "edits": [
@@ -1202,21 +936,21 @@
   },
   {
     "id": "Q6",
-    "what": "the quote's floor rounds down, one unit in the executor's favour",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 10: the quote posted with a start",
+    "what": "the value floor, the quote's and Pyth's, rounds down, one unit in the executor's favour",
+    "origin": "docs/design/rebalance.md, section 10: the quote posted with a start",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
       {
-        "old": "        uint256 floor = Math.mulDiv(valueOut, WAD - tolerance, WAD, Math.Rounding.Ceil);\n",
-        "new": "        uint256 floor = Math.mulDiv(valueOut, WAD - tolerance, WAD);\n"
+        "old": "        floor = Math.mulDiv(valueOut, WAD - tolerance, WAD, Math.Rounding.Ceil);\n",
+        "new": "        floor = Math.mulDiv(valueOut, WAD - tolerance, WAD);\n"
       }
     ]
   },
   {
     "id": "Q7",
     "what": "a fill exactly on the quote's floor is refused",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 10: the quote posted with a start",
+    "origin": "docs/design/rebalance.md, section 10: the quote posted with a start",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedMath.vectors.t.sol",
     "edits": [
@@ -1229,7 +963,7 @@
   {
     "id": "U5",
     "what": "the bot names units that fail the quote posted with the proposal",
-    "origin": "design/2026-11-10-oracle-free-rebalance.md, section 10: the quote posted with a start",
+    "origin": "docs/design/rebalance.md, section 10: the quote posted with a start",
     "file": "keeper/bot/units.mjs",
     "test": "keeper/test/unit/units.test.mjs",
     "edits": [
@@ -1243,13 +977,13 @@
   {
     "id": "B1",
     "what": "a batch hands over share stock without spending the index's stock allowance (CF-1)",
-    "origin": "design/2026-11-11-batch-fills.md",
+    "origin": "docs/design/batch-fills.md",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.t.sol",
     "edits": [
       {
-        "old": "        _spendShareStock(address(f.index), deliver + f.redeem, sharesIn + f.issue);\n",
-        "new": ""
+        "old": "        uint256 spent = _spendShareStock(address(f.index), deliver + f.redeem, sharesIn + f.issue);\n",
+        "new": "        uint256 spent = deliver + f.redeem > sharesIn + f.issue ? deliver + f.redeem - sharesIn - f.issue : 0;\n"
       }
     ],
     "root": "keeper"
@@ -1257,13 +991,13 @@
   {
     "id": "B2",
     "what": "a batch's own redeem does not count as shares handed over, so the share stock is run down unbounded (CF-1)",
-    "origin": "design/2026-11-11-batch-fills.md",
+    "origin": "docs/design/batch-fills.md",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.t.sol",
     "edits": [
       {
-        "old": "        _spendShareStock(address(f.index), deliver + f.redeem, sharesIn + f.issue);\n",
-        "new": "        _spendShareStock(address(f.index), deliver, sharesIn + f.issue);\n"
+        "old": "        uint256 spent = _spendShareStock(address(f.index), deliver + f.redeem, sharesIn + f.issue);\n",
+        "new": "        uint256 spent = _spendShareStock(address(f.index), deliver, sharesIn + f.issue);\n"
       }
     ],
     "root": "keeper"
@@ -1271,7 +1005,7 @@
   {
     "id": "B3",
     "what": "a batch fills a request on another index than it names",
-    "origin": "design/2026-11-11-batch-fills.md",
+    "origin": "docs/design/batch-fills.md",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.t.sol",
     "edits": [
@@ -1285,7 +1019,7 @@
   {
     "id": "B4",
     "what": "a batch fills a request in another stablecoin than it names",
-    "origin": "design/2026-11-11-batch-fills.md",
+    "origin": "docs/design/batch-fills.md",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.t.sol",
     "edits": [
@@ -1299,7 +1033,7 @@
   {
     "id": "B5",
     "what": "a batch that issues does not read the index's gate before its swaps (XS-6)",
-    "origin": "design/2026-11-11-batch-fills.md",
+    "origin": "docs/design/batch-fills.md",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.t.sol",
     "edits": [
@@ -1313,7 +1047,7 @@
   {
     "id": "B6",
     "what": "a batch does not read its requests before its swaps, so a closed one costs a basket (XS-6)",
-    "origin": "design/2026-11-11-batch-fills.md",
+    "origin": "docs/design/batch-fills.md",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.t.sol",
     "edits": [
@@ -1327,7 +1061,7 @@
   {
     "id": "B7",
     "what": "a batch keeps the stablecoin its mint requests escrowed instead of selling it into the float",
-    "origin": "design/2026-11-11-batch-fills.md",
+    "origin": "docs/design/batch-fills.md",
     "file": "keeper/src/KeeperExecutor.sol",
     "test": "test/KeeperExecutor.t.sol",
     "edits": [
@@ -1341,7 +1075,7 @@
   {
     "id": "B8",
     "what": "the bot plans to deliver share stock beyond the owner's allowance, so its batch reverts on chain",
-    "origin": "design/2026-11-11-batch-fills.md",
+    "origin": "docs/design/batch-fills.md",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/batch.test.mjs",
     "edits": [
@@ -1355,7 +1089,7 @@
   {
     "id": "B9",
     "what": "a request whose limit is worth more than its escrow joins a batch and is paid by the others",
-    "origin": "design/2026-11-11-batch-fills.md",
+    "origin": "docs/design/batch-fills.md",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/batch.test.mjs",
     "edits": [
@@ -1369,7 +1103,7 @@
   {
     "id": "B10",
     "what": "a batch redeems the share stock the owner put above the target",
-    "origin": "design/2026-11-11-batch-fills.md",
+    "origin": "docs/design/batch-fills.md",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/batch.test.mjs",
     "edits": [
@@ -1383,7 +1117,7 @@
   {
     "id": "B11",
     "what": "shares delivered from stock count at what redeeming them brings, not at what issuing them costs",
-    "origin": "design/2026-11-11-batch-fills.md",
+    "origin": "docs/design/batch-fills.md",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/batch.test.mjs",
     "edits": [
@@ -1397,7 +1131,7 @@
   {
     "id": "B12",
     "what": "a group that cannot pay MIN_PROFIT_USD as a whole is simulated all the same (RY-8)",
-    "origin": "design/2026-11-11-batch-fills.md",
+    "origin": "docs/design/batch-fills.md",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/batch.test.mjs",
     "edits": [
@@ -1410,26 +1144,26 @@
   },
   {
     "id": "N1",
-    "what": "Ethereum's router having code names Ethereum before BNB Chain is asked, as the checks read it until 2026-11-13: on BNB Chain, where that address has code too, the deploy resolves Ethereum's book",
-    "origin": "design/2026-11-13-bnb-chain-deployment.md",
+    "what": "Ethereum's router having code names Ethereum before BNB Chain is asked, as an earlier rule read it: on BNB Chain, where that address has code too, the deploy resolves Ethereum's book",
+    "origin": "docs/design/bnb-chain.md",
     "file": "script/DeployChecks.sol",
     "test": "test/DeployChecks.t.sol",
     "edits": [
       {
-        "old": "        if (block.chainid == BnbChainAddresses.CHAIN_ID) return true;\n        return block.chainid != 1 && BNB_UNIVERSAL_ROUTER.code.length != 0;\n",
-        "new": "        if (MAINNET_UNIVERSAL_ROUTER.code.length != 0) return false;\n        if (block.chainid == BnbChainAddresses.CHAIN_ID) return true;\n        return block.chainid != 1 && BNB_UNIVERSAL_ROUTER.code.length != 0;\n"
+        "old": "        if (block.chainid == BnbChainAddresses.CHAIN_ID) return true;\n        // Base's id decides for Base as Ethereum's does for Ethereum: BNB Chain's router has code on Base.\n        return block.chainid != 1 && !onBase() && BNB_UNIVERSAL_ROUTER.code.length != 0;\n",
+        "new": "        if (MAINNET_UNIVERSAL_ROUTER.code.length != 0) return false;\n        if (block.chainid == BnbChainAddresses.CHAIN_ID) return true;\n        // Base's id decides for Base as Ethereum's does for Ethereum: BNB Chain's router has code on Base.\n        return block.chainid != 1 && !onBase() && BNB_UNIVERSAL_ROUTER.code.length != 0;\n"
       }
     ]
   },
   {
     "id": "N2",
     "what": "BNB Chain is told by its chain id alone, so a chain-id override unpins it against BNB Chain's state (RX-23)",
-    "origin": "design/2026-11-13-bnb-chain-deployment.md",
+    "origin": "docs/design/bnb-chain.md",
     "file": "script/DeployChecks.sol",
     "test": "test/DeployChecks.t.sol",
     "edits": [
       {
-        "old": "        return block.chainid != 1 && BNB_UNIVERSAL_ROUTER.code.length != 0;\n",
+        "old": "        return block.chainid != 1 && !onBase() && BNB_UNIVERSAL_ROUTER.code.length != 0;\n",
         "new": "        return false;\n"
       }
     ]
@@ -1437,20 +1171,20 @@
   {
     "id": "N5",
     "what": "BNB Chain's router having code names BNB Chain on chain 1 too: that router is a CREATE2 deployment anyone can replay onto Ethereum, and a deployment there would then resolve BNB Chain's book",
-    "origin": "design/2026-11-13-bnb-chain-deployment.md",
+    "origin": "docs/design/bnb-chain.md",
     "file": "script/DeployChecks.sol",
     "test": "test/DeployChecks.t.sol",
     "edits": [
       {
-        "old": "        return block.chainid != 1 && BNB_UNIVERSAL_ROUTER.code.length != 0;\n",
-        "new": "        return BNB_UNIVERSAL_ROUTER.code.length != 0;\n"
+        "old": "        return block.chainid != 1 && !onBase() && BNB_UNIVERSAL_ROUTER.code.length != 0;\n",
+        "new": "        return !onBase() && BNB_UNIVERSAL_ROUTER.code.length != 0;\n"
       }
     ]
   },
   {
     "id": "N3",
     "what": "BNB Chain's USDC and USDT may be proposed as components (A7-22)",
-    "origin": "design/2026-11-13-bnb-chain-deployment.md",
+    "origin": "docs/design/bnb-chain.md",
     "file": "script/ConfigureWeighted.s.sol",
     "test": "test/ConfigureWeighted.t.sol",
     "edits": [
@@ -1463,20 +1197,20 @@
   {
     "id": "N4",
     "what": "on BNB Chain the mint currencies come from the environment, not from its address book (A7-22)",
-    "origin": "design/2026-11-13-bnb-chain-deployment.md",
+    "origin": "docs/design/bnb-chain.md",
     "file": "script/ConfigureWeighted.s.sol",
     "test": "test/ConfigureWeighted.t.sol",
     "edits": [
       {
-        "old": "        if (block.chainid == 1 || block.chainid == BnbChainAddresses.CHAIN_ID) {\n",
-        "new": "        if (block.chainid == 1) {\n"
+        "old": "        if (\n            block.chainid == 1 || block.chainid == BnbChainAddresses.CHAIN_ID || block.chainid == BaseAddresses.CHAIN_ID\n        ) {\n",
+        "new": "        if (block.chainid == 1 || block.chainid == BaseAddresses.CHAIN_ID) {\n"
       }
     ]
   },
   {
     "id": "W1",
     "what": "a fill does not compare the index's rebalance nonce with the request's, so a request made before a settlement is filled after it (RW-2)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/MintRequests.sol",
     "test": "test/MintRequests.t.sol",
     "edits": [
@@ -1489,7 +1223,7 @@
   {
     "id": "W2",
     "what": "a request records rebalance nonce 0 whatever the index's nonce is (RW-2)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/MintRequests.sol",
     "test": "test/MintRequests.t.sol",
     "edits": [
@@ -1502,7 +1236,7 @@
   {
     "id": "W3",
     "what": "the bound fill does not compare the request with the hash its caller priced, so it fills whatever request sits behind the id (RW-7)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/MintRequests.sol",
     "test": "test/MintRequests.t.sol",
     "edits": [
@@ -1515,7 +1249,7 @@
   {
     "id": "W4",
     "what": "the bound fill does not require the request to be open, so a closed request fills again under the hash it has now (RW-7)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/MintRequests.sol",
     "test": "test/MintRequests.t.sol",
     "edits": [
@@ -1528,7 +1262,7 @@
   {
     "id": "W5",
     "what": "requestHash hashes the id with the request, so it is not the hash the bound fill compares (RW-7)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/MintRequests.sol",
     "test": "test/MintRequests.t.sol",
     "edits": [
@@ -1541,7 +1275,7 @@
   {
     "id": "W6",
     "what": "the settlement refuses only a supply of zero, so an index with a few wei of shares rebalances (RW-1)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
@@ -1554,7 +1288,7 @@
   {
     "id": "W7",
     "what": "the handover does not accrue, so the newcomer collects the streaming fee the outgoing creator earned (RW-6)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedHub.fees.t.sol",
     "edits": [
@@ -1567,7 +1301,7 @@
   {
     "id": "W8",
     "what": "issue does not probe a deposit, so a token that blocks the index as a sender traps the minter's basket (RW-8)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
@@ -1580,7 +1314,7 @@
   {
     "id": "W9",
     "what": "the handover accrues after it writes the new creator, so the accrual pays the newcomer (RW-6)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedHub.fees.t.sol",
     "edits": [
@@ -1593,7 +1327,7 @@
   {
     "id": "W10",
     "what": "issue's probe is measured against the balance before the deposit, so a token that loses the probe's unit passes (RW-8)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
@@ -1606,7 +1340,7 @@
   {
     "id": "W11",
     "what": "a sale hop hands the hook all its sweep brought back as unsold input, what the router already held included, so one wei left in the router reverts a frozen recipient's burn (RW-9)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/IndexZap.t.sol",
     "edits": [
@@ -1619,7 +1353,7 @@
   {
     "id": "W12",
     "what": "what the router held is not capped at what the sweep brought back, so a stray that a short-delivering hop drew on underflows and reverts the burn (RW-9)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/IndexZap.t.sol",
     "edits": [
@@ -1632,7 +1366,7 @@
   {
     "id": "W13",
     "what": "what a hop did not sell is only offered too: a recipient the token refuses is paid out while its unsold input stays in the zap, which no later call pays out (RW-9)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/IndexZap.sol",
     "test": "test/IndexZap.t.sol",
     "edits": [
@@ -1645,7 +1379,7 @@
   {
     "id": "W14",
     "what": "an accepted offer sends what the router held alone: the unsold input it announces with it stays in the zap (RW-9)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/IndexZap.sol",
     "test": "test/IndexZap.t.sol",
     "edits": [
@@ -1658,7 +1392,7 @@
   {
     "id": "W15",
     "what": "a buy's pre-fund is not checked against the component's balance, so a buy paid through the component's other address is credited what it bought and refunded it too (RW-10)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/BasketBuilder.t.sol",
     "edits": [
@@ -1671,7 +1405,7 @@
   {
     "id": "W16",
     "what": "a sale hop's pre-fund is not checked against the hop's output, so a sale between two addresses of one balance credits what the sweep returned as unsold input and pays it as proceeds (RW-10)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/BasketBuilder.t.sol",
     "edits": [
@@ -1684,7 +1418,7 @@
   {
     "id": "W17",
     "what": "a sale hop's pre-fund is not checked against the leg's tokenOut, so a first hop whose input shares tokenOut's balance is sold through an ordinary middle token (RW-10)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/BasketBuilder.t.sol",
     "edits": [
@@ -1697,7 +1431,7 @@
   {
     "id": "W18",
     "what": "a sale hop's pre-fund is checked against the hop's output only on the leg's last hop, so a sale passing through its input's other address credits what the sweep returned as unsold input and sells it on as the hop's output (RW-10)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/BasketBuilder.t.sol",
     "edits": [
@@ -1710,7 +1444,7 @@
   {
     "id": "W19",
     "what": "a hop that spends tokenOut itself is probed against tokenOut too, so a sale routed back through tokenOut is refused (RW-10)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/UniversalRouterSwaps.sol",
     "test": "test/Security.t.sol",
     "edits": [
@@ -1723,7 +1457,7 @@
   {
     "id": "W20",
     "what": "a refused offer with nothing unsold falls through: the zap announces a return of zero and hard-transfers zero to a recipient the token refuses, which reverts the burn (RW-9)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/IndexZap.sol",
     "test": "test/IndexZap.t.sol",
     "edits": [
@@ -1736,7 +1470,7 @@
   {
     "id": "W21",
     "what": "the settlement refuses one whole share too, so the least supply that rebalances is a raw share over it (RW-1)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
@@ -1749,7 +1483,7 @@
   {
     "id": "W22",
     "what": "the settlement's floor is a raw share lower, so a supply one raw share under a whole one rebalances (RW-1)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/WeightedMath.sol",
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
@@ -1762,7 +1496,7 @@
   {
     "id": "W23",
     "what": "a fill checks the index's nonce before the request's deadline, so an expired request made before a settlement answers for its nonce (RW-2)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/MintRequests.sol",
     "test": "test/MintRequests.t.sol",
     "edits": [
@@ -1779,7 +1513,7 @@
   {
     "id": "W24",
     "what": "the bound fill compares the hash after the deadline and the nonce, so a request that is not the one priced answers for those first (RW-7)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/MintRequests.sol",
     "test": "test/MintRequests.t.sol",
     "edits": [
@@ -1792,7 +1526,7 @@
   {
     "id": "W25",
     "what": "issue's probe skips its last leg, so a deposit into a last component the index cannot send is taken (RW-8)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
@@ -1805,7 +1539,7 @@
   {
     "id": "W26",
     "what": "issue's probe skips its first leg, so a deposit into a first component the index cannot send is taken (RW-8)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/WeightedHub.sol",
     "test": "test/WeightedHub.rebalance.t.sol",
     "edits": [
@@ -1818,7 +1552,7 @@
   {
     "id": "W27",
     "what": "the builder credits a seller only what its hop did not sell, so a router leftover swept back with it is credited to nobody (RW-9)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/BasketBuilder.sol",
     "test": "test/BasketBuilder.t.sol",
     "edits": [
@@ -1831,7 +1565,7 @@
   {
     "id": "W28",
     "what": "the bound fill does not take the reentrancy guard, so a filler paid through it re-enters the contract, and a filler paid through the fill by id alone re-enters the bound fill (RW-7)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/MintRequests.sol",
     "test": "test/MintRequests.t.sol",
     "edits": [
@@ -1844,7 +1578,7 @@
   {
     "id": "W29",
     "what": "the handover swallows a failed accrual, so it goes through inside one of the index's own calls, without the accrual (RW-6)",
-    "origin": "audit/2026-11-14-red-team.md",
+    "origin": "audits/internal/red-team-rw.md",
     "file": "src/WeightedIndexFactory.sol",
     "test": "test/WeightedHub.fees.t.sol",
     "edits": [
@@ -1856,8 +1590,8 @@
   },
   {
     "id": "S1",
-    "what": "the zap's mint takes any tokenIn, not only its USDC and USDT (the owner's call of 2026-11-18)",
-    "origin": "audit/2026-11-18-zap-ether-retirement.md",
+    "what": "the zap's mint takes any tokenIn, not only its USDC and USDT",
+    "origin": "audits/retired/zap-ether.md",
     "file": "src/IndexZap.sol",
     "test": "test/IndexZap.t.sol",
     "edits": [
@@ -1870,7 +1604,7 @@
   {
     "id": "S2",
     "what": "the zap's burn pays out any tokenOut, not only its USDC and USDT",
-    "origin": "audit/2026-11-18-zap-ether-retirement.md",
+    "origin": "audits/retired/zap-ether.md",
     "file": "src/IndexZap.sol",
     "test": "test/IndexZap.t.sol",
     "edits": [
@@ -1883,7 +1617,7 @@
   {
     "id": "S3",
     "what": "the zap is built with one stablecoin twice, so it takes a single currency where it names two",
-    "origin": "audit/2026-11-18-zap-ether-retirement.md",
+    "origin": "audits/retired/zap-ether.md",
     "file": "src/IndexZap.sol",
     "test": "test/IndexZap.t.sol",
     "edits": [
@@ -1896,7 +1630,7 @@
   {
     "id": "S4",
     "what": "the builder's buy is paid in any tokenIn, not only its USDC and USDT",
-    "origin": "audit/2026-11-18-zap-ether-retirement.md",
+    "origin": "audits/retired/zap-ether.md",
     "file": "src/BasketBuilder.sol",
     "test": "test/BasketBuilder.t.sol",
     "edits": [
@@ -1909,7 +1643,7 @@
   {
     "id": "S5",
     "what": "the builder's sale pays out any tokenOut, not only its USDC and USDT",
-    "origin": "audit/2026-11-18-zap-ether-retirement.md",
+    "origin": "audits/retired/zap-ether.md",
     "file": "src/BasketBuilder.sol",
     "test": "test/BasketBuilder.t.sol",
     "edits": [
@@ -1922,7 +1656,7 @@
   {
     "id": "S6",
     "what": "the builder is built with one stablecoin twice",
-    "origin": "audit/2026-11-18-zap-ether-retirement.md",
+    "origin": "audits/retired/zap-ether.md",
     "file": "src/BasketBuilder.sol",
     "test": "test/BasketBuilder.t.sol",
     "edits": [
@@ -1935,7 +1669,7 @@
   {
     "id": "S7",
     "what": "checkDeployment no longer compares the zap's and the builder's stablecoins with MintRequests', so a deployment whose zap takes another USDC passes as one",
-    "origin": "audit/2026-11-18-zap-ether-retirement.md",
+    "origin": "audits/retired/zap-ether.md",
     "file": "script/DeployWeighted.s.sol",
     "test": "test/Scripts.t.sol",
     "edits": [
@@ -1948,7 +1682,7 @@
   {
     "id": "K1",
     "what": "startStage no longer reports a proposal waiting out its notice, so its need lapses from the board while no check reads it and the restock can send its stock home",
-    "origin": "design/2026-11-18-bridged-coins-in-a-rebalance.md",
+    "origin": "docs/design/bridged-coins.md",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/math.test.mjs",
     "edits": [
@@ -1962,7 +1696,7 @@
   {
     "id": "K2",
     "what": "startStage reports an index ahead only once it is less than the lead from its start, not at the lead exactly",
-    "origin": "design/2026-11-18-bridged-coins-in-a-rebalance.md",
+    "origin": "docs/design/bridged-coins.md",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/math.test.mjs",
     "edits": [
@@ -1976,7 +1710,7 @@
   {
     "id": "K3",
     "what": "a PRESTOCK_LEAD_SECONDS of zero still reports an index that a cancel or an expiry holds off strangers, so zero no longer turns the lead off",
-    "origin": "design/2026-11-18-bridged-coins-in-a-rebalance.md",
+    "origin": "docs/design/bridged-coins.md",
     "file": "keeper/bot/math.mjs",
     "test": "keeper/test/unit/math.test.mjs",
     "edits": [
@@ -1990,7 +1724,7 @@
   {
     "id": "T1",
     "what": "the tracker replaces a fill a block before its target, so every fill the keeper sends is cancelled by its own replacement; the test saw only the null a replacement returns too",
-    "origin": "the test review of 2026-11-18",
+    "origin": "the test review of the stablecoin-only zap (CHANGELOG.md)",
     "file": "keeper/bot/nonce.mjs",
     "test": "keeper/test/unit/nonce.test.mjs",
     "edits": [
@@ -2004,7 +1738,7 @@
   {
     "id": "T2",
     "what": "the tracker replaces a fill only a block after the target block it missed",
-    "origin": "the test review of 2026-11-18",
+    "origin": "the test review of the stablecoin-only zap (CHANGELOG.md)",
     "file": "keeper/bot/nonce.mjs",
     "test": "keeper/test/unit/nonce.test.mjs",
     "edits": [
@@ -2016,23 +1750,9 @@
     "runner": "node"
   },
   {
-    "id": "T3",
-    "what": "a home-chain signer inherits the restock's whole environment, its keys included; the test looked for a key the test process never has",
-    "origin": "the test review of 2026-11-18",
-    "file": "keeper/restock/signer-home.mjs",
-    "test": "keeper/test/unit/restock-solana.test.mjs",
-    "edits": [
-      {
-        "old": "spawn(process.execPath, [path], { env, stdio",
-        "new": "spawn(process.execPath, [path], { env: { ...process.env, ...env }, stdio"
-      }
-    ],
-    "runner": "node"
-  },
-  {
     "id": "T4",
     "what": "the Hermes client ignores Retry-After and waits its one-second floor; the test's header asked for that floor",
-    "origin": "the test review of 2026-11-18",
+    "origin": "the test review of the stablecoin-only zap (CHANGELOG.md)",
     "file": "keeper/bot/hermes.mjs",
     "test": "keeper/test/unit/hermes.test.mjs",
     "edits": [
@@ -2042,5 +1762,3318 @@
       }
     ],
     "runner": "node"
+  },
+  {
+    "id": "C1",
+    "what": "a request is taken while the contract holds less of the token than its open requests escrowed, so the deposit pays the earlier ones (CA-H2)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "src/MintRequests.sol",
+    "test": "test/MintRequests.t.sol",
+    "edits": [
+      {
+        "old": "        if (before < owed) revert Underbacked(token, before, owed);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "C2",
+    "what": "a fill does not take its request's escrow off the token's total (CA-H2)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "src/MintRequests.sol",
+    "test": "test/MintRequests.t.sol",
+    "edits": [
+      {
+        "old": "        totalEscrow[paid] -= escrow;\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "C3",
+    "what": "a cancel or a refund does not take its request's escrow off the token's total (CA-H2)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "src/MintRequests.sol",
+    "test": "test/MintRequests.t.sol",
+    "edits": [
+      {
+        "old": "        totalEscrow[token] -= escrow;\n        IERC20(token).safeTransfer(request.requester, escrow);",
+        "new": "        IERC20(token).safeTransfer(request.requester, escrow);"
+      }
+    ]
+  },
+  {
+    "id": "C4",
+    "what": "the bound mint request does not check the nonce its limit was set at (CA-M1)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "src/MintRequests.sol",
+    "test": "test/MintRequests.t.sol",
+    "edits": [
+      {
+        "old": "        _checkNonce(index, expectedNonce);\n        id = _requestMint(",
+        "new": "        id = _requestMint("
+      }
+    ]
+  },
+  {
+    "id": "C5",
+    "what": "the bound redeem request does not check the nonce its limit was set at (CA-M1)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "src/MintRequests.sol",
+    "test": "test/MintRequests.t.sol",
+    "edits": [
+      {
+        "old": "        _checkNonce(index, expectedNonce);\n        id = _requestRedeem(",
+        "new": "        id = _requestRedeem("
+      }
+    ]
+  },
+  {
+    "id": "C6",
+    "what": "the builder credits a token it holds less of than its escrows, so the credit pays the earlier ones (CA-H2)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "src/BasketBuilder.sol",
+    "test": "test/BasketBuilder.t.sol",
+    "edits": [
+      {
+        "old": "        if (balance < before) revert TransferShortfall(address(token));\n        _checkBacked(token, balance);\n",
+        "new": "        if (balance < before) revert TransferShortfall(address(token));\n"
+      }
+    ]
+  },
+  {
+    "id": "C7",
+    "what": "a pass-through leg is not checked again once the refund has left, so the call's unspent stablecoin hides a shortfall (CA-H2)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "src/BasketBuilder.sol",
+    "test": "test/BasketBuilder.t.sol",
+    "edits": [
+      {
+        "old": "        if (reserved != 0) _checkBacked(tokenIn, tokenIn.balanceOf(address(this)));\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "C8",
+    "what": "a debit of an escrow does not come off the token's total (CA-H2)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "src/BasketBuilder.sol",
+    "test": "test/BasketBuilder.t.sol",
+    "edits": [
+      {
+        "old": "        escrowOf[msg.sender][token] = held - amount;\n        totalEscrow[token] -= amount;\n",
+        "new": "        escrowOf[msg.sender][token] = held - amount;\n"
+      }
+    ]
+  },
+  {
+    "id": "C9",
+    "what": "a withdrawal may be paid to the token's own contract (CA-R2-15)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "src/BasketBuilder.sol",
+    "test": "test/BasketBuilder.t.sol",
+    "edits": [
+      {
+        "old": "        if (to == token) revert InvalidRecipient(to);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "C10",
+    "what": "a sale may be paid to the payout stablecoin's own contract (CA-R2-15)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "src/BasketBuilder.sol",
+    "test": "test/BasketBuilder.t.sol",
+    "edits": [
+      {
+        "old": "        if (p.to == p.tokenOut) revert InvalidRecipient(p.to);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "C11",
+    "what": "a deposit that delivered nothing is recorded as a deposit of zero (CA-R2-16)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "src/BasketBuilder.sol",
+    "test": "test/BasketBuilder.t.sol",
+    "edits": [
+      {
+        "old": "        if (received == 0) revert TransferShortfall(token);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "C12",
+    "what": "a partial claim is not held to the claim recorded (CA-S01)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.t.sol",
+    "edits": [
+      {
+        "old": "        if (amount > recorded) revert ClaimTooLarge(token, amount, recorded);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "C13",
+    "what": "a partial claim clears the whole claim, so the part not paid is forgotten (CA-S01)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.t.sol",
+    "edits": [
+      {
+        "old": "        claimOf[msg.sender][token] -= amount;\n",
+        "new": "        delete claimOf[msg.sender][token];\n"
+      }
+    ]
+  },
+  {
+    "id": "C14",
+    "what": "the bound cancel cancels whichever proposal is pending, not the one it names (CA-S02)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "        if (proposalId != latest) revert StaleProposal(proposalId, latest);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "C15",
+    "what": "a batch's count of its shares is not held against the shares held, so a redeem side paid nothing lets the stock leave unspent (CA-H1)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "        if (sharesHeld + spent < sharesBefore) {\n            revert ShareStockShort(address(f.index), sharesBefore - sharesHeld, spent);\n        }\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "C16",
+    "what": "a single fill does not compare the request behind its id with the one its keeper priced (CA-M6)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "        if (keccak256(abi.encode(request)) != f.expected) revert IMintRequests.RequestChanged(f.id);\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "C17",
+    "what": "a batch does not compare its requests with the ones its keeper priced (CA-M6)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "        if (priced != f.expected) revert RequestsChanged();\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "C18",
+    "what": "a batch's hash leaves its mint requests out (CA-M6)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "        (deliver,, priced) = _openSide(f, f.mintIds, f.mintShares, true, priced);\n",
+        "new": "        (deliver,,) = _openSide(f, f.mintIds, f.mintShares, true, priced);\n"
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "C19",
+    "what": "on a mainnet the deploy script takes any address for the guardian, a single key among them (CA-M4)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "script/DeployChecks.sol",
+    "test": "test/Scripts.t.sol",
+    "edits": [
+      {
+        "old": "        _checkGuardianIsASafe(guardian);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "C20",
+    "what": "a guardian Safe of one signature passes on a mainnet (CA-M4)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "script/DeployChecks.sol",
+    "test": "test/Scripts.t.sol",
+    "edits": [
+      {
+        "old": "        if (threshold < MIN_GUARDIAN_THRESHOLD) revert GuardianThresholdTooLow(guardian, threshold);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "C21",
+    "what": "a Safe whose owners could not be read is printed with a count of them (CA-R2-18)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "script/CheckToken.s.sol",
+    "test": "test/CheckToken.t.sol",
+    "edits": [
+      {
+        "old": "            if (party.threshold == 0 || party.signers < party.threshold) {\n",
+        "new": "            if (party.threshold == 0) {\n"
+      }
+    ]
+  },
+  {
+    "id": "C22",
+    "what": "the report does not read how many hold DEFAULT_ADMIN_ROLE (CA-R2-17)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "script/CheckToken.s.sol",
+    "test": "test/CheckToken.t.sol",
+    "edits": [
+      {
+        "old": "        (, r.roleAdmins) = _word(token, abi.encodeCall(IAdminReads.getRoleMemberCount, (bytes32(0))));\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "C23",
+    "what": "the needs board is dated by its last write, so a keeper whose rounds fail publishes a fresh empty board (CA-R2-02)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "keeper/bot/needs.mjs",
+    "test": "keeper/test/unit/needs.test.mjs",
+    "edits": [
+      {
+        "old": "      if (observed) observedAt = t;\n",
+        "new": "      observedAt = t;\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C24",
+    "what": "a report with no time on the board is read as fresh for ever (CA-L6)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "keeper/bot/needs.mjs",
+    "test": "keeper/test/unit/needs.test.mjs",
+    "edits": [
+      {
+        "old": "    if (!isTime(n?.seenAt, nowSeconds) || typeof n.token !== \"string\" || typeof n.amount !== \"string\") return null;\n",
+        "new": "    if (typeof n?.token !== \"string\" || typeof n.amount !== \"string\") return null;\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C25",
+    "what": "a board dated ahead of the clock is read as fresh (CA-L6)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "keeper/bot/needs.mjs",
+    "test": "keeper/test/unit/needs.test.mjs",
+    "edits": [
+      {
+        "old": "const isTime = (x, nowSeconds) => Number.isInteger(x) && x >= 0 && x <= nowSeconds + NEEDS_MAX_SKEW_SECONDS;\n",
+        "new": "const isTime = (x, nowSeconds) => Number.isInteger(x) && x >= 0 && nowSeconds >= 0;\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C26",
+    "what": "a failed stock read of a leg the fill leaves alone stops the fill (CA-R2-03)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/requests.test.mjs",
+    "edits": [
+      {
+        "old": "  return moving.some((i) => reads.some((answers) => answers[i].status !== \"success\"));\n",
+        "new": "  return reads.some((answers) => answers.some((answer) => answer.status !== \"success\")) && moving.length >= 0;\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C27",
+    "what": "a request its index has settled a rebalance since is still simulated and still asks the restock for stock",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/requests.test.mjs",
+    "edits": [
+      {
+        "old": "  return at.nonce !== undefined && at.nonce !== null && BigInt(r.rebalanceNonce) !== BigInt(at.nonce);\n",
+        "new": "  return false;\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C28",
+    "what": "a request short of stock is checked again only after its report has lapsed from the restock's board",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "keeper/bot/backoff.mjs",
+    "test": "keeper/test/unit/backoff.test.mjs",
+    "edits": [
+      {
+        "old": "export const SHORT_RECHECK_BLOCKS = 50;\n",
+        "new": "export const SHORT_RECHECK_BLOCKS = 200;\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C29",
+    "what": "the bot names its units by the logarithm's slope, not the score's, and takes less than the hub allows (CA-M7)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "keeper/bot/units.mjs",
+    "test": "keeper/test/unit/units.test.mjs",
+    "edits": [
+      {
+        "old": "const slope = (x) => 1 - x + x * x - 1.2 * x * x * x;\n",
+        "new": "const slope = (x) => 1 / (1 + x);\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C30",
+    "what": "a finding on something the round could not read is announced as cleared (CA-M17)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "keeper/invariants/check.mjs",
+    "test": "keeper/test/unit/invariants.test.mjs",
+    "edits": [
+      {
+        "old": "  return { raised, cleared: gone.filter((key) => !held(key)), standing: new Set([...now.keys(), ...gone.filter(held)]) };\n",
+        "new": "  return { raised, cleared: gone, standing: new Set(now.keys()) };\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C31",
+    "what": "a cursor moves past a range before it has been read, so a failed read skips it for good (CA-M16)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "keeper/invariants/check.mjs",
+    "test": "keeper/test/unit/invariants.test.mjs",
+    "edits": [
+      {
+        "old": "    const answer = await read(next, to);\n    next = to + 1n;\n    return answer;\n",
+        "new": "    const from = next;\n    next = to + 1n;\n    return read(from, to);\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C32",
+    "what": "an alert the webhook did not take is dropped as sent (CA-M18)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "keeper/invariants/check.mjs",
+    "test": "keeper/test/unit/invariants.test.mjs",
+    "edits": [
+      {
+        "old": "        if (!(await send(queue[0]))) break;\n        queue.shift();\n",
+        "new": "        await send(queue[0]);\n        queue.shift();\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C33",
+    "what": "an escrow balance that could not be read counts as zero, a shortfall nobody measured (CA-L9)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "keeper/invariants/check.mjs",
+    "test": "keeper/test/unit/invariants.test.mjs",
+    "edits": [
+      {
+        "old": "    const balance = balances.get(token) ?? null;\n",
+        "new": "    const balance = balances.get(token) ?? 0n;\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C34",
+    "what": "a head that has stopped moving is never reported (CA-R2-14)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "keeper/invariants/check.mjs",
+    "test": "keeper/test/unit/invariants.test.mjs",
+    "edits": [
+      {
+        "old": "  if (age <= maxAgeSeconds) return [];\n",
+        "new": "  if (age <= maxAgeSeconds * 1000) return [];\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C35",
+    "what": "the checker does not watch the quote posted with a start (CA-L10)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "keeper/invariants/check.mjs",
+    "test": "keeper/test/unit/invariants.test.mjs",
+    "edits": [
+      {
+        "old": "export const HUB_NOTICES = Object.freeze([\"RebalanceStarted\", \"RebalanceQuoted\", \"RebalanceCancelled\"]);",
+        "new": "export const HUB_NOTICES = Object.freeze([\"RebalanceStarted\", \"RebalanceCancelled\"]);"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C36",
+    "what": "a funding is planned beyond what the treasury holds and may draw (CA-R2-10)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "keeper/restock/plan.mjs",
+    "test": "keeper/test/unit/restock-plan.test.mjs",
+    "edits": [
+      {
+        "old": "          const amount = min(least + BigInt(Math.round(cfg.floatTargetUsd * 1e6)), most, available);\n",
+        "new": "          const amount = min(least + BigInt(Math.round(cfg.floatTargetUsd * 1e6)), most);\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C37",
+    "what": "spare stock is bridged out to a chain whose wallet is short of gas (CA-R2-09)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "keeper/restock/plan.mjs",
+    "test": "keeper/test/unit/restock-plan.test.mjs",
+    "edits": [
+      {
+        "old": "    if (going === 0n && !blocked && spare > keep && ",
+        "new": "    if (going === 0n && spare > keep && "
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C38",
+    "what": "the day's budget bounds what the buys are worth, not what they may cost (CA-M13)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "keeper/restock/plan.mjs",
+    "test": "keeper/test/unit/restock-plan.test.mjs",
+    "edits": [
+      {
+        "old": "      const budgetLeft = budget > 0 ? unitsOf(budget / worst, c.decimals, price) : 0n;\n",
+        "new": "      const budgetLeft = budget > 0 ? unitsOf(budget, c.decimals, price) : 0n;\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C39",
+    "what": "the journal counts a buy at its worth, not at the most it may cost (CA-M13)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "keeper/restock/journal.mjs",
+    "test": "keeper/test/unit/restock-journal.test.mjs",
+    "edits": [
+      {
+        "old": "usd += m.maxUsd ?? m.usd;",
+        "new": "usd += m.usd;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C40",
+    "what": "a bridge transfer is settled on a mined transaction without reading the bridge back (CA-M10)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "keeper/restock/advance.mjs",
+    "test": "keeper/test/unit/restock-advance.test.mjs",
+    "edits": [
+      {
+        "old": "        if (!(await to.transferCompleted(vaa))) throw new Error(NOT_COMPLETED);\n",
+        "new": ""
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C41",
+    "what": "a CCTP transfer is settled on a mined transaction without reading the receiver back (CA-M10)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "keeper/restock/advance.mjs",
+    "test": "keeper/test/unit/restock-advance.test.mjs",
+    "edits": [
+      {
+        "old": "      if (!(await to.cctpReceived(signed.message))) throw new Error(NOT_COMPLETED);\n",
+        "new": ""
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "C42",
+    "what": "a second restock process takes the journal while the first still runs (CA-M12)",
+    "origin": "audits/internal/consolidated-audit-ca.md",
+    "file": "keeper/restock/journal.mjs",
+    "test": "keeper/test/unit/restock-journal.test.mjs",
+    "edits": [
+      {
+        "old": "      if (Number.isInteger(holder) && holder > 0 && holder !== pid && alive(holder)) {\n",
+        "new": "      if (Number.isInteger(holder) && holder > 0 && holder === 0) {\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "Z3",
+    "what": "a receipt that could not be read counts as no receipt: the fill is scored as replaced (RZ-6)",
+    "origin": "audits/internal/red-team-rz.md",
+    "file": "keeper/bot/nonce.mjs",
+    "test": "keeper/test/unit/nonce.test.mjs",
+    "edits": [
+      {
+        "old": "asked again at the next block`);\n          return null;\n        }",
+        "new": "asked again at the next block`);\n        }"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "Z4",
+    "what": "a subsidised fill is charged its simulated loss, not what its floor allows (RZ-16)",
+    "origin": "audits/internal/red-team-rz.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/math.test.mjs",
+    "edits": [
+      {
+        "old": "    usdcDelta: usdcFloor({ simDelta, minProfitUsd, gasUsd, inventoryUsd, routedVolumeUsdc, slippageBps, decimals }),\n",
+        "new": "    usdcDelta: simDelta,\n"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "Z5",
+    "what": "only a move that left the journal counts as having moved on: one that settled this round does not (RZ-19)",
+    "origin": "audits/internal/red-team-rz.md",
+    "file": "keeper/restock/journal.mjs",
+    "test": "keeper/test/unit/restock-journal.test.mjs",
+    "edits": [
+      {
+        "old": "new Set(before.filter((m) => stageNow(m.id) !== m.stage).flatMap(subjectsOf));",
+        "new": "new Set(before.filter((m) => stageNow(m.id) === undefined).flatMap(subjectsOf));"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "Z6",
+    "what": "a funding that moved on holds its coin, which it has none of, instead of its chain (RZ-19)",
+    "origin": "audits/internal/red-team-rz.md",
+    "file": "keeper/restock/journal.mjs",
+    "test": "keeper/test/unit/restock-journal.test.mjs",
+    "edits": [
+      {
+        "old": "move.kind === \"fund\" || move.kind === \"sweep\" ? move.chain : move.coin;",
+        "new": "move.kind === \"fund\" || move.kind === \"sweep\" ? move.coin : move.coin;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "Z1",
+    "what": "a fill mined at its deadline is late, so one that reverted in time is no strike (RZ-15)",
+    "origin": "audits/internal/red-team-rz.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/math.test.mjs",
+    "edits": [
+      {
+        "old": "deadline !== null && deadline !== undefined && BigInt(minedAt) > BigInt(deadline);",
+        "new": "deadline !== null && deadline !== undefined && BigInt(minedAt) >= BigInt(deadline);"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "Z2",
+    "what": "a fill's deadline is not kept with it, so none is ever told late (RZ-15)",
+    "origin": "audits/internal/red-team-rz.md",
+    "file": "keeper/bot/nonce.mjs",
+    "test": "keeper/test/unit/nonce.test.mjs",
+    "edits": [
+      {
+        "old": "hashes: [hash], targetBlock, deadline, cancelling: false",
+        "new": "hashes: [hash], targetBlock, deadline: null, cancelling: false"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "N6",
+    "what": "no chain id names Base: a deployment there falls to the routers' code, which names BNB Chain",
+    "origin": "docs/design/base.md",
+    "file": "script/DeployChecks.sol",
+    "test": "test/DeployChecks.t.sol",
+    "edits": [
+      {
+        "old": "        return block.chainid == BaseAddresses.CHAIN_ID;",
+        "new": "        return false;"
+      }
+    ]
+  },
+  {
+    "id": "N7",
+    "what": "BNB Chain's router, replayed on Base, names BNB Chain there",
+    "origin": "docs/design/base.md",
+    "file": "script/DeployChecks.sol",
+    "test": "test/DeployChecks.t.sol",
+    "edits": [
+      {
+        "old": "        return block.chainid != 1 && !onBase() && BNB_UNIVERSAL_ROUTER.code.length != 0;\n",
+        "new": "        return block.chainid != 1 && BNB_UNIVERSAL_ROUTER.code.length != 0;\n"
+      }
+    ]
+  },
+  {
+    "id": "N8",
+    "what": "the Base list resolves on any chain",
+    "origin": "docs/design/base.md",
+    "file": "script/ScriptLists.sol",
+    "test": "test/ConfigureWeighted.t.sol",
+    "edits": [
+      {
+        "old": "            if (block.chainid != BaseAddresses.CHAIN_ID) revert ListOffItsChain(raw, block.chainid);\n            list = BaseAddresses.all();",
+        "new": "            list = BaseAddresses.all();"
+      }
+    ]
+  },
+  {
+    "id": "N9",
+    "what": "on Base the mint currencies may be replaced",
+    "origin": "docs/design/base.md",
+    "file": "script/ConfigureWeighted.s.sol",
+    "test": "test/ConfigureWeighted.t.sol",
+    "edits": [
+      {
+        "old": "        if (\n            block.chainid == 1 || block.chainid == BnbChainAddresses.CHAIN_ID || block.chainid == BaseAddresses.CHAIN_ID\n        ) {\n",
+        "new": "        if (block.chainid == 1 || block.chainid == BnbChainAddresses.CHAIN_ID) {\n"
+      }
+    ]
+  },
+  {
+    "id": "N10",
+    "what": "a copy of Base's bridge is listed with no tier",
+    "origin": "docs/design/base.md",
+    "file": "script/BaseAddresses.sol",
+    "test": "test/ConfigureWeighted.t.sol",
+    "edits": [
+      {
+        "old": "        if (token == ZRO || remoteOf(token) != address(0)) return Listings.Tier.Bridged;",
+        "new": "        if (token == ZRO) return Listings.Tier.Bridged;"
+      }
+    ]
+  },
+  {
+    "id": "N11",
+    "what": "the admission check calls a token as an account without ether, which a script run on an OP Stack chain fails before the call runs: every probe on Base read as a failed transfer",
+    "origin": "docs/design/coinbase-on-base.md",
+    "file": "script/CheckToken.s.sol",
+    "test": "test/CheckToken.t.sol",
+    "edits": [
+      {
+        "old": "        vm.deal(from, CALLER_ETHER);\n        vm.prank(from);",
+        "new": "        vm.prank(from);"
+      }
+    ]
+  },
+  {
+    "id": "N12",
+    "what": "the admission check creates the listing script to resolve its tokens, a creation by the script contract, which holds no ether: every CHECK on an OP Stack chain reverted",
+    "origin": "docs/design/coinbase-on-base.md",
+    "file": "script/CheckToken.s.sol",
+    "test": "test/CheckToken.t.sol",
+    "edits": [
+      {
+        "old": "import {ScriptLists} from \"./ScriptLists.sol\";",
+        "new": "import {ScriptLists} from \"./ScriptLists.sol\";\nimport {ConfigureWeighted} from \"./ConfigureWeighted.s.sol\";"
+      },
+      {
+        "old": "    function resolveTokens(string memory raw) public view returns (address[] memory tokens) {\n        return ScriptLists.isNamed(raw) ? ScriptLists.resolve(raw) : ScriptLists.parse(raw);",
+        "new": "    function resolveTokens(string memory raw) public returns (address[] memory tokens) {\n        ConfigureWeighted lists = new ConfigureWeighted();\n        return ScriptLists.isNamed(raw) ? lists.resolveList(raw) : lists.parseAddresses(raw);"
+      }
+    ]
+  },
+  {
+    "id": "N13",
+    "what": "a read of a token's symbol or decimals carries all the gas that is left: a token that burns what it is given, a precompile this EVM cannot execute among them, ends the run",
+    "origin": "docs/design/coinbase-on-base.md",
+    "file": "script/ScriptUtils.sol",
+    "test": "test/Scripts.t.sol",
+    "edits": [
+      {
+        "old": "        uint256 gasLimit = READ_GAS;",
+        "new": "        uint256 gasLimit = gasleft();"
+      }
+    ]
+  },
+  {
+    "id": "N14",
+    "what": "a read of a token's symbol copies the whole answer, whatever its size",
+    "origin": "docs/design/coinbase-on-base.md",
+    "file": "script/ScriptUtils.sol",
+    "test": "test/Scripts.t.sol",
+    "edits": [
+      {
+        "old": "            if gt(size, most) { size := most }\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "N15",
+    "what": "the admission check judges a precompile this EVM cannot execute as a token at fault: refused for its decimals",
+    "origin": "docs/design/coinbase-on-base.md",
+    "file": "script/CheckToken.s.sol",
+    "test": "test/CheckToken.t.sol",
+    "edits": [
+      {
+        "old": "        if (!r.decimalsAnswered && ScriptUtils.isBarePrecompile(token.code)) {",
+        "new": "        if (false && !r.decimalsAnswered && ScriptUtils.isBarePrecompile(token.code)) {"
+      }
+    ]
+  },
+  {
+    "id": "N16",
+    "what": "the listing script skips a Coinbase stock it cannot read, so the Safe's batch on Base proposes none of the ten",
+    "origin": "docs/design/coinbase-on-base.md",
+    "file": "script/ConfigureWeighted.s.sol",
+    "test": "test/ConfigureWeighted.t.sol",
+    "edits": [
+      {
+        "old": "        if (!answered && block.chainid == BaseAddresses.CHAIN_ID && BaseAddresses.isStock(token)) {",
+        "new": "        if (false && !answered && block.chainid == BaseAddresses.CHAIN_ID && BaseAddresses.isStock(token)) {"
+      }
+    ]
+  },
+  {
+    "id": "N17",
+    "what": "the address book's decimals vouch for a stock under any chain's id",
+    "origin": "docs/design/coinbase-on-base.md",
+    "file": "script/ConfigureWeighted.s.sol",
+    "test": "test/ConfigureWeighted.t.sol",
+    "edits": [
+      {
+        "old": "        if (!answered && block.chainid == BaseAddresses.CHAIN_ID && BaseAddresses.isStock(token)) {",
+        "new": "        if (!answered && BaseAddresses.isStock(token)) {"
+      }
+    ]
+  },
+  {
+    "id": "N18",
+    "what": "the address book's decimals vouch for any token the script cannot read on Base",
+    "origin": "docs/design/coinbase-on-base.md",
+    "file": "script/ConfigureWeighted.s.sol",
+    "test": "test/ConfigureWeighted.t.sol",
+    "edits": [
+      {
+        "old": "        if (!answered && block.chainid == BaseAddresses.CHAIN_ID && BaseAddresses.isStock(token)) {",
+        "new": "        if (!answered && block.chainid == BaseAddresses.CHAIN_ID) {"
+      }
+    ]
+  },
+  {
+    "id": "N19",
+    "what": "a coin or a stock of Coinbase's is listed with no tier",
+    "origin": "docs/design/coinbase-on-base.md",
+    "file": "script/BaseAddresses.sol",
+    "test": "test/ConfigureWeighted.t.sol",
+    "edits": [
+      {
+        "old": "        if (isCoinbaseWrapped(token) || isStock(token)) return Listings.Tier.Custodial;",
+        "new": "        if (isCoinbaseWrapped(token)) return Listings.Tier.Custodial;"
+      }
+    ]
+  },
+  {
+    "id": "O1",
+    "what": "Ondo's AT&T token priced at Toncoin's feed, as an earlier listing had it",
+    "origin": "docs/design/ondo-stocks.md",
+    "file": "script/PythIds.sol",
+    "test": "keeper/test/unit/config.test.mjs",
+    "edits": [
+      {
+        "old": "    /// @dev AT&T INC / US DOLLAR (Equity.US.T/USD): US market hours only.\n    bytes32 internal constant TON = 0x63e9f918ab91507c3574cca011da4dccda30cf54d46124d03b70279142ff81f3;",
+        "new": "    /// @dev TONCOIN / US DOLLAR (Crypto.TON/USD): the Ondo token's own feed.\n    bytes32 internal constant TON = 0x8963217838ab4cf5cadc172203c1f0b763fbaa45f346d8ee50ba994bbcac3026;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "PY1",
+    "what": "no fill is checked against Pyth",
+    "origin": "docs/design/pyth-check.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (PRICES != address(0)) {\n            uint256[] memory values",
+        "new": "        if (false) {\n            uint256[] memory values"
+      }
+    ]
+  },
+  {
+    "id": "PY2",
+    "what": "the hub checks Pyth at the auction's last second whenever it fills, so the tolerance never starts low",
+    "origin": "docs/design/pyth-check.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "            IWeightedMath(MATH).oracleCheck(units, newUnits, values, elapsed);",
+        "new": "            IWeightedMath(MATH).oracleCheck(units, newUnits, values, AUCTION_DURATION);"
+      }
+    ]
+  },
+  {
+    "id": "PY3",
+    "what": "the tolerance is the most from the first second",
+    "origin": "docs/design/pyth-check.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "        return MAX_ORACLE_TOLERANCE * elapsed / AUCTION_DURATION;",
+        "new": "        return MAX_ORACLE_TOLERANCE;"
+      }
+    ]
+  },
+  {
+    "id": "PY4",
+    "what": "the tolerance rounds up, toward the executor",
+    "origin": "docs/design/pyth-check.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "        return MAX_ORACLE_TOLERANCE * elapsed / AUCTION_DURATION;",
+        "new": "        return Math.ceilDiv(MAX_ORACLE_TOLERANCE * elapsed, AUCTION_DURATION);"
+      }
+    ]
+  },
+  {
+    "id": "PY5",
+    "what": "a tolerance is given past the auction",
+    "origin": "docs/design/pyth-check.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "        if (elapsed > AUCTION_DURATION) revert IWeightedHub.AuctionOver(elapsed);\n        // Rounded down",
+        "new": "        // Rounded down"
+      }
+    ]
+  },
+  {
+    "id": "PY6",
+    "what": "Pyth's refusal reads as a quote's",
+    "origin": "docs/design/pyth-check.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "        if (valueIn < floor) revert IWeightedHub.BelowOracleValue(valueIn, floor);",
+        "new": "        if (valueIn < floor) revert IWeightedHub.BelowQuote(valueIn, floor);"
+      }
+    ]
+  },
+  {
+    "id": "PY7",
+    "what": "Pyth's confidence is ignored",
+    "origin": "docs/design/pyth-check.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        uint256 edge = leaving ? price + p.conf : price - p.conf;",
+        "new": "        uint256 edge = price;"
+      }
+    ]
+  },
+  {
+    "id": "PY8",
+    "what": "the confidence leans toward the executor",
+    "origin": "docs/design/pyth-check.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        uint256 edge = leaving ? price + p.conf : price - p.conf;",
+        "new": "        uint256 edge = leaving ? price - p.conf : price + p.conf;"
+      }
+    ]
+  },
+  {
+    "id": "PY9",
+    "what": "a leaving leg's value rounds down",
+    "origin": "docs/design/pyth-check.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "            leaving ? Math.Rounding.Ceil : Math.Rounding.Floor",
+        "new": "            Math.Rounding.Floor"
+      }
+    ]
+  },
+  {
+    "id": "PY10",
+    "what": "a price of any age is read",
+    "origin": "docs/design/pyth-check.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (p.publishTime + maxAge < block.timestamp) revert StalePrice(token, p.publishTime);",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "PY11",
+    "what": "a price exactly as old as its reader allows is refused",
+    "origin": "docs/design/pyth-check.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (p.publishTime + maxAge < block.timestamp)",
+        "new": "        if (p.publishTime + maxAge <= block.timestamp)"
+      }
+    ]
+  },
+  {
+    "id": "PY12",
+    "what": "a price no wider than its confidence is read",
+    "origin": "docs/design/pyth-check.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (price <= p.conf) revert UnusablePrice(token);",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "PY13",
+    "what": "every leg is valued, the ones that keep their units included",
+    "origin": "docs/design/pyth-check.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "            if (next != current) values[i] = _value(tokens[i], next < current);",
+        "new": "            values[i] = _value(tokens[i], next < current);"
+      }
+    ]
+  },
+  {
+    "id": "PY14",
+    "what": "a vault is valued as one asset a token",
+    "origin": "docs/design/pyth-check.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (kind == FeedKind.Token) return (1, one);",
+        "new": "        if (kind == FeedKind.Token || kind == FeedKind.Vault) return (1, one);"
+      }
+    ]
+  },
+  {
+    "id": "PY15",
+    "what": "a stock token's multiplier is ignored",
+    "origin": "docs/design/pyth-check.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (kind == FeedKind.Multiplier) return (IMultiplierToken(token).multiplier(), WAD * one);",
+        "new": "        if (kind == FeedKind.Multiplier) return (1, one);"
+      }
+    ]
+  },
+  {
+    "id": "PY16",
+    "what": "a value past what the math can sum is read",
+    "origin": "docs/design/pyth-check.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (value == 0 || value > MAX_VALUE) revert UnusablePrice(token);",
+        "new": "        if (value == 0) revert UnusablePrice(token);"
+      }
+    ]
+  },
+  {
+    "id": "PY17",
+    "what": "a token without a feed is valued at feed zero",
+    "origin": "docs/design/pyth-check.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (feed.kind == FeedKind.None) revert NoPriceFeed(token);",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "PY18",
+    "what": "a price feed executes before its delay",
+    "origin": "docs/design/pyth-check.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/PythPrices.t.sol",
+    "edits": [
+      {
+        "old": "        if (block.timestamp < eta) revert PriceFeedNotReady(token, eta);\n        if (block.timestamp > eta + PROPOSAL_WINDOW) revert PriceFeedExpired",
+        "new": "        if (block.timestamp > eta + PROPOSAL_WINDOW) revert PriceFeedExpired"
+      }
+    ]
+  },
+  {
+    "id": "PY19",
+    "what": "a price feed executes after its window",
+    "origin": "docs/design/pyth-check.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/PythPrices.t.sol",
+    "edits": [
+      {
+        "old": "        if (block.timestamp > eta + PROPOSAL_WINDOW) revert PriceFeedExpired(token, eta + PROPOSAL_WINDOW);\n\n        IPythPrices.PriceFeed memory feed",
+        "new": "\n        IPythPrices.PriceFeed memory feed"
+      }
+    ]
+  },
+  {
+    "id": "PY20",
+    "what": "a feed with no id is accepted",
+    "origin": "docs/design/pyth-check.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/PythPrices.t.sol",
+    "edits": [
+      {
+        "old": "if ((feed.kind == IPythPrices.FeedKind.None) != (feed.id == bytes32(0))) revert InvalidPriceFeed(feed.id);",
+        "new": "if (feed.kind == IPythPrices.FeedKind.None && feed.id != bytes32(0)) revert InvalidPriceFeed(feed.id);"
+      }
+    ]
+  },
+  {
+    "id": "PY21",
+    "what": "anyone cancels a pending feed",
+    "origin": "docs/design/pyth-check.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/PythPrices.t.sol",
+    "edits": [
+      {
+        "old": "    function cancelPriceFeed(address token) external onlyOwnerOrGuardian {",
+        "new": "    function cancelPriceFeed(address token) external {"
+      }
+    ]
+  },
+  {
+    "id": "PY22",
+    "what": "a second proposal replaces a pending one",
+    "origin": "docs/design/pyth-check.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/PythPrices.t.sol",
+    "edits": [
+      {
+        "old": "        if (pending != 0 && block.timestamp <= pending + PROPOSAL_WINDOW) revert PriceFeedPending(token, pending);",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "PY23",
+    "what": "an index is created off its weights: no price check at creation",
+    "origin": "docs/design/pyth-check.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (PRICES != address(0)) _checkOnWeights(inits);",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "PY24",
+    "what": "a leg may start 6% off its weight, not 5%",
+    "origin": "docs/design/pyth-check.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "    uint256 public constant MAX_WEIGHT_DEVIATION = 0.05e18;",
+        "new": "    uint256 public constant MAX_WEIGHT_DEVIATION = 0.06e18;"
+      }
+    ]
+  },
+  {
+    "id": "PY25",
+    "what": "a leg exactly 5% off its weight is refused",
+    "origin": "docs/design/pyth-check.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "            if (gap > Math.mulDiv(target, MAX_WEIGHT_DEVIATION, 1e18)) {",
+        "new": "            if (gap >= Math.mulDiv(target, MAX_WEIGHT_DEVIATION, 1e18)) {"
+      }
+    ]
+  },
+  {
+    "id": "PY26",
+    "what": "a creation leaves its duplicate marks for the next one in the transaction",
+    "origin": "docs/design/pyth-check.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "            _unsee(inits[i].token);",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "PY27",
+    "what": "the duplicate check never sees a token twice",
+    "origin": "docs/design/pyth-check.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "            already := tload(token)",
+        "new": "            already := 0"
+      }
+    ]
+  },
+  {
+    "id": "CW1",
+    "what": "anyone proposes an index's weights",
+    "origin": "docs/design/changeable-weights.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (msg.sender != creatorOf[index]) revert Unauthorized(msg.sender);\n        if (PRICES == address(0)) revert NoOracle();\n",
+        "new": "        if (PRICES == address(0)) revert NoOracle();\n"
+      }
+    ]
+  },
+  {
+    "id": "CW2",
+    "what": "a factory without an oracle takes a proposal",
+    "origin": "docs/design/changeable-weights.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (PRICES == address(0)) revert NoOracle();\n        // A view on our own clone",
+        "new": "        // A view on our own clone"
+      }
+    ]
+  },
+  {
+    "id": "CW3",
+    "what": "a proposed weight may be zero",
+    "origin": "docs/design/changeable-weights.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "            if (weight == 0 || weight > TOTAL_WEIGHT) revert InvalidWeights();",
+        "new": "            if (weight > TOTAL_WEIGHT) revert InvalidWeights();"
+      }
+    ]
+  },
+  {
+    "id": "CW4",
+    "what": "proposed weights need not sum to TOTAL_WEIGHT",
+    "origin": "docs/design/changeable-weights.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (total != TOTAL_WEIGHT) revert InvalidWeights();\n        uint256 eta = block.timestamp + WEIGHTS_DELAY;",
+        "new": "        uint256 eta = block.timestamp + WEIGHTS_DELAY;"
+      }
+    ]
+  },
+  {
+    "id": "CW5",
+    "what": "a change applies with no notice",
+    "origin": "docs/design/changeable-weights.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        uint256 eta = block.timestamp + WEIGHTS_DELAY;",
+        "new": "        uint256 eta = block.timestamp;"
+      }
+    ]
+  },
+  {
+    "id": "CW6",
+    "what": "a change applies after its window",
+    "origin": "docs/design/changeable-weights.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (block.timestamp > eta + PROPOSAL_WINDOW) revert WeightsExpired(index, eta + PROPOSAL_WINDOW);",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "CW7",
+    "what": "anyone cancels a pending change",
+    "origin": "docs/design/changeable-weights.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (msg.sender != creatorOf[index] && !isOwnerOrGuardian(msg.sender)) revert Unauthorized(msg.sender);",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "CW8",
+    "what": "anyone writes an index's weights",
+    "origin": "docs/design/changeable-weights.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "    function setWeights(uint256[] calldata weights) external nonReentrant onlyInitialized {\n        if (msg.sender != FACTORY) revert NotFactory();\n",
+        "new": "    function setWeights(uint256[] calldata weights) external nonReentrant onlyInitialized {\n"
+      }
+    ]
+  },
+  {
+    "id": "CW9",
+    "what": "a change applies during a live rebalance",
+    "origin": "docs/design/changeable-weights.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (msg.sender != FACTORY) revert NotFactory();\n        uint256 pendingEta = _eta;\n        if (pendingEta != 0 && block.timestamp <= pendingEta + AUCTION_DURATION) {\n            revert RebalancePending(pendingEta + AUCTION_DURATION);\n        }\n        uint256 n = _weights.length;",
+        "new": "        if (msg.sender != FACTORY) revert NotFactory();\n        uint256 n = _weights.length;"
+      }
+    ]
+  },
+  {
+    "id": "CW10",
+    "what": "a factory takes a math without code",
+    "origin": "docs/design/changeable-weights.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (math.code.length == 0) revert NotAContract(math);",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "CW11",
+    "what": "a change applies before its notice ends",
+    "origin": "docs/design/changeable-weights.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (block.timestamp < eta) revert WeightsNotReady(index, eta);",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "CW12",
+    "what": "a proposal may name more or fewer weights than components",
+    "origin": "docs/design/changeable-weights.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (weights.length != IWeightedHub(index).componentWeights().length) revert InvalidWeights();",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "FB1",
+    "what": "the first issue pulls its basket from the factory, the caller, instead of the creator",
+    "origin": "CLAUDE.md, Product decisions: creating is buying",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "        if (first_.shares != 0) _issue(first_.from, first_.shares, first_.to, address(0));",
+        "new": "        if (first_.shares != 0) _issue(msg.sender, first_.shares, first_.to, address(0));"
+      }
+    ]
+  },
+  {
+    "id": "FB2",
+    "what": "the first shares go to the payer instead of the recipient the creator named",
+    "origin": "CLAUDE.md, Product decisions: creating is buying",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "        if (first_.shares != 0) _issue(first_.from, first_.shares, first_.to, address(0));",
+        "new": "        if (first_.shares != 0) _issue(first_.from, first_.shares, first_.from, address(0));"
+      }
+    ]
+  },
+  {
+    "id": "FB3",
+    "what": "the initializer, and so the first issue, runs outside the reentrancy guard",
+    "origin": "CLAUDE.md, Product decisions: creating is buying",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "    ) external nonReentrant initializer {",
+        "new": "    ) external initializer {"
+      }
+    ]
+  },
+  {
+    "id": "FB4",
+    "what": "createAndIssue with no shares silently creates an empty index",
+    "origin": "CLAUDE.md, Product decisions: creating is buying",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "        if (shares == 0) revert IWeightedHub.ZeroShares();\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "FB5",
+    "what": "the factory names the recipient, not its caller, as the first issue's payer",
+    "origin": "CLAUDE.md, Product decisions: creating is buying",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "IWeightedHub.FirstIssue(msg.sender, shares, to)",
+        "new": "IWeightedHub.FirstIssue(to, shares, to)"
+      }
+    ]
+  },
+  {
+    "id": "FB6",
+    "what": "createAndIssue without the approval check, so anyone creates an index by paying for it",
+    "origin": "CLAUDE.md, Product decisions: creating is buying",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "        _checkApprovedCreator();\n        // Zero shares would create the index with none, which is {createIndex}'s to say.",
+        "new": "        // Zero shares would create the index with none, which is {createIndex}'s to say."
+      }
+    ]
+  },
+  {
+    "id": "FB7",
+    "what": "createIndex without the approval check, now a call of its own in each creation",
+    "origin": "CLAUDE.md, Product decisions: creating is buying",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "        _checkApprovedCreator();\n        return _createIndex(name, symbol, components, params, IWeightedHub.FirstIssue(address(0), 0, address(0)));",
+        "new": "        return _createIndex(name, symbol, components, params, IWeightedHub.FirstIssue(address(0), 0, address(0)));"
+      }
+    ]
+  },
+  {
+    "id": "RS1",
+    "what": "the owner or guardian may start at any time after a fill, with no week's wait",
+    "origin": "CLAUDE.md, Design rules: the owner or guardian restarts a week after any fill",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "        if (_restartsEarly(earliest)) earliest = lastRebalance + MIN_REBALANCE_INTERVAL;",
+        "new": "        if (_restartsEarly(earliest)) earliest = 0;"
+      }
+    ]
+  },
+  {
+    "id": "RS2",
+    "what": "a stranger takes the short wait meant for the owner and guardian",
+    "origin": "CLAUDE.md, Design rules: the owner or guardian restarts a week after any fill",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "        return block.timestamp < earliest && rebalanceNonce != 0\n            && IWeightedIndexFactory(FACTORY).isOwnerOrGuardian(msg.sender);",
+        "new": "        return block.timestamp < earliest && rebalanceNonce != 0;"
+      }
+    ]
+  },
+  {
+    "id": "RS3",
+    "what": "the owner and guardian wait out the index's whole interval after a sliver, as before the rule",
+    "origin": "CLAUDE.md, Design rules: the owner or guardian restarts a week after any fill",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "        if (_restartsEarly(earliest)) earliest = lastRebalance + MIN_REBALANCE_INTERVAL;",
+        "new": "        if (_restartsEarly(earliest)) earliest = _earliestRebalance();"
+      }
+    ]
+  },
+  {
+    "id": "KP1",
+    "what": "a fill's Pyth update is never posted, so the index meets stale prices",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.pyth.t.sol",
+    "edits": [
+      {
+        "old": "        pyth.updatePriceFeeds{value: fee}(pythUpdate);",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "KP2",
+    "what": "a fill may carry any ether with its update, not exactly Pyth's fee",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.pyth.t.sol",
+    "edits": [
+      {
+        "old": "        if (msg.value != fee) revert WrongPythFee(msg.value, fee);\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "KP3",
+    "what": "a fill without an update may carry ether, which the executor then holds",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "            if (msg.value != 0) revert WrongPythFee(msg.value, 0);\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "KP4",
+    "what": "the executor pays Pyth with every wei it holds, not with the fill's own fee",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.pyth.t.sol",
+    "edits": [
+      {
+        "old": "        pyth.updatePriceFeeds{value: fee}(pythUpdate);",
+        "new": "        pyth.updatePriceFeeds{value: address(this).balance}(pythUpdate);"
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "KP5",
+    "what": "an update for an index without an oracle is not refused by name",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "        if (prices == address(0)) revert NoOracle();\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "UO1",
+    "what": "the bot rounds Pyth's tolerance up where the hub rounds it down",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
+    "file": "keeper/bot/units.mjs",
+    "test": "keeper/test/unit/units.test.mjs",
+    "edits": [
+      {
+        "old": "  return (MAX_ORACLE_TOLERANCE * e) / AUCTION_DURATION;",
+        "new": "  return ceilDiv(MAX_ORACLE_TOLERANCE * e, AUCTION_DURATION);"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "UO2",
+    "what": "the bot values a leg that leaves at the price of one that arrives",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
+    "file": "keeper/bot/units.mjs",
+    "test": "keeper/test/unit/units.test.mjs",
+    "edits": [
+      {
+        "old": "const value = newUnits[i] < units[i] ? leaving[i] : newUnits[i] > units[i] ? arriving[i] : 0n;",
+        "new": "const value = newUnits[i] < units[i] ? arriving[i] : newUnits[i] > units[i] ? leaving[i] : 0n;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "UO3",
+    "what": "the bot names units without Pyth's check, so its fills revert at the hub",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
+    "file": "keeper/bot/units.mjs",
+    "test": "keeper/test/unit/units.test.mjs",
+    "edits": [
+      {
+        "old": "    if (oracle !== null) {",
+        "new": "    if (oracle !== null && false) {"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "UO4",
+    "what": "a moving leg Pyth cannot value counts as worthless instead of stopping the fill",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
+    "file": "keeper/bot/units.mjs",
+    "test": "keeper/test/unit/units.test.mjs",
+    "edits": [
+      {
+        "old": "    if (value === null || value === undefined) return null;\n    values.push(value);",
+        "new": "    values.push(value ?? 0n);"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "UO5",
+    "what": "the ether a fill carries, Pyth's fee, is left out of what the fill costs",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/math.test.mjs",
+    "edits": [
+      {
+        "old": "  (Number(used * (nextBase + tip) + value + l1Fee) / 1e18) * ethUsd;",
+        "new": "  (Number(used * (nextBase + tip) + l1Fee) / 1e18) * ethUsd;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "PY28",
+    "what": "a value of nothing is taken as a price, so a leg that leaves at a zero multiplier or rate is free by Pyth's measure",
+    "origin": "CHANGELOG.md: the adversarial read of the Pyth-check build",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (value == 0 || value > MAX_VALUE) revert UnusablePrice(token);",
+        "new": "        if (value > MAX_VALUE) revert UnusablePrice(token);"
+      }
+    ]
+  },
+  {
+    "id": "RS4",
+    "what": "the owner or guardian starts a week after an index's creation, before anything has filled it",
+    "origin": "CLAUDE.md, Design rules: the owner or guardian restarts a week after any fill",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.fees.t.sol",
+    "edits": [
+      {
+        "old": "        return block.timestamp < earliest && rebalanceNonce != 0\n            && IWeightedIndexFactory(FACTORY).isOwnerOrGuardian(msg.sender);",
+        "new": "        return block.timestamp < earliest && IWeightedIndexFactory(FACTORY).isOwnerOrGuardian(msg.sender);"
+      }
+    ]
+  },
+  {
+    "id": "PW1",
+    "what": "the bot takes a leg's arriving value for its leaving one",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
+    "file": "keeper/bot/pyth.mjs",
+    "test": "keeper/test/unit/pyth.test.mjs",
+    "edits": [
+      {
+        "old": "const [out, into] = [values[2 * k], values[2 * k + 1]];",
+        "new": "const [out, into] = [values[2 * k + 1], values[2 * k]];"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "PW2",
+    "what": "a leg the reader values one way only is still traded",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
+    "file": "keeper/bot/pyth.mjs",
+    "test": "keeper/test/unit/pyth.test.mjs",
+    "edits": [
+      {
+        "old": "if (out.ok && into.ok)",
+        "new": "if (out.ok || into.ok)"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "PW3",
+    "what": "a leg without a feed is asked of Hermes and of the reader",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
+    "file": "keeper/bot/pyth.mjs",
+    "test": "keeper/test/unit/pyth.test.mjs",
+    "edits": [
+      {
+        "old": ".filter((f) => f.kind !== 0);",
+        "new": ".filter(() => true);"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "PW4",
+    "what": "the call that posts the update carries no fee, so the simulation is not the fill",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
+    "file": "keeper/bot/pyth.mjs",
+    "test": "keeper/test/unit/pyth.test.mjs",
+    "edits": [
+      {
+        "old": "args: [updates], value: fee };",
+        "new": "args: [updates], value: 0n };"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "PW5",
+    "what": "a leg the keeper may not move is asked about, and its failure stops the round",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
+    "file": "keeper/bot/pyth.mjs",
+    "test": "keeper/test/unit/pyth.test.mjs",
+    "edits": [
+      {
+        "old": "const asked = movable.map((m, i) => (m ? i : -1)).filter((i) => i >= 0);",
+        "new": "const asked = movable.map((m, i) => i);"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "PW6",
+    "what": "the legs are valued before the update is posted, at whatever stale price Pyth holds",
+    "origin": "CHANGELOG.md: the keeper posts Pyth's update with each fill",
+    "file": "keeper/bot/pyth.mjs",
+    "test": "keeper/test/unit/pyth.test.mjs",
+    "edits": [
+      {
+        "old": "await chain.callAfter([post, ...fed.flatMap((f) => [valueOf(f.i, true), valueOf(f.i, false)])], L.number, over);",
+        "new": "await chain.callAfter([...fed.flatMap((f) => [valueOf(f.i, true), valueOf(f.i, false)]), post], L.number, over);"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "MP1",
+    "what": "an index's own pause stops no issue",
+    "origin": "CLAUDE.md, Product decisions: a mint pause, and no upgrade",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "allowed = !mintingPaused[address(0)] && !mintingPaused[index]",
+        "new": "allowed = !mintingPaused[address(0)]"
+      }
+    ]
+  },
+  {
+    "id": "MP2",
+    "what": "the pause of every index stops no issue",
+    "origin": "CLAUDE.md, Product decisions: a mint pause, and no upgrade",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "allowed = !mintingPaused[address(0)] && !mintingPaused[index]",
+        "new": "allowed = !mintingPaused[index]"
+      }
+    ]
+  },
+  {
+    "id": "MP3",
+    "what": "the guardian that paused can resume, so a pause the owner set does not hold",
+    "origin": "CLAUDE.md, Product decisions: a mint pause, and no upgrade",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "function resumeMinting(address index) external onlyOwner {",
+        "new": "function resumeMinting(address index) external onlyOwnerOrGuardian {"
+      }
+    ]
+  },
+  {
+    "id": "MP4",
+    "what": "anyone pauses minting",
+    "origin": "CLAUDE.md, Product decisions: a mint pause, and no upgrade",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "function pauseMinting(address index) external onlyOwnerOrGuardian {",
+        "new": "function pauseMinting(address index) external {"
+      }
+    ]
+  },
+  {
+    "id": "MP5",
+    "what": "a pause of an address that is no index is recorded",
+    "origin": "CLAUDE.md, Product decisions: a mint pause, and no upgrade",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "        if (index != address(0) && !isIndex[index]) revert NotIndex(index);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "MP6",
+    "what": "a redeem asks the factory whether minting is allowed, so a pause stops an exit",
+    "origin": "CLAUDE.md, Product decisions: a mint pause, and no upgrade",
+    "file": "src/WeightedHub.sol",
+    "test": "test/WeightedHub.rebalance.t.sol",
+    "edits": [
+      {
+        "old": "        _checkRecipient(to);\n        Config memory cfg = _config;\n        uint256 feeShares = _redeemFeeShares(shares, cfg);",
+        "new": "        _checkRecipient(to);\n        Config memory cfg = _config;\n        (bool mayMint,,) = _feeTerms(to);\n        if (!mayMint) revert NotAllowedMinter(to);\n        uint256 feeShares = _redeemFeeShares(shares, cfg);"
+      }
+    ]
+  },
+  {
+    "id": "MP7",
+    "what": "a resume lifts nothing",
+    "origin": "CLAUDE.md, Product decisions: a mint pause, and no upgrade",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/WeightedIndexFactory.t.sol",
+    "edits": [
+      {
+        "old": "        mintingPaused[index] = false;",
+        "new": "        mintingPaused[index] = true;"
+      }
+    ]
+  },
+  {
+    "id": "HK1",
+    "what": "the callback's mark is not cleared when its fill ends, so the index just filled can call it again in the same transaction (HK-01)",
+    "origin": "audits/internal/attack-replay.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.attacks.t.sol",
+    "edits": [
+      {
+        "old": "        _filling = address(0);\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "HK2",
+    "what": "the executor's callback answers any caller, so a swap inside a fill takes the stock (HK-01)",
+    "origin": "audits/internal/attack-replay.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.attacks.t.sol",
+    "edits": [
+      {
+        "old": "        if (msg.sender != _filling) revert UnexpectedCaller(msg.sender);\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "HK3",
+    "what": "the weights change without the guard, so an executor changes them from inside its own fill (HK-08)",
+    "origin": "audits/internal/attack-replay.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/Attacks.t.sol",
+    "edits": [
+      {
+        "old": "    function setWeights(uint256[] calldata weights) external nonReentrant onlyInitialized {",
+        "new": "    function setWeights(uint256[] calldata weights) external onlyInitialized {"
+      }
+    ]
+  },
+  {
+    "id": "HK4",
+    "what": "an accrual runs without the guard, so the creator role moves from inside a fill (HK-08)",
+    "origin": "audits/internal/attack-replay.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/Attacks.t.sol",
+    "edits": [
+      {
+        "old": "    function accrueFees() external nonReentrant onlyInitialized {",
+        "new": "    function accrueFees() external onlyInitialized {"
+      }
+    ]
+  },
+  {
+    "id": "HK5",
+    "what": "a handover leaves the outgoing creator's weights pending, to take effect under the new creator (HK-16)",
+    "origin": "audits/internal/attack-replay.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/Attacks.t.sol",
+    "edits": [
+      {
+        "old": "        if (weightsEta[index] != 0) {\n            delete weightsEta[index];\n            delete _pendingWeights[index];\n            // forge-lint: disable-next-line(reentrancy-events)\n            emit WeightsCancelled(index);\n        }\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "HK6",
+    "what": "a creation forwards the factory's whole ether balance, so ether forced into it moves (HK-14)",
+    "origin": "audits/internal/attack-replay.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/Attacks.t.sol",
+    "edits": [
+      {
+        "old": "        if (msg.value != 0) Address.sendValue(payable(recipient), msg.value);",
+        "new": "        if (msg.value != 0) Address.sendValue(payable(recipient), address(this).balance);"
+      }
+    ]
+  },
+  {
+    "id": "HK7",
+    "what": "an index's address leaves its creator out, so another creator takes the address an approval was given to (HK-03)",
+    "origin": "audits/internal/attack-replay.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/Attacks.t.sol",
+    "edits": [
+      {
+        "old": "        return keccak256(abi.encode(creator, nameHash, symbolHash, contents));",
+        "new": "        return keccak256(abi.encode(nameHash, symbolHash, contents));"
+      }
+    ]
+  },
+  {
+    "id": "RB5",
+    "what": "the zap refuses only the index of the call as a recipient, so another index keeps what it is sent (RB-5)",
+    "origin": "audits/internal/rebalance-review-rb.md",
+    "file": "src/IndexZap.sol",
+    "test": "test/IndexZap.t.sol",
+    "edits": [
+      {
+        "old": "                || to == address(FACTORY) || FACTORY.isIndex(to)\n        ) revert InvalidRecipient(to);",
+        "new": "                || to == address(FACTORY) || to == index\n        ) revert InvalidRecipient(to);"
+      }
+    ]
+  },
+  {
+    "id": "Z7",
+    "what": "a send signs over a pending nonce the bot is not following, replacing it or refused every block (RZ-8)",
+    "origin": "audits/internal/red-team-rz.md",
+    "file": "keeper/bot/nonce.mjs",
+    "test": "keeper/test/unit/nonce.test.mjs",
+    "edits": [
+      {
+        "old": "if ((await this.io.pendingNonce()) > nonce) {",
+        "new": "if ((await this.io.pendingNonce()) > nonce + 1_000n) {"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "Z8",
+    "what": "a scan re-reads every known request whatever the budget (RZ-10)",
+    "origin": "audits/internal/red-team-rz.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/requests.test.mjs",
+    "edits": [
+      {
+        "old": "for (; k < open.length && ids.length < budget; k++)",
+        "new": "for (; k < open.length; k++)"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "Z9",
+    "what": "a scan reads every new request whatever the budget (RZ-10)",
+    "origin": "audits/internal/red-team-rz.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/requests.test.mjs",
+    "edits": [
+      {
+        "old": "id <= count && ids.length < newLimit; id++",
+        "new": "id <= count; id++"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "Z10",
+    "what": "a chosen route answers a larger amount from its smaller quote within the period (RZ-11)",
+    "origin": "audits/internal/red-team-rz.md",
+    "file": "keeper/bot/routes.mjs",
+    "test": "keeper/test/unit/routes.test.mjs",
+    "edits": [
+      {
+        "old": "c.route !== null && amount <= c.amount && age < routeRequote",
+        "new": "c.route !== null && age < routeRequote"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "Z11",
+    "what": "stock held beyond its stock allowance is bought again (RZ-20)",
+    "origin": "audits/internal/red-team-rz.md",
+    "file": "keeper/restock/plan.mjs",
+    "test": "keeper/test/unit/restock-plan.test.mjs",
+    "edits": [
+      {
+        "old": "        if (balance + credited >= need) continue;\n",
+        "new": ""
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "Z12",
+    "what": "a shortfall is counted from the deliverable stock, not what the executor holds (RZ-20)",
+    "origin": "audits/internal/red-team-rz.md",
+    "file": "keeper/restock/plan.mjs",
+    "test": "keeper/test/unit/restock-plan.test.mjs",
+    "edits": [
+      {
+        "old": "const short = want - balance - credited;",
+        "new": "const short = want - usable - credited;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "Z13",
+    "what": "coins at home below RESTOCK_MIN_USD are bridged in on their own beside the round's buy (RZ-21)",
+    "origin": "audits/internal/red-team-rz.md",
+    "file": "keeper/restock/plan.mjs",
+    "test": "keeper/test/unit/restock-plan.test.mjs",
+    "edits": [
+      {
+        "old": "      if (bringUsd >= cfg.minUsd) bringIn();\n      else if (bring > 0n)",
+        "new": "      bringIn();\n      if (bring > 0n)"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "CH1",
+    "what": "a fill is priced at its deadline, where the bar is lowest, and lands earlier against a higher one",
+    "origin": "keeper/README.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/chains.test.mjs",
+    "edits": [
+      {
+        "old": "return { at: timestamp + step, by: timestamp + BigInt(chain.fillWindowSeconds) };",
+        "new": "return { at: timestamp + BigInt(chain.fillWindowSeconds), by: timestamp + BigInt(chain.fillWindowSeconds) };"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "CH2",
+    "what": "dollars become the float's raw units at six decimals whatever its own, a trillionth on BNB Chain",
+    "origin": "keeper/README.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/chains.test.mjs",
+    "edits": [
+      {
+        "old": "return BigInt(Math.ceil(usd * 1e6)) * 10n ** BigInt(decimals - 6);",
+        "new": "return BigInt(Math.ceil(usd * 1e6));"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "CH3",
+    "what": "a request's stablecoin is counted at six decimals, BNB Chain's eighteen-decimal escrow at a trillion dollars",
+    "origin": "keeper/README.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/chains.test.mjs",
+    "edits": [
+      {
+        "old": "const stable = (x) => Number(x) / 10 ** stableDecimals;",
+        "new": "const stable = (x) => Number(x) / 1e6;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "CH4",
+    "what": "Base's L1 data fee is left out of what a fill costs",
+    "origin": "keeper/README.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/chains.test.mjs",
+    "edits": [
+      {
+        "old": "(Number(used * (nextBase + tip) + value + l1Fee) / 1e18) * ethUsd;",
+        "new": "(Number(used * (nextBase + tip) + value) / 1e18) * ethUsd;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "CH5",
+    "what": "a strike lapses after Ethereum's count of blocks on every chain, a 27th of an hour on BNB Chain",
+    "origin": "keeper/README.md",
+    "file": "keeper/bot/backoff.mjs",
+    "test": "keeper/test/unit/chains.test.mjs",
+    "edits": [
+      {
+        "old": "    this.lapseBlocks *= k;\n",
+        "new": ""
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "CH6",
+    "what": "a chosen route serves 25 blocks on every chain, eleven seconds on BNB Chain",
+    "origin": "keeper/README.md",
+    "file": "keeper/bot/routes.mjs",
+    "test": "keeper/test/unit/chains.test.mjs",
+    "edits": [
+      {
+        "old": "const routeRequote = ROUTE_REQUOTE_BLOCKS * (market.blockScale ?? 1n);",
+        "new": "const routeRequote = ROUTE_REQUOTE_BLOCKS;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "CH7",
+    "what": "a replacement is bumped every block on every chain",
+    "origin": "keeper/README.md",
+    "file": "keeper/bot/nonce.mjs",
+    "test": "keeper/test/unit/chains.test.mjs",
+    "edits": [
+      {
+        "old": "f.targetBlock = blockNumber + this.landBlocks;",
+        "new": "f.targetBlock = blockNumber + 1;"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "CH8",
+    "what": "every chain's tip defaults to Ethereum's 2 gwei",
+    "origin": "keeper/README.md",
+    "file": "keeper/bot/config.mjs",
+    "test": "keeper/test/unit/chains.test.mjs",
+    "edits": [
+      {
+        "old": "PRIORITY_FEE_GWEI: named?.priorityFeeGwei ?? \"2\" };",
+        "new": "PRIORITY_FEE_GWEI: \"2\" };"
+      }
+    ],
+    "runner": "node"
+  },
+  {
+    "id": "V25",
+    "what": "a backing is shares times units times scale in 256 bits, not mulDiv's 512, so a supply past 1.5e30 on a leg near the 96-bit ceiling overflows (RZ-33)",
+    "origin": "audits/internal/red-team-rz.md",
+    "file": "src/WeightedMath.sol",
+    "test": "test/WeightedMath.vectors.t.sol",
+    "edits": [
+      {
+        "old": "return Math.mulDiv(shares, units * scale, SHARE_UNIT * WAD, rounding);",
+        "new": "return rounding == Math.Rounding.Ceil ? (shares * units * scale + SHARE_UNIT * WAD - 1) / (SHARE_UNIT * WAD) : shares * units * scale / (SHARE_UNIT * WAD);"
+      }
+    ]
+  },
+  {
+    "id": "UX1",
+    "what": "anyone deposits stock, earning its restock allowance (RS-1)",
+    "origin": "docs/design/uniswapx-restock.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "root": "keeper",
+    "edits": [
+      {
+        "old": "        _checkTreasury();\n        if (token == USDC) revert NotStock(token);\n        uint256 before = IERC20(token).balanceOf(address(this));",
+        "new": "        if (token == USDC) revert NotStock(token);\n        uint256 before = IERC20(token).balanceOf(address(this));"
+      }
+    ]
+  },
+  {
+    "id": "UX2",
+    "what": "the treasury deposits USDC as stock",
+    "origin": "docs/design/uniswapx-restock.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "root": "keeper",
+    "edits": [
+      {
+        "old": "        if (token == USDC) revert NotStock(token);\n        uint256 before = IERC20(token).balanceOf(address(this));\n        SafeERC20.safeTransferFrom(IERC20(token)",
+        "new": "        uint256 before = IERC20(token).balanceOf(address(this));\n        SafeERC20.safeTransferFrom(IERC20(token)"
+      }
+    ]
+  },
+  {
+    "id": "UX3",
+    "what": "a deposit credits what was asked, not what arrived",
+    "origin": "docs/design/uniswapx-restock.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "root": "keeper",
+    "edits": [
+      {
+        "old": "credited = _creditRestock(token, arrived);",
+        "new": "credited = _creditRestock(token, amount);"
+      }
+    ]
+  },
+  {
+    "id": "UX4",
+    "what": "a credit does not spend the restock allowance (RS-1)",
+    "origin": "docs/design/uniswapx-restock.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "root": "keeper",
+    "edits": [
+      {
+        "old": "        restockAllowance[token] = room - credited;",
+        "new": "        restockAllowance[token] = room;"
+      }
+    ]
+  },
+  {
+    "id": "UX5",
+    "what": "a credit overflows a stock allowance at its most (RS-6)",
+    "origin": "docs/design/uniswapx-restock.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "root": "keeper",
+    "edits": [
+      {
+        "old": "        if (credited > type(uint256).max - stock) credited = type(uint256).max - stock;\n        restockAllowance[token] = room - credited;",
+        "new": "        restockAllowance[token] = room - credited;"
+      }
+    ]
+  },
+  {
+    "id": "UX6",
+    "what": "an order for another reactor is signed",
+    "origin": "docs/design/uniswapx-restock.md",
+    "file": "keeper/restock/uniswapx.mjs",
+    "test": "keeper/test/unit/restock-uniswapx.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "  if (!same(info.reactor, REACTOR)) return",
+        "new": "  if (false) return"
+      }
+    ]
+  },
+  {
+    "id": "UX7",
+    "what": "an order of another swapper is signed",
+    "origin": "docs/design/uniswapx-restock.md",
+    "file": "keeper/restock/uniswapx.mjs",
+    "test": "keeper/test/unit/restock-uniswapx.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "  if (!same(info.swapper, swapper)) return",
+        "new": "  if (false) return"
+      }
+    ]
+  },
+  {
+    "id": "UX8",
+    "what": "an order naming a validation contract is signed",
+    "origin": "docs/design/uniswapx-restock.md",
+    "file": "keeper/restock/uniswapx.mjs",
+    "test": "keeper/test/unit/restock-uniswapx.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "  if (!same(info.additionalValidationContract, ZERO) || info.additionalValidationData !== \"0x\") {",
+        "new": "  if (false) {"
+      }
+    ]
+  },
+  {
+    "id": "UX9",
+    "what": "an order with any deadline ahead is signed",
+    "origin": "docs/design/uniswapx-restock.md",
+    "file": "keeper/restock/uniswapx.mjs",
+    "test": "keeper/test/unit/restock-uniswapx.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": " || info.deadline > BigInt(now + MAX_ORDER_SECONDS)) {",
+        "new": ") {"
+      }
+    ]
+  },
+  {
+    "id": "UX10",
+    "what": "an order reusing an open order's nonce is signed",
+    "origin": "docs/design/uniswapx-restock.md",
+    "file": "keeper/restock/uniswapx.mjs",
+    "test": "keeper/test/unit/restock-uniswapx.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "  if (openNonces.some((n) => n === info.nonce)) return",
+        "new": "  if (false) return"
+      }
+    ]
+  },
+  {
+    "id": "UX11",
+    "what": "an order spending another token than USDC is signed",
+    "origin": "docs/design/uniswapx-restock.md",
+    "file": "keeper/restock/uniswapx.mjs",
+    "test": "keeper/test/unit/restock-uniswapx.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "  if (!same(baseInput.token, tokenIn)) return",
+        "new": "  if (false) return"
+      }
+    ]
+  },
+  {
+    "id": "UX12",
+    "what": "an order's most spent is its smaller input amount",
+    "origin": "docs/design/uniswapx-restock.md",
+    "file": "keeper/restock/uniswapx.mjs",
+    "test": "keeper/test/unit/restock-uniswapx.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "export const inputMax = (order) => max(order.baseInput.startAmount, order.baseInput.endAmount);",
+        "new": "export const inputMax = (order) => min(order.baseInput.startAmount, order.baseInput.endAmount);"
+      }
+    ]
+  },
+  {
+    "id": "UX13",
+    "what": "an order with several outputs is signed",
+    "origin": "docs/design/uniswapx-restock.md",
+    "file": "keeper/restock/uniswapx.mjs",
+    "test": "keeper/test/unit/restock-uniswapx.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "  if (baseOutputs.length !== 1) return",
+        "new": "  if (baseOutputs.length === 0) return"
+      }
+    ]
+  },
+  {
+    "id": "UX14",
+    "what": "an order paying another token is signed",
+    "origin": "docs/design/uniswapx-restock.md",
+    "file": "keeper/restock/uniswapx.mjs",
+    "test": "keeper/test/unit/restock-uniswapx.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "  if (!same(out.token, tokenOut)) return",
+        "new": "  if (false) return"
+      }
+    ]
+  },
+  {
+    "id": "UX15",
+    "what": "an order paying someone else is signed",
+    "origin": "docs/design/uniswapx-restock.md",
+    "file": "keeper/restock/uniswapx.mjs",
+    "test": "keeper/test/unit/restock-uniswapx.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "  if (!same(out.recipient, swapper)) return",
+        "new": "  if (false) return"
+      }
+    ]
+  },
+  {
+    "id": "UX16",
+    "what": "an order's least paid is its larger output amount",
+    "origin": "docs/design/uniswapx-restock.md",
+    "file": "keeper/restock/uniswapx.mjs",
+    "test": "keeper/test/unit/restock-uniswapx.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "export const outputMin = (order) => min(order.baseOutputs[0].startAmount, order.baseOutputs[0].endAmount);",
+        "new": "export const outputMin = (order) => max(order.baseOutputs[0].startAmount, order.baseOutputs[0].endAmount);"
+      }
+    ]
+  },
+  {
+    "id": "UX17",
+    "what": "the permit signed is for the input's start amount",
+    "origin": "docs/design/uniswapx-restock.md",
+    "file": "keeper/restock/uniswapx.mjs",
+    "test": "keeper/test/unit/restock-uniswapx.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "      permitted: { token: baseInput.token, amount: baseInput.endAmount },",
+        "new": "      permitted: { token: baseInput.token, amount: baseInput.startAmount },"
+      }
+    ]
+  },
+  {
+    "id": "UX18",
+    "what": "Permit2's nonce word is read off by one bit",
+    "origin": "docs/design/uniswapx-restock.md",
+    "file": "keeper/restock/uniswapx.mjs",
+    "test": "keeper/test/unit/restock-uniswapx.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "export const nonceSlot = (nonce) => ({ word: nonce >> 8n, bit: nonce & 0xffn });",
+        "new": "export const nonceSlot = (nonce) => ({ word: nonce >> 7n, bit: nonce & 0x7fn });"
+      }
+    ]
+  },
+  {
+    "id": "UX19",
+    "what": "the draw leaves out the USDC the local coins' orders take",
+    "origin": "docs/design/uniswapx-restock.md",
+    "file": "keeper/restock/plan.mjs",
+    "test": "keeper/test/unit/restock-plan.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "  const usdcWanted = fundTotal + localUsdc;",
+        "new": "  const usdcWanted = fundTotal;"
+      }
+    ]
+  },
+  {
+    "id": "UX20",
+    "what": "fundings are planned from USDC an order has taken",
+    "origin": "docs/design/uniswapx-restock.md",
+    "file": "keeper/restock/plan.mjs",
+    "test": "keeper/test/unit/restock-plan.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "  let available = usdcFree;",
+        "new": "  let available = treasury.usdc + treasury.allowance;"
+      }
+    ]
+  },
+  {
+    "id": "UX21",
+    "what": "an order's least amount allows twice the loss bound",
+    "origin": "docs/design/uniswapx-restock.md",
+    "file": "keeper/restock/plan.mjs",
+    "test": "keeper/test/unit/restock-plan.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "      const minOut = unitsOf(usd * (1 - cfg.maxLossBps / 10_000), c.decimals, price);\n      actions.push({ kind: \"order\"",
+        "new": "      const minOut = unitsOf(usd * (1 - (2 * cfg.maxLossBps) / 10_000), c.decimals, price);\n      actions.push({ kind: \"order\""
+      }
+    ]
+  },
+  {
+    "id": "UX22",
+    "what": "an order is planned while the treasury has a move to settle",
+    "origin": "docs/design/uniswapx-restock.md",
+    "file": "keeper/restock/plan.mjs",
+    "test": "keeper/test/unit/restock-plan.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "      if (busy.has(\"treasury\")) {\n        notes.push(`${c.symbol}: its UniswapX order waits",
+        "new": "      if (false) {\n        notes.push(`${c.symbol}: its UniswapX order waits"
+      }
+    ]
+  },
+  {
+    "id": "UX23",
+    "what": "a local coin's order is not held to the restock allowance (RS-1)",
+    "origin": "docs/design/uniswapx-restock.md",
+    "file": "keeper/restock/plan.mjs",
+    "test": "keeper/test/unit/restock-plan.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "      if (amountOut > roomLeft) amountOut = roomLeft;\n      if (amountOut > budgetLeft) amountOut = budgetLeft;\n      const usd = usdOf(amountOut, c.decimals, price);\n      const amountIn = unitsOf(usd, 6, 1);",
+        "new": "      if (amountOut > budgetLeft) amountOut = budgetLeft;\n      const usd = usdOf(amountOut, c.decimals, price);\n      const amountIn = unitsOf(usd, 6, 1);"
+      }
+    ]
+  },
+  {
+    "id": "UX24",
+    "what": "an open order does not hold the treasury",
+    "origin": "docs/design/uniswapx-restock.md",
+    "file": "keeper/restock/journal.mjs",
+    "test": "keeper/test/unit/restock-journal.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "        if (m.kind === \"order\") subjectsOf(m).forEach((x) => busy.add(x));\n        else if (m.kind === \"buy\" || m.kind === \"sell\" || m.kind === \"deposit\") busy.add(m.coin);",
+        "new": "        if (m.kind === \"buy\" || m.kind === \"sell\" || m.kind === \"deposit\" || m.kind === \"order\") busy.add(m.coin);"
+      }
+    ]
+  },
+  {
+    "id": "UX25",
+    "what": "a posted order is dropped before it expired",
+    "origin": "docs/design/uniswapx-restock.md",
+    "file": "keeper/restock/journal.mjs",
+    "test": "keeper/test/unit/restock-journal.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "        const expired = m.kind === \"order\" && m.data.status === \"expired\";",
+        "new": "        const expired = m.kind === \"order\";"
+      }
+    ]
+  },
+  {
+    "id": "UX26",
+    "what": "an order is given up at its deadline, inside Ethereum's finality",
+    "origin": "docs/design/uniswapx-restock.md",
+    "file": "keeper/restock/advance.mjs",
+    "test": "keeper/test/unit/restock-advance.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "    if ((await orders.chainTime()) > move.data.deadline + EXPIRY_MARGIN_SECONDS) {",
+        "new": "    if ((await orders.chainTime()) > move.data.deadline) {"
+      }
+    ]
+  },
+  {
+    "id": "UX27",
+    "what": "an order is given up by the service's clock, not the chain's",
+    "origin": "docs/design/uniswapx-restock.md",
+    "file": "keeper/restock/advance.mjs",
+    "test": "keeper/test/unit/restock-advance.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "    if ((await orders.chainTime()) > move.data.deadline + EXPIRY_MARGIN_SECONDS) {",
+        "new": "    if (now() > move.data.deadline + EXPIRY_MARGIN_SECONDS) {"
+      }
+    ]
+  },
+  {
+    "id": "UX28",
+    "what": "a filled order is checked for expiry first, and dropped",
+    "origin": "docs/design/uniswapx-restock.md",
+    "file": "keeper/restock/advance.mjs",
+    "test": "keeper/test/unit/restock-advance.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "    if (await orders.filled(move)) {\n      journal.advance(move.id, \"done\");",
+        "new": "    if (false) {\n      journal.advance(move.id, \"done\");"
+      }
+    ]
+  },
+  {
+    "id": "OS1",
+    "what": "an sValue under a scheduled or active corporate action is used",
+    "origin": "docs/design/ondo-stocks.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/svalues.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "sValue > 0n && pauseStartTime === 0n && lastUpdate",
+        "new": "sValue > 0n && lastUpdate"
+      }
+    ]
+  },
+  {
+    "id": "OS2",
+    "what": "an sValue is used the moment Ondo changes it",
+    "origin": "docs/design/ondo-stocks.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/svalues.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "lastUpdate + BigInt(settleSeconds) <= now",
+        "new": "lastUpdate <= now"
+      }
+    ]
+  },
+  {
+    "id": "OS3",
+    "what": "an sValue settled exactly the settle time ago is refused",
+    "origin": "docs/design/ondo-stocks.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/svalues.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "lastUpdate + BigInt(settleSeconds) <= now",
+        "new": "lastUpdate + BigInt(settleSeconds) < now"
+      }
+    ]
+  },
+  {
+    "id": "OS4",
+    "what": "an sValue of zero is used",
+    "origin": "docs/design/ondo-stocks.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/svalues.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "sValue > 0n && pauseStartTime === 0n",
+        "new": "pauseStartTime === 0n"
+      }
+    ]
+  },
+  {
+    "id": "OS5",
+    "what": "a share-priced leg's confidence at a rate rounds down",
+    "origin": "docs/design/ondo-stocks.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/svalues.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "conf: ceilDiv(BigInt(p.conf) * rate, WAD)",
+        "new": "conf: (BigInt(p.conf) * rate) / WAD"
+      }
+    ]
+  },
+  {
+    "id": "OS6",
+    "what": "a share-priced leg without a settled sValue stops being share-priced",
+    "origin": "docs/design/ondo-stocks.md",
+    "file": "keeper/bot/svalues.mjs",
+    "test": "keeper/test/unit/svalues.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "if (sv[i] === null) return { price: p ?? null, shared: true };",
+        "new": "if (sv[i] === null) return { price: p ?? null, shared: false };"
+      }
+    ]
+  },
+  {
+    "id": "OS7",
+    "what": "a share-priced leg with an sValue keeps its share's price",
+    "origin": "docs/design/ondo-stocks.md",
+    "file": "keeper/bot/svalues.mjs",
+    "test": "keeper/test/unit/svalues.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "return { price: M.atRate(p, sv[i]), shared: false };",
+        "new": "return { price: p, shared: false };"
+      }
+    ]
+  },
+  {
+    "id": "OS8",
+    "what": "an sValue read at one block is kept for the next",
+    "origin": "docs/design/ondo-stocks.md",
+    "file": "keeper/bot/svalues.mjs",
+    "test": "keeper/test/unit/svalues.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "if (block !== L.number) {",
+        "new": "if (block === null) {"
+      }
+    ]
+  },
+  {
+    "id": "LV1",
+    "what": "the constructor ties no DEX to its router: a router for none, or none for PancakeSwap, is taken",
+    "origin": "docs/design/chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "(local.dex == LocalDex.None) != (local.router == address(0)) || local.router == address(router)",
+        "new": "local.router == address(router)"
+      }
+    ]
+  },
+  {
+    "id": "LV2",
+    "what": "the constructor lets Uniswap's router be named again as the chain's DEX",
+    "origin": "docs/design/chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "(local.dex == LocalDex.None) != (local.router == address(0)) || local.router == address(router)",
+        "new": "(local.dex == LocalDex.None) != (local.router == address(0))"
+      }
+    ]
+  },
+  {
+    "id": "LV3",
+    "what": "the constructor takes Aero without its stable-pool factory",
+    "origin": "docs/design/chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "                || aero != (local.stableFactory != address(0))\n",
+        "new": "\n"
+      }
+    ]
+  },
+  {
+    "id": "LV4",
+    "what": "a leg naming two venues is taken",
+    "origin": "docs/design/chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "if (named != 1) revert BadRoute(i);",
+        "new": "if (named == 0) revert BadRoute(i);"
+      }
+    ]
+  },
+  {
+    "id": "LV5",
+    "what": "a deployment without a DEX of its own takes a local route",
+    "origin": "docs/design/chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "if (LOCAL_DEX == LocalDex.None || family > CONSTANT_FUNCTION) revert BadRoute(i);",
+        "new": "if (family > CONSTANT_FUNCTION) revert BadRoute(i);"
+      }
+    ]
+  },
+  {
+    "id": "LV6",
+    "what": "a local route of an unknown family is taken as constant-function pools",
+    "origin": "docs/design/chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "if (LOCAL_DEX == LocalDex.None || family > CONSTANT_FUNCTION) revert BadRoute(i);",
+        "new": "if (LOCAL_DEX == LocalDex.None) revert BadRoute(i);"
+      }
+    ]
+  },
+  {
+    "id": "LV7",
+    "what": "a constant-function hop's parameter is never checked",
+    "origin": "docs/design/chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "if (uint24(bytes3(path[at:at + PathLib.FEE_SIZE])) > most) revert BadRoute(i);",
+        "new": "if (uint24(bytes3(path[at:at + PathLib.FEE_SIZE])) > type(uint24).max) revert BadRoute(i);"
+      }
+    ]
+  },
+  {
+    "id": "LV8",
+    "what": "an Aero basic pool may not be stable",
+    "origin": "docs/design/chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "uint24 most = LOCAL_DEX == LocalDex.Aero ? 1 : 0;",
+        "new": "uint24 most = 0;"
+      }
+    ]
+  },
+  {
+    "id": "LV9",
+    "what": "a PancakeSwap V2 hop may carry a parameter of one",
+    "origin": "docs/design/chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "uint24 most = LOCAL_DEX == LocalDex.Aero ? 1 : 0;",
+        "new": "uint24 most = 1;"
+      }
+    ]
+  },
+  {
+    "id": "LV10",
+    "what": "an Aero basic hop's parameter picks the wrong factory",
+    "origin": "docs/design/chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "return IAeroPoolFactory(param == 0 ? AERO_VOLATILE_FACTORY : AERO_STABLE_FACTORY).getPool(a, b);",
+        "new": "return IAeroPoolFactory(param == 0 ? AERO_STABLE_FACTORY : AERO_VOLATILE_FACTORY).getPool(a, b);"
+      }
+    ]
+  },
+  {
+    "id": "LV11",
+    "what": "Aero's pools of a buy are named in the route's order, not forward from what is paid",
+    "origin": "docs/design/chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "pools[n - 1 - k] = _aeroPool(concentrated, path[at:at + PathLib.ADDR_SIZE + PathLib.HOP_SIZE]);",
+        "new": "pools[k] = _aeroPool(concentrated, path[at:at + PathLib.ADDR_SIZE + PathLib.HOP_SIZE]);"
+      }
+    ]
+  },
+  {
+    "id": "LV12",
+    "what": "a PancakeSwap V2 buy's tokens are named in the route's order, not forward",
+    "origin": "docs/design/chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "tokens[n - 1 - k] = address(bytes20(path[at:at + PathLib.ADDR_SIZE]));",
+        "new": "tokens[k] = address(bytes20(path[at:at + PathLib.ADDR_SIZE]));"
+      }
+    ]
+  },
+  {
+    "id": "LV13",
+    "what": "a PancakeSwap V2 sale hop's pair is named backwards",
+    "origin": "docs/design/chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "(pair[0], pair[1]) = (hopPath.firstToken(), hopPath.lastToken());",
+        "new": "(pair[0], pair[1]) = (hopPath.lastToken(), hopPath.firstToken());"
+      }
+    ]
+  },
+  {
+    "id": "LV14",
+    "what": "a local leg pre-funds and runs on Uniswap's router",
+    "origin": "docs/design/chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "return _isLocal(venue) ? LOCAL_ROUTER : address(ROUTER);",
+        "new": "return address(ROUTER);"
+      }
+    ]
+  },
+  {
+    "id": "LV15",
+    "what": "an Aero leg is sent as a Universal Router call, without the Metarouter's deadline",
+    "origin": "docs/design/chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "} else if (LOCAL_DEX == LocalDex.Aero) {",
+        "new": "} else if (false) {"
+      }
+    ]
+  },
+  {
+    "id": "LV16",
+    "what": "the zap pays the chain's DEX router as a recipient",
+    "origin": "docs/design/chain-venues.md",
+    "file": "src/IndexZap.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "to == address(this) || to == address(ROUTER) || to == POOL_MANAGER || to == LOCAL_ROUTER",
+        "new": "to == address(this) || to == address(ROUTER) || to == POOL_MANAGER"
+      }
+    ]
+  },
+  {
+    "id": "LV17",
+    "what": "the builder pays the chain's DEX router as a recipient",
+    "origin": "docs/design/chain-venues.md",
+    "file": "src/BasketBuilder.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "to == address(this) || to == address(ROUTER) || to == POOL_MANAGER || to == LOCAL_ROUTER",
+        "new": "to == address(this) || to == address(ROUTER) || to == POOL_MANAGER"
+      }
+    ]
+  },
+  {
+    "id": "LV18",
+    "what": "the pass-through leg may name a local route",
+    "origin": "docs/design/chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "return v3Path.length != 0 || v4Path.length != 0 || localRoute.length != 0;",
+        "new": "return v3Path.length != 0 || v4Path.length != 0;"
+      }
+    ]
+  },
+  {
+    "id": "LV19",
+    "what": "an Aero sale spends millionths of the router's balance, not the hop's amount",
+    "origin": "docs/design/chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "amountIn: IAeroMetarouter.BalanceSpend({mode: IAeroMetarouter.SpendMode.Amount, value: given}),",
+        "new": "amountIn: IAeroMetarouter.BalanceSpend({mode: IAeroMetarouter.SpendMode.Pips, value: given}),"
+      }
+    ]
+  },
+  {
+    "id": "LV20",
+    "what": "a PancakeSwap concentrated buy is sent as a V2 swap",
+    "origin": "docs/design/chain-venues.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "                    abi.encodePacked(Cmd.V3_SWAP_EXACT_OUT, Cmd.SWEEP),\n                    abi.encode(address(this), amountOut, cap, path, false)",
+        "new": "                    abi.encodePacked(Cmd.V2_SWAP_EXACT_OUT, Cmd.SWEEP),\n                    abi.encode(address(this), amountOut, cap, path, false)"
+      }
+    ]
+  },
+  {
+    "id": "LV21",
+    "what": "BNB Chain's deployment names no DEX of its own",
+    "origin": "docs/design/chain-venues.md",
+    "file": "script/DeployChecks.sol",
+    "test": "test/DeployChecks.t.sol",
+    "edits": [
+      {
+        "old": "            local.dex = IUniversalRouterSwaps.LocalDex.PancakeSwap;\n",
+        "new": "\n"
+      }
+    ]
+  },
+  {
+    "id": "LV22",
+    "what": "a deployment whose builder names another DEX than its zap passes the check",
+    "origin": "docs/design/chain-venues.md",
+    "file": "script/DeployWeighted.s.sol",
+    "test": "test/Scripts.t.sol",
+    "edits": [
+      {
+        "old": "            if (builders[i] != zaps[i]) {",
+        "new": "            if (false) {"
+      }
+    ]
+  },
+  {
+    "id": "LV23",
+    "what": "a pinned chain's deployment that left its DEX out passes the check",
+    "origin": "docs/design/chain-venues.md",
+    "file": "script/DeployWeighted.s.sol",
+    "test": "test/Scripts.t.sol",
+    "edits": [
+      {
+        "old": "            if (isPinnedChain() && zaps[i] != book[i]) {",
+        "new": "            if (false) {"
+      }
+    ]
+  },
+  {
+    "id": "LV24",
+    "what": "the chain's DEX may hold a role",
+    "origin": "docs/design/chain-venues.md",
+    "file": "script/DeployChecks.sol",
+    "test": "test/Scripts.t.sol",
+    "edits": [
+      {
+        "old": "            if (dex[i] != address(0)) list[at++] = dex[i];",
+        "new": "            if (false) list[at++] = dex[i];"
+      }
+    ]
+  },
+  {
+    "id": "HK8",
+    "what": "a buy approves the router for every token it holds, which the next caller of a router could spend (HK-21)",
+    "origin": "audits/internal/attack-replay-ii.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "        token.safeTransfer(_routerOf(venue), cap);",
+        "new": "        token.forceApprove(_routerOf(venue), type(uint256).max);\n        token.safeTransfer(_routerOf(venue), cap);"
+      }
+    ]
+  },
+  {
+    "id": "HK9",
+    "what": "a sale hop approves its router for the input token as well as paying it (HK-21)",
+    "origin": "audits/internal/attack-replay-ii.md",
+    "file": "src/UniversalRouterSwaps.sol",
+    "test": "test/UniversalRouterSwaps.venues.t.sol",
+    "edits": [
+      {
+        "old": "        IERC20(token).safeTransfer(router, amount);",
+        "new": "        IERC20(token).forceApprove(router, type(uint256).max);\n        IERC20(token).safeTransfer(router, amount);"
+      }
+    ]
+  },
+  {
+    "id": "HK10",
+    "what": "a redeem is paid at the scale before its own accrual, so the shares it burns escape the streaming fee (HK-24)",
+    "origin": "audits/internal/attack-replay-ii.md",
+    "file": "src/WeightedHub.sol",
+    "test": "test/Attacks.t.sol",
+    "edits": [
+      {
+        "old": "        _accrueStreamingFee(to, creator, platform, cfg);\n\n        uint256[] memory amounts = _basketAmounts(shares - feeShares, _scale, Math.Rounding.Floor);",
+        "new": "        uint256[] memory amounts = _basketAmounts(shares - feeShares, _scale, Math.Rounding.Floor);\n        _accrueStreamingFee(to, creator, platform, cfg);"
+      }
+    ]
+  },
+  {
+    "id": "HK11",
+    "what": "a fill reads a price of the last minute again, so the filler picks among sixty seconds of prices (HK-25)",
+    "origin": "audits/internal/attack-replay-ii.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "    uint256 public constant MAX_PRICE_AGE = 15;",
+        "new": "    uint256 public constant MAX_PRICE_AGE = 60;"
+      }
+    ]
+  },
+  {
+    "id": "HK12",
+    "what": "a creation's check reads prices at a fill's fifteen seconds, which a wallet's signer rarely meets (HK-25)",
+    "origin": "audits/internal/attack-replay-ii.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "            values[i] = _valueAt(tokens[i], feeds[i], decimals[i], leaving, MAX_CREATION_PRICE_AGE);",
+        "new": "            values[i] = _valueAt(tokens[i], feeds[i], decimals[i], leaving, MAX_PRICE_AGE);"
+      }
+    ]
+  },
+  {
+    "id": "OV1",
+    "what": "an sValue the oracle does not hold is not refused as one, so the leg reads as a zero value instead",
+    "origin": "docs/design/ondo-svalue.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "if (sValue == 0 || pauseStart != 0 || lastUpdate + MIN_SVALUE_AGE > block.timestamp) {",
+        "new": "if (pauseStart != 0 || lastUpdate + MIN_SVALUE_AGE > block.timestamp) {"
+      }
+    ]
+  },
+  {
+    "id": "OV2",
+    "what": "an sValue is used while a corporate action is scheduled or under way",
+    "origin": "docs/design/ondo-svalue.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "if (sValue == 0 || pauseStart != 0 || lastUpdate + MIN_SVALUE_AGE > block.timestamp) {",
+        "new": "if (sValue == 0 || lastUpdate + MIN_SVALUE_AGE > block.timestamp) {"
+      }
+    ]
+  },
+  {
+    "id": "OV3",
+    "what": "an sValue that changed this very second is used: no wait for the share's price to agree",
+    "origin": "docs/design/ondo-svalue.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "if (sValue == 0 || pauseStart != 0 || lastUpdate + MIN_SVALUE_AGE > block.timestamp) {",
+        "new": "if (sValue == 0 || pauseStart != 0) {"
+      }
+    ]
+  },
+  {
+    "id": "OV4",
+    "what": "an sValue that has stood exactly twenty minutes is still refused",
+    "origin": "docs/design/ondo-svalue.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "if (sValue == 0 || pauseStart != 0 || lastUpdate + MIN_SVALUE_AGE > block.timestamp) {",
+        "new": "if (sValue == 0 || pauseStart != 0 || lastUpdate + MIN_SVALUE_AGE >= block.timestamp) {"
+      }
+    ]
+  },
+  {
+    "id": "OV5",
+    "what": "the leg is valued at a scheduled corporate action's sValue before it lands",
+    "origin": "docs/design/ondo-svalue.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "(uint128 sValue,, uint256 lastUpdate, uint256 pauseStart,,) = ISyntheticSharesOracle",
+        "new": "(, uint128 sValue, uint256 lastUpdate, uint256 pauseStart,,) = ISyntheticSharesOracle"
+      }
+    ]
+  },
+  {
+    "id": "OV6",
+    "what": "a reader without Ondo's oracle calls the zero address instead of refusing the leg by name",
+    "origin": "docs/design/ondo-svalue.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        if (oracle == address(0)) revert SValueUnavailable(token);\n",
+        "new": ""
+      }
+    ]
+  },
+  {
+    "id": "OV7",
+    "what": "an Ondo token is valued at its share's price alone, the finding it answers",
+    "origin": "docs/design/ondo-svalue.md",
+    "file": "src/PythPrices.sol",
+    "test": "test/WeightedHub.oracle.t.sol",
+    "edits": [
+      {
+        "old": "        return (_settledSValue(token), WAD * one);",
+        "new": "        return (1, one);"
+      }
+    ]
+  },
+  {
+    "id": "OV8",
+    "what": "the factory hands its reader no oracle, so no Ondo leg is ever valued",
+    "origin": "docs/design/ondo-svalue.md",
+    "file": "src/WeightedIndexFactory.sol",
+    "test": "test/PythPrices.t.sol",
+    "edits": [
+      {
+        "old": "address(new PythPrices(pyth, sharesOracle))",
+        "new": "address(new PythPrices(pyth, address(0)))"
+      }
+    ]
+  },
+  {
+    "id": "OV9",
+    "what": "a mainnet deployment whose reader reads another sValue oracle, or none, passes the deployment check",
+    "origin": "docs/design/ondo-svalue.md",
+    "file": "script/DeployWeighted.s.sol",
+    "test": "test/Scripts.t.sol",
+    "edits": [
+      {
+        "old": "            if (sharesOracle != pinnedSharesOracle()) {",
+        "new": "            if (false) {"
+      }
+    ]
+  },
+  {
+    "id": "OV10",
+    "what": "the keeper takes any share feed of kind SharesOracle, and values a leg its sValues never turn into the token's",
+    "origin": "docs/design/ondo-svalue.md",
+    "file": "keeper/bot/math.mjs",
+    "test": "keeper/test/unit/math.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "  if (kind === SHARES_ORACLE_FEED && sharePricedIds.includes(id)) return id;",
+        "new": "  if (kind === SHARES_ORACLE_FEED) return id;"
+      }
+    ]
+  },
+  {
+    "id": "KV1",
+    "what": "a route of a path's length plus one is read as local whatever its first byte",
+    "origin": "docs/design/keeper-chain-venues.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "        return route.length % HOP == LOCAL_REMAINDER && route[0] == LOCAL_ROUTE;",
+        "new": "        return route.length % HOP == LOCAL_REMAINDER;"
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "KV2",
+    "what": "the local router keeps the float's approval after a purchase that spent less than its bound",
+    "origin": "docs/design/keeper-chain-venues.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "        SafeERC20.forceApprove(IERC20(USDC), router, 0);\n    }",
+        "new": "    }"
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "KV3",
+    "what": "Aero is asked to buy at a deadline already past",
+    "origin": "docs/design/keeper-chain-venues.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "                        deadline: block.timestamp,\n                        amountOut: amountOut,",
+        "new": "                        deadline: block.timestamp - 1,\n                        amountOut: amountOut,"
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "KV4",
+    "what": "Aero's router is called as a SwapRouter02, whose calls it does not have",
+    "origin": "docs/design/keeper-chain-venues.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "        if (local && LOCAL_KIND == LocalKind.Aero) {",
+        "new": "        if (false) {"
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "KV5",
+    "what": "an executor names a DEX without its kind, or a kind without its DEX",
+    "origin": "docs/design/keeper-chain-venues.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "        if ((localRouter == address(0)) != (localKind == LocalKind.None)) {\n            revert BadLocalRouter(localRouter, localKind);\n        }\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "KV6",
+    "what": "a local route is taken by an executor with no DEX beside Uniswap",
+    "origin": "docs/design/keeper-chain-venues.md",
+    "file": "keeper/src/KeeperExecutor.sol",
+    "test": "test/KeeperExecutor.t.sol",
+    "edits": [
+      {
+        "old": "            if (LOCAL_KIND == LocalKind.None) return false;\n",
+        "new": ""
+      }
+    ],
+    "root": "keeper"
+  },
+  {
+    "id": "KV7",
+    "what": "a purchase takes the venue that quotes it the most",
+    "origin": "docs/design/keeper-chain-venues.md",
+    "file": "keeper/bot/routes.mjs",
+    "test": "keeper/test/unit/routes.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "  const better = (side, a, b) => (side === \"sell\" ? a > b : a < b);",
+        "new": "  const better = (side, a, b) => a > b;"
+      }
+    ]
+  },
+  {
+    "id": "KV8",
+    "what": "Aero quotes a purchase along the route's pools from the component, not from the float it pays",
+    "origin": "docs/design/keeper-chain-venues.md",
+    "file": "keeper/bot/routes.mjs",
+    "test": "keeper/test/unit/routes.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "[pools.reverse(), hops[hops.length - 1].b, amount]",
+        "new": "[pools, hops[hops.length - 1].b, amount]"
+      }
+    ]
+  },
+  {
+    "id": "KV9",
+    "what": "a chain's own DEX is read as Aero's whatever its kind",
+    "origin": "docs/design/keeper-chain-venues.md",
+    "file": "keeper/bot/routes.mjs",
+    "test": "keeper/test/unit/routes.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "    aero: dex.kind === AERO_KIND,",
+        "new": "    aero: true,"
+      }
+    ]
+  },
+  {
+    "id": "KV10",
+    "what": "a local route goes to the executor without the LOCAL_ROUTE byte, as a Uniswap path",
+    "origin": "docs/design/keeper-chain-venues.md",
+    "file": "keeper/bot/routes.mjs",
+    "test": "keeper/test/unit/routes.test.mjs",
+    "runner": "node",
+    "edits": [
+      {
+        "old": "        pick = v.tag ? `0x${v.tag}${route.slice(2)}` : route;",
+        "new": "        pick = route;"
+      }
+    ]
   }
 ]

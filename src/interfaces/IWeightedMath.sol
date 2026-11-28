@@ -4,7 +4,10 @@ pragma solidity 0.8.28;
 /// @title IWeightedMath
 /// @notice The settlement arithmetic of a weighted index: pure functions over the arrays the hub passes in.
 ///         `WeightedHub` calls it by STATICCALL, at an address the factory fixed when it deployed both. So it is as
-///         fixed as the hub's own code. It holds nothing and reads nothing, and no price enters it.
+///         fixed as the hub's own code. It holds nothing and reads nothing. No price enters the gain. Prices enter
+///         two checks, and each can only refuse a fill the gain accepted: {quoteCheck}, at the prices the owner or
+///         guardian posted with a start, and {oracleCheck}, at Pyth's, which the hub passes in when its factory has
+///         an oracle.
 /// @dev The rule. The executor names each component's new units. With `x_i = (new_i − current_i) / current_i`,
 ///      rounded down, and `L(x) = x − x²/2 + x³/3 − 3x⁴/10`, rounded down, a fill is accepted when every leg stays
 ///      inside its unit caps and
@@ -52,13 +55,40 @@ interface IWeightedMath {
     ///         unit, the units the fill adds must be worth at least the units it takes, less `tolerance` (1e18 =
     ///         100%), rounded up. Reverts `IWeightedHub.BelowQuote` otherwise. A component whose units do not change
     ///         counts for nothing, whatever its price.
-    /// @dev The caller keeps every price under 2^128 and every unit within uint96, so the sums cannot overflow.
+    /// @dev The caller keeps every price under 2^128 and every unit within uint96, so the sums cannot overflow, and
+    ///      passes one entry per component in each array, as the hub does: the lengths are the caller's to match.
+    ///      {settlement} checks `newUnits` against `currentUnits` and reads `weights` by position, without checking
+    ///      its length.
     function quoteCheck(
         uint256[] memory currentUnits,
         uint256[] memory newUnits,
         uint256[] memory prices,
         uint256 tolerance
     ) external pure;
+
+    /// @notice Checks a fill against Pyth's prices, `elapsed` seconds into its auction: at `values`, one per component
+    ///         per raw unit, leaning against the executor (`IPythPrices.legValues`), the units the fill adds must be
+    ///         worth at least the units it takes, less {oracleToleranceAt}, rounded up. Reverts
+    ///         `IWeightedHub.BelowOracleValue` otherwise, and `IWeightedHub.AuctionOver` past AUCTION_DURATION. A
+    ///         component whose units do not change counts for nothing.
+    /// @dev The bounds of {quoteCheck} hold: `IPythPrices` keeps every value under 2^128.
+    function oracleCheck(
+        uint256[] memory currentUnits,
+        uint256[] memory newUnits,
+        uint256[] memory values,
+        uint256 elapsed
+    ) external pure;
+
+    /// @notice How much less than it takes a fill may bring in at Pyth's prices, `elapsed` seconds into the auction
+    ///         (1e18 = 100%): nothing at its first second, rising along a straight line to MAX_ORACLE_TOLERANCE at its
+    ///         last, rounded down. Executors compete by filling earlier, at a smaller tolerance, so a lone executor
+    ///         at the last second keeps at most MAX_ORACLE_TOLERANCE of what it trades. Reverts
+    ///         `IWeightedHub.AuctionOver` past AUCTION_DURATION.
+    function oracleToleranceAt(uint256 elapsed) external pure returns (uint256);
+
+    /// @notice The most a fill may fall short of what it takes, at Pyth's prices, at the auction's last second
+    ///         (1e18 = 100%).
+    function MAX_ORACLE_TOLERANCE() external view returns (uint256);
 
     /// @notice The gain the auction asks for `elapsed` seconds after it opened: BAR_MAX at first, halving every
     ///         BAR_HALF_LIFE along a straight line within each, rounded up. Reverts `IWeightedHub.AuctionOver` past

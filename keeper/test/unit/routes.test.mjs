@@ -2,7 +2,18 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { MAINNET } from "../../bot/config.mjs";
 import { stockChangeUsd } from "../../bot/math.mjs";
-import { POOL_REFRESH_BLOCKS, REQUOTE_BLOCKS, ROUTE_REQUOTE_BLOCKS, createRoutes, path } from "../../bot/routes.mjs";
+import { CHAINS } from "../../bot/config.mjs";
+import {
+  LOCAL_ROUTE,
+  POOL_REFRESH_BLOCKS,
+  REQUOTE_BLOCKS,
+  ROUTE_REQUOTE_BLOCKS,
+  createRoutes,
+  createVenues,
+  hopsOf,
+  localMarketOf,
+  path,
+} from "../../bot/routes.mjs";
 
 const Z = `0x${"5a".repeat(20)}`;
 const KEY = "0xindex:1";
@@ -81,10 +92,33 @@ test("XS-5: a kept leg's quote follows its amount and its age, not the first loo
   other.px = 2_000_000n;
   const r = createRoutes(other, cfg, { v3Factory: [], v3Pool: [], quoter: [] });
   assert.equal(await sell(r, 2_000n * E18, 100n), path(Z, 100, MAINNET.usdc));
-  await sell(r, 9_000n * E18, 100n + ROUTE_REQUOTE_BLOCKS - 1n);
-  assert.equal(other.quotes, 1);
-  assert.equal(await sell(r, 9_000n * E18, 100n + ROUTE_REQUOTE_BLOCKS), path(Z, 100, MAINNET.usdc));
+  await sell(r, 1_500n * E18, 100n + ROUTE_REQUOTE_BLOCKS - 1n);
+  assert.equal(other.quotes, 1, "an amount it quoted, or less, is not quoted again within the period");
+  assert.equal(await sell(r, 2_000n * E18, 100n + ROUTE_REQUOTE_BLOCKS), path(Z, 100, MAINNET.usdc));
   assert.equal(other.quotes, 2, "one quote along the chosen route");
+});
+
+test("RZ-11: a chosen route is quoted again when its amount grows, so a purchase's bound covers what it costs", async () => {
+  const c = fakeChain();
+  c.px = 2_000_000n; // the pool sells Z at $2, Pyth's price
+  const r = createRoutes(c, cfg, { v3Factory: [], v3Pool: [], quoter: [] });
+  const buy = (amount, blockNumber) =>
+    r.best({ key: KEY, token: Z, side: "buy", amount, fairUsd: (Number(amount) / 1e18) * 2, blockNumber });
+  const cost = (amount) => r.quoteOf({ key: KEY, token: Z, side: "buy", amount });
+  assert.equal(await buy(100n * E18, 100n), path(Z, 100, MAINNET.usdc));
+  assert.equal(cost(100n * E18), 200n * 10n ** 6n);
+  assert.equal(cost(50n * E18), 100n * 10n ** 6n, "a smaller purchase costs at most its share");
+
+  // Two blocks on, the stock has shrunk and the shortfall is 150 Z: the route is quoted again at 150, within the
+  // period, and its cost covers 150 Z. Answered from the 100's cost, the fill's bound was $200 for $300 of Z.
+  assert.equal(await buy(150n * E18, 102n), path(Z, 100, MAINNET.usdc));
+  assert.equal(c.quotes, 2, "quoted again for the larger amount");
+  assert.equal(cost(150n * E18), 300n * 10n ** 6n);
+
+  // A sale that grows is quoted again too, so its floor is the larger sale's and not the smaller one's proceeds.
+  assert.equal(await sell(r, 10n * E18, 103n), path(Z, 100, MAINNET.usdc));
+  assert.equal(await sell(r, 40n * E18, 104n), path(Z, 100, MAINNET.usdc));
+  assert.equal(r.quoteOf({ key: KEY, token: Z, side: "sell", amount: 40n * E18 }), 80n * 10n ** 6n);
 });
 
 test("RX-13: a chosen route the pool no longer supports is dropped, and a reverted fill drops it at once", async () => {
@@ -180,4 +214,108 @@ test("RZ-2, RZ-22: bestBatch quotes each halving, so a pool that passes only at 
   chain.quotes = 0;
   await routes.bestBatch({ key: "restock:102", token: Z, side: "sell", amount: 50n * E18, decimals: 18, price: 2, minUsd: 100.00000000000001, blockNumber: 102n });
   assert.equal(chain.quotes, 1, "the first amount is quoted; its halving is not");
+});
+
+/// A venue that answers `route` (or null) for every leg, at `quote` USDC raw units, and records what it was told.
+function fakeVenue(route, quote) {
+  const told = [];
+  return {
+    told,
+    best: async () => route,
+    quoteOf: () => quote,
+    forget: (keys) => told.push(["forget", keys]),
+    forgetKey: (key) => told.push(["forgetKey", key]),
+  };
+}
+
+test("venues: each leg takes the venue that quotes it best, a local route behind the executor's LOCAL_ROUTE byte", async () => {
+  const uni = path(Z, 500, MAINNET.usdc);
+  const pancake = path(Z, 2500, MAINNET.usdc);
+  const local = (q) => ({ routes: fakeVenue(pancake, q), tag: LOCAL_ROUTE });
+  const args = { key: KEY, token: Z, amount: E18, fairUsd: 2, blockNumber: 1n };
+  const tagged = `0x01${pancake.slice(2)}`;
+
+  let venues = createVenues([{ routes: fakeVenue(uni, 1_990_000n), tag: "" }, local(1_995_000n)]);
+  assert.equal(await venues.best({ ...args, side: "sell" }), tagged, "a sale takes the most");
+  assert.equal(venues.quoteOf({ ...args, side: "sell" }), 1_995_000n);
+  assert.equal(await venues.best({ ...args, side: "buy" }), uni, "a purchase the least");
+  assert.equal(venues.quoteOf({ ...args, side: "buy" }), 1_990_000n);
+
+  venues = createVenues([{ routes: fakeVenue(uni, 1_990_000n), tag: "" }, local(1_990_000n)]);
+  assert.equal(await venues.best({ ...args, side: "sell" }), uni, "on a tie, the first venue");
+
+  // A venue without a route within the loss bound is passed over, its quote still counted for a kept coin.
+  venues = createVenues([{ routes: fakeVenue(null, 1_500_000n), tag: "" }, local(1_000_000n)]);
+  assert.equal(await venues.best({ ...args, side: "sell" }), tagged);
+  assert.equal(venues.quoteOf({ ...args, side: "sell" }), 1_500_000n, "the most any pool pays values a kept coin");
+  venues = createVenues([{ routes: fakeVenue(null, null), tag: "" }, { routes: fakeVenue(null, null), tag: LOCAL_ROUTE }]);
+  assert.equal(await venues.best({ ...args, side: "sell" }), null);
+  assert.equal(venues.quoteOf({ ...args, side: "sell" }), null, "no pool on any venue");
+  venues = createVenues([{ routes: fakeVenue(null, null), tag: "" }, { routes: fakeVenue(null, 0n), tag: LOCAL_ROUTE }]);
+  assert.equal(venues.quoteOf({ ...args, side: "buy" }), 0n, "pools that quote nothing");
+
+  const a = fakeVenue(uni, 1n);
+  const b = fakeVenue(pancake, 1n);
+  venues = createVenues([{ routes: a, tag: "" }, { routes: b, tag: LOCAL_ROUTE }]);
+  venues.forget(["k"]);
+  venues.forgetKey("j");
+  assert.deepEqual(a.told, [["forget", ["k"]], ["forgetKey", "j"]]);
+  assert.deepEqual(b.told, a.told, "every venue forgets alike (RX-13)");
+});
+
+test("localMarketOf: the chain's own DEX where it has one, Aero's told apart; a path read back as its hops", () => {
+  assert.equal(localMarketOf(CHAINS[1]), null);
+  const pancake = localMarketOf(CHAINS[56]);
+  assert.equal(pancake.v3Factory, CHAINS[56].localDex.factory);
+  assert.equal(pancake.quoterV2, CHAINS[56].localDex.quoter);
+  assert.deepEqual(pancake.directFees, [100, 500, 2500, 10000]);
+  assert.equal(pancake.wethUsdcFee, 100);
+  assert.equal(pancake.usdc, CHAINS[56].usdc);
+  assert.equal(pancake.aero, false);
+  const aero = localMarketOf(CHAINS[8453]);
+  assert.equal(aero.aero, true);
+  assert.deepEqual(aero.viaWethFees, [1, 50, 100, 200, 2000]);
+  const W = `0x${"77".repeat(20)}`;
+  assert.deepEqual(hopsOf(path(Z, 100, W, 50, MAINNET.usdc)), [
+    { a: Z, step: 100, b: W },
+    { a: W, step: 50, b: MAINNET.usdc.toLowerCase() },
+  ]);
+});
+
+test("Aero: a route is quoted along its pools from the token paid, each hop's pool read once", async () => {
+  const W = `0x${"77".repeat(20)}`;
+  const U = MAINNET.usdc;
+  const P1 = `0x${"11".repeat(20)}`;
+  const P2 = `0x${"22".repeat(20)}`;
+  const calls = [];
+  let poolReads = 0;
+  const chain = {
+    isRevert: () => false,
+    multicall: async (contracts) => {
+      if (contracts[0].functionName === "slot0") return contracts.map(() => ({ status: "success", result: [1n << 96n, 0, 0, 0, 0, true] }));
+      poolReads += 1;
+      return contracts.map((c) => {
+        const [a, b, step] = c.args.map((x) => (typeof x === "string" ? x.toLowerCase() : x));
+        const [z, w, u] = [Z, W, U].map((x) => x.toLowerCase());
+        const pool = a === z && b === w && step === 100 ? P1 : a === w && b === u && step === 100 ? P2 : ZERO;
+        return { status: "success", result: pool };
+      });
+    },
+    call: async (c) => {
+      calls.push(c);
+      return [2_000_000n, [], []];
+    },
+  };
+  const abi = { aeroFactory: "AF", aeroPool: "AP", metaquoter: "MQ", v3Factory: "V3F", v3Pool: "V3P", quoter: "Q" };
+  const market = { ...localMarketOf(CHAINS[8453]), usdc: U, weth: W, directFees: [100], viaWethFees: [100], wethUsdcFee: 100 };
+  const routes = createRoutes(chain, cfg, abi, market);
+  const args = { key: KEY, token: Z, amount: E18, fairUsd: 2, blockNumber: 1n };
+  const viaHub = path(Z, 100, W, 100, U);
+  assert.equal(await routes.best({ ...args, side: "sell" }), viaHub);
+  assert.equal(calls[0].abi, "MQ");
+  assert.deepEqual(calls[0].args, [[P1, P2], Z, E18], "a sale: the pools from the component, which it pays");
+  assert.equal(await routes.best({ ...args, side: "buy" }), viaHub);
+  assert.equal(calls[1].functionName, "quoteExactOutput");
+  assert.deepEqual(calls[1].args, [[P2, P1], U.toLowerCase(), E18], "a purchase: the pools from the float, which it pays");
+  assert.equal(poolReads, 2, "the candidates' pools once, the route's hops once");
 });

@@ -11,7 +11,7 @@ import {IXindexErrors} from "../src/interfaces/IXindexErrors.sol";
 import {WeightedTest} from "./WeightedTest.sol";
 import {MockWeightedExecutor} from "./mocks/MockWeightedExecutor.sol";
 
-/// @notice The rebalance state machine of `design/2026-10-29-rebalance-state-machine.md`: one test per state, taking
+/// @notice The rebalance state machine of `docs/design/rebalance-state-machine.md`: one test per state, taking
 ///         every action from it, then the clock's transitions and the invariants the matrix implies.
 /// @dev The default index (ETH 50%, BTC 30%, USD 20%, $100 a token) with 100 tokens issued. A fill doubles every
 ///      component it may move: a gift, which clears the bar at any second of the auction, so the clock alone decides
@@ -212,6 +212,41 @@ contract WeightedHubStatesTest is WeightedTest {
     // ---------------------------------------------------------------------
     // The rows: every action from every state
     // ---------------------------------------------------------------------
+
+    /// @dev The bound cancel's row (CA-S02). From every state, a cancel that names the index's latest proposal does
+    ///      exactly what the plain cancel does there: the same revert, or the same state and the same cooldown. One
+    ///      that names any other proposal is refused and leaves the state as it was.
+    function test_aBoundCancelIsTheCancelOfTheProposalItNames() public {
+        for (uint256 s = 0; s <= uint256(State.ExpiredOpen); ++s) {
+            _fresh(_params());
+            _enter(State(s));
+            uint256 latest = index.proposalCount();
+            uint256 snapshot = vm.snapshotState();
+
+            vm.prank(guardian);
+            (bool plainOk, bytes memory plainAnswer) = address(index).call(abi.encodeWithSignature("cancelRebalance()"));
+            State plainState = _stateOf();
+            uint256 plainCooldown = index.restartAllowedAt();
+            vm.revertToState(snapshot);
+
+            vm.prank(guardian);
+            (bool boundOk, bytes memory boundAnswer) =
+                address(index).call(abi.encodeWithSignature("cancelRebalance(uint256)", latest));
+            assertEq(boundOk, plainOk, "the same outcome");
+            assertEq(boundAnswer, plainAnswer, "the same error");
+            assertEq(uint256(_stateOf()), uint256(plainState), "the same state");
+            assertEq(index.restartAllowedAt(), plainCooldown, "the same cooldown");
+            vm.revertToState(snapshot);
+
+            bytes memory refused = State(s) == State.Uninitialized
+                ? abi.encodeWithSelector(IWeightedHub.NotInitialized.selector)
+                : abi.encodeWithSelector(IWeightedHub.StaleProposal.selector, latest + 1, latest);
+            vm.expectRevert(refused);
+            vm.prank(guardian);
+            index.cancelRebalance(latest + 1);
+            _assertState(State(s));
+        }
+    }
 
     /// @dev Row 1. The implementation, or a clone the factory did not initialize: nothing moves (DA-22).
     function test_uninitialized_nothingMoves() public {
