@@ -1,0 +1,857 @@
+[
+  {
+    "id": "SOL1",
+    "what": "the commit compares the gain with zero, not the bar",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/fill.rs",
+    "test": "rebalance",
+    "edits": [
+      {
+        "old": "    if gain < bar as i128 {",
+        "new": "    if gain < 0 {"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL2",
+    "what": "the commit skips Pyth's floor",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/fill.rs",
+    "test": "rebalance",
+    "edits": [
+      {
+        "old": "        floor_of(wide(&ticket.value_out), tolerance),\n    );\n    if value_in < floor {",
+        "new": "        floor_of(wide(&ticket.value_out), tolerance),\n    );\n    if value_in < floor && false {"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL3",
+    "what": "a price ten times older than MAX_PRICE_AGE counts",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/fill.rs",
+    "test": "rebalance",
+    "edits": [
+      {
+        "old": "            slot.price.publish_time >= now - MAX_PRICE_AGE,",
+        "new": "            slot.price.publish_time >= now - 10 * MAX_PRICE_AGE,"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL4",
+    "what": "a moving leg needs no price",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/fill.rs",
+    "test": "rebalance",
+    "edits": [
+      {
+        "old": "        require!(slot.price.publish_time != 0, XindexError::PriceMissing);\n        require!(\n            slot.price.publish_time >= now - MAX_PRICE_AGE,",
+        "new": "        require!(\n            slot.price.publish_time == 0 || slot.price.publish_time >= now - MAX_PRICE_AGE,"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL5",
+    "what": "a growing leg's deposit is not held to its need",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/fill.rs",
+    "test": "rebalance",
+    "edits": [
+      {
+        "old": "            require!(slot.deposited >= need, XindexError::RebalanceMovedOn);\n",
+        "new": ""
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL6",
+    "what": "the quote is never checked",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/fill.rs",
+    "test": "rebalance",
+    "edits": [
+      {
+        "old": "    if index.quote_proposal == ticket.proposal_id {",
+        "new": "    if false {"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL7",
+    "what": "a quote binds every later proposal",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/fill.rs",
+    "test": "rebalance",
+    "edits": [
+      {
+        "old": "    if index.quote_proposal == ticket.proposal_id {",
+        "new": "    if index.quote_proposal != 0 {"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL8",
+    "what": "a ticket commits under a proposal it was not opened for",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/fill.rs",
+    "test": "rebalance",
+    "edits": [
+      {
+        "old": "            && ticket.proposal_id == index.proposal_count\n",
+        "new": "\n"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL9",
+    "what": "naming new units keeps the old price",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/fill.rs",
+    "test": "rebalance",
+    "edits": [
+      {
+        "old": "        unprice(ticket, leg, slot);\n",
+        "new": ""
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL10",
+    "what": "naming new units adds their score without taking the old one out",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/fill.rs",
+    "test": "rebalance",
+    "edits": [
+      {
+        "old": "        score += added - score_at(header, i, leg, slot.new_units)?;",
+        "new": "        score += added;"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL11",
+    "what": "pricing a leg again counts its value twice",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/fill.rs",
+    "test": "rebalance",
+    "edits": [
+      {
+        "old": "        unprice(ticket, current, slot);\n",
+        "new": ""
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL12",
+    "what": "the turnover cap doubled",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/settlement.rs",
+    "test": "vectors",
+    "edits": [
+      {
+        "old": "    let lowest =\n        mul_div(current, WAD - MAX_TURNOVER, WAD, true).expect(\"a quotient below the dividend\");",
+        "new": "    let lowest =\n        mul_div(current, WAD - 2 * MAX_TURNOVER, WAD, true).expect(\"a quotient below the dividend\");"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL13",
+    "what": "a fill under a keep mask restarts the index's whole interval (XS-3)",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/fill.rs",
+    "test": "rebalance",
+    "edits": [
+      {
+        "old": "    index.masked_fill = index.keep_mask.iter().any(|word| *word != 0) as u8;",
+        "new": "    index.masked_fill = 0;"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL14",
+    "what": "the owner and the guardian never start early (RW-3)",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/rebalance.rs",
+    "test": "rebalance",
+    "edits": [
+      {
+        "old": "    if now < earliest && index.rebalance_nonce != 0 && privileged {",
+        "new": "    if false {"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL15",
+    "what": "the owner and the guardian start early before an index's first fill",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/rebalance.rs",
+    "test": "rebalance",
+    "edits": [
+      {
+        "old": "    if now < earliest && index.rebalance_nonce != 0 && privileged {",
+        "new": "    if now < earliest && privileged {"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL16",
+    "what": "a cancel holds no stranger off",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/rebalance.rs",
+    "test": "rebalance",
+    "edits": [
+      {
+        "old": "    index.restart_allowed_at.max(after_expiry)",
+        "new": "    after_expiry"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL17",
+    "what": "a cancel by a stale proposal id lands (CA-S02)",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/rebalance.rs",
+    "test": "rebalance",
+    "edits": [
+      {
+        "old": "        require!(id == index.proposal_count, XindexError::StaleProposal);\n",
+        "new": ""
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL18",
+    "what": "an index under one whole share rebalances (RW-1)",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/fill.rs",
+    "test": "rebalance",
+    "edits": [
+      {
+        "old": "        supply as u128 >= SHARE_UNIT,",
+        "new": "        supply as u128 >= 1,"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL19",
+    "what": "the commit does not accrue the streaming fee first",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/fill.rs",
+    "test": "rebalance",
+    "edits": [
+      {
+        "old": "    accrue(\n        &ctx.accounts.index,\n        &mut ctx.accounts.share_mint,\n        &recipients,\n        &ctx.accounts.token_program,\n        now,\n    )?;\n    let supply = ctx.accounts.share_mint.supply;",
+        "new": "    let _ = &recipients;\n    let supply = ctx.accounts.share_mint.supply;"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL20",
+    "what": "what a shrinking leg gives out is not booked as owed",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/fill.rs",
+    "test": "rebalance",
+    "edits": [
+      {
+        "old": "            leg.owed = leg\n                .owed\n                .checked_add(out)",
+        "new": "            leg.owed = leg\n                .owed\n                .checked_add(0)"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL21",
+    "what": "a growing leg's need rounds down",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/fill.rs",
+    "test": "rebalance",
+    "edits": [
+      {
+        "old": "            let need = amount(next - leg.units, true)?;",
+        "new": "            let need = amount(next - leg.units, false)?;"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL22",
+    "what": "a shrinking leg's amount out rounds up",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/fill.rs",
+    "test": "rebalance",
+    "edits": [
+      {
+        "old": "            let out = amount(leg.units - next, false)?;",
+        "new": "            let out = amount(leg.units - next, true)?;"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL23",
+    "what": "an accrual that mints nothing keeps the old clock (XS-1)",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/fees.rs",
+    "test": "fees",
+    "edits": [
+      {
+        "old": "        header.last_accrual = now;\n        if fee == 0 {\n            return Ok(());\n        }",
+        "new": "        if fee == 0 {\n            return Ok(());\n        }\n        header.last_accrual = now;"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL24",
+    "what": "the gate admits anyone",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/fees.rs",
+    "test": "fees",
+    "edits": [
+      {
+        "old": "    if !view.gated || *wallet == view.creator_role {",
+        "new": "    if true || *wallet == view.creator_role {"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL25",
+    "what": "a deposit ignores the mint pause",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/issue.rs",
+    "test": "fees",
+    "edits": [
+      {
+        "old": "        !ctx.accounts.config.mint_paused_all && !view.mint_paused,",
+        "new": "        true,"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL26",
+    "what": "the guardian lifts an index's pause",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/fees.rs",
+    "test": "fees",
+    "edits": [
+      {
+        "old": "    let config = &ctx.accounts.config;\n    let signer = ctx.accounts.signer.key();\n    require!(\n        signer == config.owner\n            || (paused && signer == config.guardian",
+        "new": "    let config = &ctx.accounts.config;\n    let signer = ctx.accounts.signer.key();\n    require!(\n        signer == config.owner\n            || (signer == config.guardian"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL27",
+    "what": "the seal skips the check on weights",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/create.rs",
+    "test": "fees",
+    "edits": [
+      {
+        "old": "    check_on_weights(legs, prices, now)?;",
+        "new": "    let _ = (legs, prices, now);"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL28",
+    "what": "a creation reads prices twice as old",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/create.rs",
+    "test": "fees",
+    "edits": [
+      {
+        "old": "            price.publish_time >= now - MAX_CREATION_PRICE_AGE,",
+        "new": "            price.publish_time >= now - 2 * MAX_CREATION_PRICE_AGE,"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL29",
+    "what": "a creator names any platform fee",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/create.rs",
+    "test": "fees",
+    "edits": [
+      {
+        "old": "        terms.platform_fee_bps == config.platform_fee_bps",
+        "new": "        true"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL30",
+    "what": "a price account of any owner is read",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/pyth.rs",
+    "test": "rebalance",
+    "edits": [
+      {
+        "old": "    require_keys_eq!(*account.owner, RECEIVER, XindexError::NotAPythPrice);\n",
+        "new": ""
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL31",
+    "what": "a partly verified price is read",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/pyth.rs",
+    "test": "rebalance",
+    "edits": [
+      {
+        "old": "    require!(data[40] == FULL, XindexError::PriceNotVerified);\n",
+        "new": ""
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL32",
+    "what": "a price of another feed is read",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/pyth.rs",
+    "test": "rebalance",
+    "edits": [
+      {
+        "old": "    require!(price.feed_id == *feed_id, XindexError::WrongPriceFeed);\n",
+        "new": ""
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL33",
+    "what": "an unsettled multiplier counts",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/pyth.rs",
+    "test": "rebalance",
+    "edits": [
+      {
+        "old": "        now >= changed.saturating_add(MIN_SVALUE_AGE),",
+        "new": "        true,"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL34",
+    "what": "the multiplier before a scheduled change counts after it",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/pyth.rs",
+    "test": "rebalance",
+    "edits": [
+      {
+        "old": "    wad_of(f64::from(config.new_multiplier), up)",
+        "new": "    wad_of(f64::from(config.multiplier), up)"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL35",
+    "what": "a leaving leg leans with the executor",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/pyth.rs",
+    "test": "lib",
+    "edits": [
+      {
+        "old": "        raw as u128 + price.conf as u128",
+        "new": "        (raw - price.conf) as u128"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL36",
+    "what": "weights change during a rebalance",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/weights.rs",
+    "test": "rebalance",
+    "edits": [
+      {
+        "old": "        index.eta == 0 || now > index.eta + AUCTION_DURATION,",
+        "new": "        true,"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL37",
+    "what": "a weight of zero is proposed",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/weights.rs",
+    "test": "rebalance",
+    "edits": [
+      {
+        "old": "            && weights.iter().all(|w| *w != 0 && *w as u32 <= TOTAL_WEIGHT)",
+        "new": "            && weights.iter().all(|w| *w as u32 <= TOTAL_WEIGHT)"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL38",
+    "what": "a pending change of weights outlives the creator role's handover (HK-16)",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/fees.rs",
+    "test": "fees",
+    "edits": [
+      {
+        "old": "            weights.eta = 0;\n",
+        "new": ""
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL39",
+    "what": "the handover accrues nothing to the outgoing creator (RW-6)",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/fees.rs",
+    "test": "fees",
+    "edits": [
+      {
+        "old": "        now,\n    )?;\n    if let Some(weights) = ctx.accounts.weights.as_mut() {",
+        "new": "        now - 1_000_000_000,\n    )?;\n    if let Some(weights) = ctx.accounts.weights.as_mut() {"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL40",
+    "what": "a redeem mints no fee shares",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/redeem.rs",
+    "test": "fees",
+    "edits": [
+      {
+        "old": "        fee,\n        part_of(fee, view.platform_fee_bps, view.creator_fee_bps),\n    )?;\n    emit!(Redeemed {",
+        "new": "        0,\n        0,\n    )?;\n    emit!(Redeemed {"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL41",
+    "what": "an issue backs no fee shares",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/math.rs",
+    "test": "fees",
+    "edits": [
+      {
+        "old": "    if fee_bps == 0 {\n        return Ok(shares);",
+        "new": "    if fee_bps != u16::MAX {\n        return Ok(shares);"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL42",
+    "what": "a deposit into a vault under what it owes lands (RX-8)",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/issue.rs",
+    "test": "index",
+    "edits": [
+      {
+        "old": "        before as u128 >= required(supply, &view.leg, view.scale),",
+        "new": "        true,"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL43",
+    "what": "a deposit the vault did not fully receive counts",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/issue.rs",
+    "test": "index",
+    "edits": [
+      {
+        "old": "    require!(received == amount, XindexError::ShortDeposit);\n",
+        "new": ""
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL44",
+    "what": "a fill's refund leaves its pending",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/fill.rs",
+    "test": "rebalance",
+    "edits": [
+      {
+        "old": "        slot.pending -= refund;\n",
+        "new": ""
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL45",
+    "what": "an issue's need rounds down",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/issue.rs",
+    "test": "index",
+    "edits": [
+      {
+        "old": "            .map(|leg| backing(gross, leg.units, scale, true))",
+        "new": "            .map(|leg| backing(gross, leg.units, scale, false))"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL46",
+    "what": "the seal skips the terms check",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/create.rs",
+    "test": "index",
+    "edits": [
+      {
+        "old": "        terms_hash_of(index.leg_count, &index.terms(), legs) == index.terms_hash,",
+        "new": "        true,"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL47",
+    "what": "the seal skips the creator's approval",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/create.rs",
+    "test": "index",
+    "edits": [
+      {
+        "old": "pub fn handle_seal_index(ctx: Context<SealIndex>) -> Result<()> {\n    require_approved(&ctx.accounts.approval)?;",
+        "new": "pub fn handle_seal_index(ctx: Context<SealIndex>) -> Result<()> {"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL48",
+    "what": "a mint with a transfer hook program is listed",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/listing.rs",
+    "test": "index",
+    "edits": [
+      {
+        "old": "                        hook.program_id.0.to_bytes() == [0u8; 32],",
+        "new": "                        true,"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL49",
+    "what": "a redeem books nothing owed of its legs",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/redeem.rs",
+    "test": "index",
+    "edits": [
+      {
+        "old": "            leg.owed = leg\n                .owed\n                .checked_add(due)",
+        "new": "            leg.owed = leg\n                .owed\n                .checked_add(0)"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL50",
+    "what": "a fill short of the requester's limit lands",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/requests.rs",
+    "test": "requests",
+    "edits": [
+      {
+        "old": "    require!(received >= request.min_out, XindexError::BelowLimit);\n",
+        "new": ""
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL51",
+    "what": "a request fills at another basket than it was made on (RW-2)",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/requests.rs",
+    "test": "requests",
+    "edits": [
+      {
+        "old": "        ctx.accounts.index.load()?.rebalance_nonce == request.rebalance_nonce,",
+        "new": "        true,"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL52",
+    "what": "a fill bound to another request's hash lands (RW-7)",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/requests.rs",
+    "test": "requests",
+    "edits": [
+      {
+        "old": "        require!(request_hash(request) == hash, XindexError::RequestChanged);\n",
+        "new": ""
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL53",
+    "what": "a request fills after its deadline",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/requests.rs",
+    "test": "requests",
+    "edits": [
+      {
+        "old": "    require!(now <= request.deadline, XindexError::RequestExpired);\n",
+        "new": ""
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL54",
+    "what": "anyone closes a request before its deadline",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/requests.rs",
+    "test": "requests",
+    "edits": [
+      {
+        "old": "        ctx.accounts.signer.key() == request.requester || now > request.deadline,",
+        "new": "        true,"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL55",
+    "what": "a request takes any currency",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/requests.rs",
+    "test": "requests",
+    "edits": [
+      {
+        "old": "    let stable = |mint: &Pubkey| *mint == config.usdc || *mint == config.usdt;",
+        "new": "    let stable = |_mint: &Pubkey| true;"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL56",
+    "what": "a request's deadline may lie past thirty days",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/requests.rs",
+    "test": "requests",
+    "edits": [
+      {
+        "old": "        deadline > now && deadline <= now + MAX_REQUEST_DURATION,",
+        "new": "        deadline > now,"
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  },
+  {
+    "id": "SOL57",
+    "what": "a request opens at a nonce other than the one its requester priced (CA-M1)",
+    "origin": "docs/design/solana.md",
+    "file": "solana/programs/xindex/src/instructions/requests.rs",
+    "test": "requests",
+    "edits": [
+      {
+        "old": "        require!(expected == nonce, XindexError::StaleRebalanceNonce);\n",
+        "new": ""
+      }
+    ],
+    "runner": "cargo",
+    "root": "solana"
+  }
+]

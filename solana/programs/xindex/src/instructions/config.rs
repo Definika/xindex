@@ -18,15 +18,28 @@ pub struct Initialize<'info> {
     pub system_program: Program<'info, System>,
 }
 
-/// Sets the owner and the guardian once. Only the program's upgrade authority may, so nobody claims the configuration
-/// between the deployment and its first instruction.
-pub fn handle_initialize(ctx: Context<Initialize>, owner: Pubkey, guardian: Pubkey) -> Result<()> {
+/// Sets the owner, the guardian and the two stablecoins once. Only the program's upgrade authority may, so nobody
+/// claims the configuration between the deployment and its first instruction.
+pub fn handle_initialize(
+    ctx: Context<Initialize>,
+    owner: Pubkey,
+    guardian: Pubkey,
+    usdc: Pubkey,
+    usdt: Pubkey,
+) -> Result<()> {
     let config = &mut ctx.accounts.config;
     config.owner = owner;
     config.pending_owner = Pubkey::default();
     config.guardian = guardian;
     config.pending_guardian = Pubkey::default();
     config.pending_guardian_eta = 0;
+    config.platform_recipient = Pubkey::default();
+    config.platform_fee_bps = 0;
+    config.platform_streaming_bps = 0;
+    config.referral_share_bps = 0;
+    config.mint_paused_all = false;
+    config.usdc = usdc;
+    config.usdt = usdt;
     config.bump = ctx.bumps.config;
     emit!(OwnershipTransferred {
         previous: Pubkey::default(),

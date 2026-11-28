@@ -43,11 +43,18 @@ only wallets the owner approves create one.
   (`eth_simulateV1`).
 - **Solana, in development** (`solana/`, an Anchor workspace, program `xindex`; `docs/design/solana.md`). Its address
   book is Ondo's 353 tokens, Ethereum's Ondo list, each a Token-2022 mint read on chain that carries its share
-  multiplier itself (`solana/listing/ondo.json`, written by `solana/listing/read_ondo.py`). Built: the configuration
-  and its roles, listings with an extension check, approved creators, an index of two to two hundred legs created in
-  three steps, and issue and redeem in kind through tickets, since two hundred legs fit no Solana transaction. Not
-  built: the rebalance, fees, Pyth's check, the mint pause, the listing transactions, Jupiter, the keeper and the app.
-  Its tests run on LiteSVM, with Ondo's mint accounts as read, not on a fork of Solana.
+  multiplier itself (`solana/listing/ondo.json`, written by `solana/listing/read_ondo.py`). The program carries the
+  EVM design rule for rule, each path that touches every leg split over transactions, since two hundred legs fit no
+  Solana transaction: the configuration and its roles, listings with an extension check and Pyth feeds, approved
+  creators, creation in four steps on the weights at Pyth's prices, issue and redeem in kind through tickets, fees in
+  shares and the streaming fee's scale, the creator role, the gate and the mint pause, and the rebalance: the clock,
+  the keep mask, the cancel, the quote, changeable weights, and a fill through a ticket that the executor pays into
+  first, judged on units by the EVM arithmetic (replayed against every settlement vector) and refused by the quote
+  or Pyth's prices, each a `PriceUpdateV2` of Pyth's receiver, an Ondo leg at its share's price times the mint's
+  settled multiplier; and limit orders, each request escrowing in an account of its own. A buy or a sale is the app's
+  transaction composing Jupiter's swap with a deposit or a claim, so no zap or builder program is needed. Not built:
+  the listing transactions for the Safe and the deployment, the keeper and the app on Solana, CI. Its tests run on LiteSVM, with Ondo's mint accounts as read and
+  Pyth's accounts as the receiver writes them, not on a fork of Solana.
 
 Who an index relies on beyond its holders: the issuer of each component; Wormhole's guardians for the whole of each
 wrapped leg, and Base's bridge for each of its copies, which the app shows as an index's bridged share of value; Pyth's
@@ -144,9 +151,10 @@ BNB_RPC_URL=https://bsc-rpc.publicnode.com BNB_FORK_BLOCK=$(( $(cast block-numbe
 # the Base deployment's fork suite, the same way
 BASE_RPC_URL=https://base-rpc.publicnode.com BASE_FORK_BLOCK=$(( $(cast block-number --rpc-url https://base-rpc.publicnode.com) - 8 )) forge test --match-path 'test/fork/BaseAddresses.fork.t.sol'
 
-# the Solana program (solana/): build it, then its unit and LiteSVM tests, formatting and lint; Anchor 1.2, and the
-# toolchain solana/rust-toolchain.toml pins for the host
+# the Solana program (solana/): build it, then its unit, vector and LiteSVM tests, formatting and lint; Anchor 1.2, and
+# the toolchain solana/rust-toolchain.toml pins for the host
 (cd solana && anchor build && cargo test && cargo fmt --all --check && cargo clippy --all-targets -- -D warnings)
+python3 -I test/mutants/run.py --table solana/mutants.json  # the Solana program's mutants, each built and run (about 10 min)
 # Solana's address book of Ondo's tokens, read again from Ondo's pages and Solana's chain (standard library only)
 python3 -I solana/listing/read_ondo.py
 
@@ -1027,8 +1035,8 @@ words, what was weighed, and what it replaced. If a change would alter any of th
 **Chains, venues and currencies**
 - **Three deployments, each holding its chain's coins in kind**: Ethereum, BNB Chain and Base, sharing nothing. An index
   lives on one chain, so a buyer who wants two chains' coins buys two tokens. Vaults of our own, proofs and any bridge
-  of our own stay refused. A fourth, on Solana, is in development: its program issues and redeems in kind, and the
-  rest of the protocol is not ported yet (`docs/design/solana.md`, section 7).
+  of our own stay refused. A fourth, on Solana, is in development: its program carries the whole design, the
+  rebalance and Pyth's check included, and is not yet deployed, run in CI or audited (`docs/design/solana.md`).
 - **USDC and USDT are the only currencies**, held to them in the contracts (`NotAStable`); no entry point takes ether.
   Fiat and other-chain entry are the app's, and undecided.
 - **Swap venues**: Uniswap's Universal Router 2.0.0, V3 or V4 per leg, on every chain, and each chain's own DEX beside

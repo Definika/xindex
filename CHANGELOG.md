@@ -18,7 +18,7 @@ where it was made.
 | A third deployment | Since 2026-11-21 the same contracts are deployable on Base: sixteen coins, thirteen of them copies Base's own bridge mints of coins on Ethereum's list. It reverses "no Base deployment for now" of 2026-10-18. | [`docs/design/base.md`](docs/design/base.md) |
 | Oracle-free rebalance | Since 2026-11-10 no contract reads a price: an executor names the units a rebalance settles at, and the index accepts them when a weighted gain in units clears a bar that falls with time. Pyth left the protocol, and came back on 2026-11-22 only as a check that can refuse a fill (the row below). The units' rule is still the current design's. | [`docs/design/rebalance.md`](docs/design/rebalance.md), [`audits/retired/oracle.md`](audits/retired/oracle.md) |
 | Pyth's check, creation on the weights, changeable weights | Since 2026-11-22 a fill the units accept must also hold at Pyth's prices, a check that can only refuse; since 2026-11-23 an index is created within 5% of its weights at those prices, its creator can change the weights behind 7 days of notice, creating an index can issue its first shares in the same call (`createAndIssue`), and the owner or guardian may restart a rebalance a week after any fill. No mint, redeem or claim reads a price. The current design. | [`docs/design/pyth-check.md`](docs/design/pyth-check.md), [`docs/design/changeable-weights.md`](docs/design/changeable-weights.md) |
-| A fourth deployment, in development | Since 2026-11-28 a Solana program, `solana/`, issues and redeems indexes in kind through tickets, its list to be Ondo's Token-2022 tokens. It reverses "Not planned: a Solana deployment" of 2026-10-07. The rebalance and the rest are not ported yet. | [`docs/design/solana.md`](docs/design/solana.md) |
+| A fourth deployment, in development | Since 2026-11-28 a Solana program, `solana/`, carries the whole design: issue and redeem in kind through tickets, fees in shares, the pause, creation on the weights, and the rebalance with Pyth's check and the quote, each path that touches every leg split over transactions; its list is Ondo's Token-2022 tokens. It reverses "Not planned: a Solana deployment" of 2026-10-07. Not yet deployed, run in CI or audited. | [`docs/design/solana.md`](docs/design/solana.md) |
 
 `WeightedHub` keeps v4's in-kind issue, redeem, claims and backing check; the zap and `MintRequests` carried over
 unchanged. Each retirement record lists the review findings that went with the retired code and where the rest are
@@ -924,6 +924,29 @@ rebalance it replaced, and the later ones what was built on it and found in it.
     multiplier, no permanent delegate, no hook, no pause; one mint authority for all, two freeze keys. Each at
     Ethereum's Pyth feed, nine at the token's own and 344 at the share's; 21 multipliers stand more than 5% from one.
     `programs/xindex/tests/ondo_book.rs` lists all 353 as their accounts were read and creates an index of two hundred.
+
+- **Solana, the rest of the design** (2026-11-28, `docs/design/solana.md`, sections 7 and 8). The owner, told that the
+  EVM contracts were done and Solana half built, asked to "write whole code of our protocol", and chose finishing the
+  Solana program. No contract under `src/` changed.
+  - Built: fees in shares (the creator's, the platform's and a referrer's part), the streaming fee as a unit scale,
+    the creator role in two steps, the gate, the mint pause of one index or all; Pyth feeds on listings behind
+    `LISTING_DELAY`, Pyth's `PriceUpdateV2` accounts read in place and fully verified only, an Ondo leg at its share's
+    price times its mint's settled multiplier; creation in four steps, sealed only on its weights at prices of the last
+    minute; the rebalance: the hub's clock rule for rule, the keep mask, the cancel by id, the quote, changeable
+    weights, and a fill through a ticket the executor pays into before it commits; and limit orders, each request
+    escrowing in an account of its own, so `MintRequests`' shared-balance rule (CA-H2) has nothing to guard.
+  - The EVM arithmetic ported (`settlement.rs`) and replayed against every vector of `test/vectors/settlement.json`:
+    455 settlements, 77 quotes and 85 of Pyth's checks, each to the unit.
+  - Found on the way: a commit that scored and valued two hundred legs itself ran past Solana's 1.4M compute units.
+    Naming the units and pricing the legs keep the sums now, exact as each leg changes, and a commit of two hundred legs
+    costs 254,608; a leg outside its caps is refused as it is named.
+  - Gates: 67 tests (13 unit, 3 vector replays, 51 on LiteSVM), `cargo fmt` and `clippy -D warnings` clean, and the
+    Solana mutation table, `solana/mutants.json`, run by the gate's runner with a cargo runner of its own: one of its
+    first 49 survived (a ticket committing under a proposal it was not opened for) until a test started a second
+    proposal under an old ticket.
+  - Not built: the Safe's listing transactions and the deployment, the keeper and the app on Solana, CI, whose
+    toolchain pin needs Solana's Linux release checksummed. A buy or a sale needs no program: the app composes
+    Jupiter's swap with a deposit or a claim in one transaction.
 
 ## Product decisions, as they were made
 

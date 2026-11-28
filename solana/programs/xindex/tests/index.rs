@@ -429,7 +429,7 @@ fn only_an_approved_wallet_creates() {
         &[1_000_000_000, 2_000_000, 300_000_000],
         &[5_000, 3_000, 2_000],
     );
-    let hash = xindex::math::terms_hash(3, &legs);
+    let hash = terms_hash(3, &legs);
     let stranger = bench.wallet();
     expect_err(
         bench.send(
@@ -458,6 +458,7 @@ fn only_an_approved_wallet_creates() {
         E::CreatorNotApproved,
     );
     bench.approve(&creator.pubkey());
+    bench.price_on_weights(&creator, &index);
     bench
         .send(&[bench.seal_ix(&creator.pubkey(), &index)], &[&creator])
         .unwrap();
@@ -621,7 +622,7 @@ fn seal_checks_the_whole_against_the_terms() {
         &[5_000, 3_000, 2_000],
     );
     // legs missing
-    let hash = xindex::math::terms_hash(3, &legs);
+    let hash = terms_hash(3, &legs);
     let index = index_pda(&c, &hash);
     bench
         .send(&[bench.begin_ix(&c, hash, 3, "X", "X")], &[&creator])
@@ -645,13 +646,23 @@ fn seal_checks_the_whole_against_the_terms() {
     bench
         .send(&[bench.add_legs_ix(&c, &index, &legs[2..])], &[&creator])
         .unwrap();
+    bench.price_on_weights(&creator, &index);
     bench
         .send(&[bench.seal_ix(&c, &index)], &[&creator])
         .unwrap();
-    expect_err(
-        bench.send(&[bench.seal_ix(&c, &index)], &[&creator]),
-        E::AlreadySealed,
+    // a sealed index's price sheet is closed, so a second seal cannot even load it
+    let again = bench
+        .send(&[bench.seal_ix(&c, &index)], &[&creator])
+        .expect_err("a second seal");
+    assert!(
+        format!("{:?}", again.err).contains("Custom(3007)"),
+        "{:?}",
+        again.err
     );
+    assert!(bench
+        .svm
+        .get_account(&sheet_pda(&index))
+        .is_none_or(|a| a.data.is_empty()));
     expect_err(
         bench.send(&[bench.add_legs_ix(&c, &index, &legs[..1])], &[&creator]),
         E::AlreadySealed,
@@ -663,7 +674,7 @@ fn seal_checks_the_whole_against_the_terms() {
         &[1_000_000_000, 2_000_000, 300_000_000],
         &[5_000, 3_000, 1_999],
     );
-    let hash = xindex::math::terms_hash(3, &short);
+    let hash = terms_hash(3, &short);
     let index = index_pda(&c, &hash);
     bench
         .send(&[bench.begin_ix(&c, hash, 3, "X", "X")], &[&creator])
@@ -698,7 +709,7 @@ fn seal_checks_the_whole_against_the_terms() {
                 E::TermsMismatch,
             );
         }
-        let hash = xindex::math::terms_hash(3, &legs);
+        let hash = terms_hash(3, &legs);
         let decoy = index_pda(&c, &hash);
         assert_ne!(
             decoy, index,
@@ -881,8 +892,10 @@ fn a_vault_must_receive_what_was_sent() {
     let fee_listing = listing_pda(&fee);
     let bump = Pubkey::find_program_address(&[xindex::LISTING_SEED, fee.as_ref()], &xindex::ID).1;
     account.data[8..40].copy_from_slice(fee.as_ref());
-    let last = account.data.len() - 1;
-    account.data[last] = bump;
+    // the listing's bump and feed, after its mint, token program, decimals, flag and eta
+    let at = 8 + 32 + 32 + 1 + 1 + 8;
+    account.data[at] = bump;
+    account.data[at + 1..at + 33].copy_from_slice(&feed_of(&fee));
     bench.svm.set_account(fee_listing, account).unwrap();
     let legs = vec![
         LegSpec {
@@ -942,9 +955,9 @@ fn a_ticket_from_before_a_rebalance_cannot_finalize() {
             &[&holder],
         )
         .unwrap();
-    // a settled rebalance moves the nonce (the rebalance is not built: the test writes it)
+    // a settled rebalance moves the nonce, written here; the rebalance's own tests settle one
     let mut account = bench.svm.get_account(&index).unwrap();
-    let at = 8 + 32 + 32 + 32; // the discriminator, the creator, the terms hash and the share mint
+    let at = 8 + std::mem::offset_of!(xindex::state::Index, rebalance_nonce);
     account.data[at..at + 8].copy_from_slice(&1u64.to_le_bytes());
     bench.svm.set_account(index, account).unwrap();
     assert_eq!(bench.index(&index).rebalance_nonce, 1);

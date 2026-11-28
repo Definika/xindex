@@ -79,6 +79,10 @@ fn every_mint_in_the_book_passes_the_listing_check_and_two_hundred_make_an_index
     let tokens = book();
     let fixtures: Value = serde_json::from_str(MINTS).unwrap();
     let mut bench = Bench::new();
+    // the chain's clock a few hours after the mints were read, so their multipliers stand settled as Ondo left them
+    let read_at = 1_795_900_000;
+    let now = bench.now();
+    bench.warp(read_at - now);
     let owner = bench.owner.insecure_clone();
     let mints: Vec<Pubkey> = tokens.iter().map(mint_of).collect();
     for mint in &mints {
@@ -87,18 +91,40 @@ fn every_mint_in_the_book_passes_the_listing_check_and_two_hundred_make_an_index
             .unwrap();
         bench.put_mint(mint, &T22, data);
     }
-    for chunk in mints.chunks(8) {
+    // each listed with its Pyth feed: the token's own for the nine Pyth prices as tokens, else the share's, which the
+    // mint's multiplier turns into a token's
+    let feed = |token: &Value| {
+        let hex = token["pythFeed"].as_str().unwrap().trim_start_matches("0x");
+        let mut id = [0u8; 32];
+        for (k, byte) in id.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&hex[2 * k..2 * k + 2], 16).unwrap();
+        }
+        let kind = if token["feedKind"] == "token" {
+            xindex::pyth::FEED_TOKEN
+        } else {
+            xindex::pyth::FEED_MULTIPLIER
+        };
+        (id, kind)
+    };
+    for chunk in tokens.chunks(4) {
         let ixs: Vec<_> = chunk
             .iter()
-            .map(|mint| bench.propose_listing_ix(&owner.pubkey(), mint, &T22))
+            .flat_map(|token| {
+                let mint = mint_of(token);
+                let (id, kind) = feed(token);
+                [
+                    bench.propose_listing_ix(&owner.pubkey(), &mint, &T22),
+                    bench.propose_feed_ix(&owner.pubkey(), &mint, id, kind),
+                ]
+            })
             .collect();
         bench.send(&ixs, &[&owner]).unwrap();
     }
     bench.warp(xindex::LISTING_DELAY);
-    for chunk in mints.chunks(8) {
+    for chunk in mints.chunks(4) {
         let ixs: Vec<_> = chunk
             .iter()
-            .map(|mint| bench.execute_listing_ix(mint))
+            .flat_map(|mint| [bench.execute_listing_ix(mint), bench.execute_feed_ix(mint)])
             .collect();
         bench.send(&ixs, &[&owner]).unwrap();
     }
@@ -107,6 +133,12 @@ fn every_mint_in_the_book_passes_the_listing_check_and_two_hundred_make_an_index
         assert!(listing.listed, "{}", token["symbol"]);
         assert_eq!(listing.decimals, 9);
         assert_eq!(listing.token_program, T22);
+        assert_eq!(
+            (listing.feed_id, listing.feed_kind),
+            feed(token),
+            "{}",
+            token["symbol"]
+        );
     }
 
     let creator = bench.wallet();
@@ -120,6 +152,7 @@ fn every_mint_in_the_book_passes_the_listing_check_and_two_hundred_make_an_index
             weight: 50,
         })
         .collect();
+    // created on its weights at Pyth's prices, each share-priced leg through its mint's own multiplier
     let index = bench.create(&creator, &legs);
     assert!(bench.index(&index).sealed);
     assert_eq!(bench.index(&index).legs.len(), MAX_COMPONENTS);

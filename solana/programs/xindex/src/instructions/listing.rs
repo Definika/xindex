@@ -18,6 +18,7 @@ use crate::{
     constants::*,
     error::XindexError,
     events::*,
+    pyth::{FEED_MULTIPLIER, FEED_NONE, FEED_TOKEN},
     state::{Config, Creator, Listing},
 };
 
@@ -217,5 +218,85 @@ pub fn handle_revoke_creator(ctx: Context<RevokeCreator>) -> Result<()> {
         wallet: ctx.accounts.approval.wallet,
         approved: false
     });
+    Ok(())
+}
+
+#[derive(Accounts)]
+pub struct ProposePriceFeed<'info> {
+    pub owner: Signer<'info>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = owner @ XindexError::NotOwner)]
+    pub config: Account<'info, Config>,
+    #[account(mut, seeds = [LISTING_SEED, listing.mint.as_ref()], bump = listing.bump)]
+    pub listing: Account<'info, Listing>,
+}
+
+/// Proposes Pyth's feed for a listed or proposed mint, executable from `LISTING_DELAY` for `PROPOSAL_WINDOW`. The kind
+/// says what the feed prices (`pyth::FEED_*`); `FEED_NONE` with a zero id removes the feed. The id is not asked of
+/// anyone: Pyth's receiver knows a feed only once an update of it is posted, and a wrong id can only refuse.
+pub fn handle_propose_price_feed(
+    ctx: Context<ProposePriceFeed>,
+    feed_id: [u8; 32],
+    kind: u8,
+) -> Result<()> {
+    require!(
+        matches!(kind, FEED_NONE | FEED_TOKEN | FEED_MULTIPLIER)
+            && (kind == FEED_NONE) == (feed_id == [0; 32]),
+        XindexError::InvalidPriceFeed
+    );
+    let now = Clock::get()?.unix_timestamp;
+    let listing = &mut ctx.accounts.listing;
+    require!(
+        listing.feed_eta == 0 || now > listing.feed_eta + PROPOSAL_WINDOW,
+        XindexError::PriceFeedPending
+    );
+    listing.pending_feed_id = feed_id;
+    listing.pending_feed_kind = kind;
+    listing.feed_eta = now + LISTING_DELAY;
+    emit!(PriceFeedProposed {
+        mint: listing.mint,
+        feed_id,
+        kind,
+        eta: listing.feed_eta
+    });
+    Ok(())
+}
+
+#[derive(Accounts)]
+pub struct ExecutePriceFeed<'info> {
+    #[account(mut, seeds = [LISTING_SEED, listing.mint.as_ref()], bump = listing.bump)]
+    pub listing: Account<'info, Listing>,
+}
+
+/// Anyone sets a proposed feed within its window. It reaches every index's next check, as the EVM factory's record does.
+pub fn handle_execute_price_feed(ctx: Context<ExecutePriceFeed>) -> Result<()> {
+    let listing = &mut ctx.accounts.listing;
+    require!(listing.feed_eta != 0, XindexError::NothingPending);
+    let now = Clock::get()?.unix_timestamp;
+    require!(now >= listing.feed_eta, XindexError::TooEarly);
+    require!(
+        now <= listing.feed_eta + PROPOSAL_WINDOW,
+        XindexError::ProposalExpired
+    );
+    listing.feed_id = listing.pending_feed_id;
+    listing.feed_kind = listing.pending_feed_kind;
+    listing.pending_feed_id = [0; 32];
+    listing.pending_feed_kind = FEED_NONE;
+    listing.feed_eta = 0;
+    emit!(PriceFeedSet {
+        mint: listing.mint,
+        feed_id: listing.feed_id,
+        kind: listing.feed_kind
+    });
+    Ok(())
+}
+
+/// The owner or the guardian cancels a proposed feed.
+pub fn handle_cancel_price_feed(ctx: Context<GuardListing>) -> Result<()> {
+    let listing = &mut ctx.accounts.listing;
+    require!(listing.feed_eta != 0, XindexError::NothingPending);
+    listing.feed_eta = 0;
+    listing.pending_feed_id = [0; 32];
+    listing.pending_feed_kind = FEED_NONE;
+    emit!(PriceFeedCancelled { mint: listing.mint });
     Ok(())
 }

@@ -28,10 +28,11 @@ use solana_keypair::Keypair;
 use solana_message::{Message, VersionedMessage};
 use solana_signer::Signer;
 use solana_transaction::versioned::VersionedTransaction;
-use t22::extension::{ExtensionType, StateWithExtensions};
+use t22::extension::{BaseStateWithExtensions, ExtensionType, StateWithExtensions};
 use xindex::{
     error::XindexError,
-    state::{split, IssueTicket, Leg, LegSpec, Listing, RedeemTicket},
+    pyth::{FEED_MULTIPLIER, FEED_TOKEN, PRICE_UPDATE_DISCRIMINATOR, RECEIVER},
+    state::{split, Index, IndexTerms, IssueTicket, Leg, LegSpec, Listing, RedeemTicket},
 };
 
 pub const CLASSIC: Pubkey = anchor_spl::token::ID;
@@ -70,12 +71,120 @@ impl Extensions {
     }
 }
 
-/// What a test reads of an index: its header's fields and its legs.
+/// What a test reads of an index: its header and its legs.
 pub struct IndexView {
     pub share_mint: Pubkey,
     pub sealed: bool,
     pub rebalance_nonce: u64,
+    pub header: Index,
     pub legs: Vec<Leg>,
+}
+
+/// The terms a test index is created with unless it says otherwise: no fee and the weekly interval.
+pub fn terms() -> IndexTerms {
+    IndexTerms {
+        rebalance_interval: xindex::MIN_REBALANCE_INTERVAL,
+        ..IndexTerms::default()
+    }
+}
+
+/// The terms hash of `legs` at the default terms.
+pub fn terms_hash(count: u16, legs: &[LegSpec]) -> [u8; 32] {
+    xindex::math::terms_hash(count, &terms(), legs)
+}
+
+pub fn sheet_pda(index: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(&[xindex::SHEET_SEED, index.as_ref()], &xindex::ID).0
+}
+
+pub fn fill_pda(index: &Pubkey, executor: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[xindex::FILL_SEED, index.as_ref(), executor.as_ref()],
+        &xindex::ID,
+    )
+    .0
+}
+
+pub fn request_pda(requester: &Pubkey, id: u64) -> Pubkey {
+    Pubkey::find_program_address(
+        &[
+            xindex::REQUEST_SEED,
+            requester.as_ref(),
+            id.to_le_bytes().as_ref(),
+        ],
+        &xindex::ID,
+    )
+    .0
+}
+
+pub fn quote_pda(index: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(&[xindex::QUOTE_SEED, index.as_ref()], &xindex::ID).0
+}
+
+pub fn weights_pda(index: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(&[xindex::WEIGHTS_SEED, index.as_ref()], &xindex::ID).0
+}
+
+pub fn minter_pda(index: &Pubkey, wallet: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[xindex::MINTER_SEED, index.as_ref(), wallet.as_ref()],
+        &xindex::ID,
+    )
+    .0
+}
+
+/// The test feed of a mint: its own address, so every mint has one of its own.
+pub fn feed_of(mint: &Pubkey) -> [u8; 32] {
+    mint.to_bytes()
+}
+
+/// Where the bench keeps Pyth's price of a mint's feed.
+pub fn price_pda(mint: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(&[b"price", mint.as_ref()], &RECEIVER).0
+}
+
+/// `numerator / denominator` as a Pyth price and exponent, at the finest exponent, down to −30, whose price fits with
+/// room for a confidence; at least six digits.
+pub fn price_of(numerator: u128, denominator: u128) -> (i64, i32) {
+    for k in (0..=30u32).rev() {
+        let Some(scaled) = numerator.checked_mul(10u128.pow(k)) else {
+            continue;
+        };
+        let price = scaled / denominator;
+        if price <= (i64::MAX / 4) as u128 {
+            assert!(
+                price >= 100_000,
+                "too coarse a price: {numerator}/{denominator}"
+            );
+            return (price as i64, -(k as i32));
+        }
+    }
+    panic!("no exponent fits {numerator}/{denominator}");
+}
+
+/// A `PriceUpdateV2` account's data, fully verified, as Pyth's receiver writes it.
+pub fn price_update(
+    feed: [u8; 32],
+    price: i64,
+    conf: u64,
+    expo: i32,
+    publish_time: i64,
+) -> Vec<u8> {
+    let mut data = Vec::with_capacity(134);
+    data.extend_from_slice(&PRICE_UPDATE_DISCRIMINATOR);
+    data.extend_from_slice(&[7u8; 32]);
+    data.push(1);
+    data.extend_from_slice(&feed);
+    data.extend_from_slice(&price.to_le_bytes());
+    data.extend_from_slice(&conf.to_le_bytes());
+    data.extend_from_slice(&expo.to_le_bytes());
+    data.extend_from_slice(&publish_time.to_le_bytes());
+    data.extend_from_slice(&publish_time.saturating_sub(1).to_le_bytes());
+    data.extend_from_slice(&price.to_le_bytes());
+    data.extend_from_slice(&conf.to_le_bytes());
+    data.extend_from_slice(&1u64.to_le_bytes());
+    data.push(0);
+    data
 }
 
 pub struct Bench {
@@ -85,6 +194,11 @@ pub struct Bench {
     pub guardian: Keypair,
     /// Mint, freeze, pause and hook authority of every test mint, as one key is for Ondo's.
     pub issuer: Keypair,
+    /// The most compute units a step of the last `prepare_fill` spent, naming units or pricing legs.
+    pub last_fill_cu: u64,
+    /// The configuration's two stablecoins, classic SPL mints of six decimals as Solana's USDC and USDT are.
+    pub usdc: Pubkey,
+    pub usdt: Pubkey,
 }
 
 pub fn config_pda() -> Pubkey {
@@ -195,13 +309,19 @@ impl Bench {
         for key in [&deployer, &owner, &guardian, &issuer] {
             svm.airdrop(&key.pubkey(), 1_000_000_000_000).unwrap();
         }
-        Self {
+        let mut bench = Self {
             svm,
             deployer,
             owner,
             guardian,
             issuer,
-        }
+            last_fill_cu: 0,
+            usdc: Pubkey::default(),
+            usdt: Pubkey::default(),
+        };
+        bench.usdc = bench.mint(CLASSIC, 6, Extensions::default());
+        bench.usdt = bench.mint(CLASSIC, 6, Extensions::default());
+        bench
     }
 
     pub fn initialize_ix(
@@ -212,7 +332,13 @@ impl Bench {
     ) -> Instruction {
         Instruction::new_with_bytes(
             xindex::ID,
-            &xindex::instruction::Initialize { owner, guardian }.data(),
+            &xindex::instruction::Initialize {
+                owner,
+                guardian,
+                usdc: self.usdc,
+                usdt: self.usdt,
+            }
+            .data(),
             xindex::accounts::Initialize {
                 authority: *authority,
                 config: config_pda(),
@@ -439,6 +565,22 @@ impl Bench {
         self.send(&[ix], &[&issuer]).unwrap();
     }
 
+    /// Has the issuer set `mint`'s scaled-UI multiplier to `multiplier` from `effective`, as Ondo does for a split or a
+    /// dividend.
+    pub fn set_multiplier(&mut self, mint: &Pubkey, multiplier: f64, effective: i64) {
+        let issuer = self.issuer.insecure_clone();
+        let ix = t22::extension::scaled_ui_amount::instruction::update_multiplier(
+            &T22,
+            mint,
+            &issuer.pubkey(),
+            &[],
+            multiplier,
+            effective,
+        )
+        .unwrap();
+        self.send(&[ix], &[&issuer]).unwrap();
+    }
+
     pub fn freeze(&mut self, account: &Pubkey, mint: &Pubkey, program: &Pubkey, frozen: bool) {
         let issuer = self.issuer.insecure_clone();
         let ix = if frozen {
@@ -519,17 +661,64 @@ impl Bench {
         }
     }
 
-    /// Proposes and executes a listing of `mint`.
+    /// Proposes and executes a listing of `mint` with its own feed, a `Token` one.
     pub fn list(&mut self, mint: &Pubkey, program: &Pubkey) {
+        self.list_with(mint, program, FEED_TOKEN);
+    }
+
+    /// Proposes and executes a listing of `mint` and its feed of `kind`.
+    pub fn list_with(&mut self, mint: &Pubkey, program: &Pubkey, kind: u8) {
         let owner = self.owner.insecure_clone();
         self.send(
             &[self.propose_listing_ix(&owner.pubkey(), mint, program)],
             &[&owner],
         )
         .unwrap();
+        self.send(
+            &[self.propose_feed_ix(&owner.pubkey(), mint, feed_of(mint), kind)],
+            &[&owner],
+        )
+        .unwrap();
         self.warp(xindex::LISTING_DELAY);
-        self.send(&[self.execute_listing_ix(mint)], &[&owner])
-            .unwrap();
+        self.send(
+            &[self.execute_listing_ix(mint), self.execute_feed_ix(mint)],
+            &[&owner],
+        )
+        .unwrap();
+    }
+
+    pub fn propose_feed_ix(
+        &self,
+        signer: &Pubkey,
+        mint: &Pubkey,
+        feed: [u8; 32],
+        kind: u8,
+    ) -> Instruction {
+        Instruction::new_with_bytes(
+            xindex::ID,
+            &xindex::instruction::ProposePriceFeed {
+                feed_id: feed,
+                kind,
+            }
+            .data(),
+            xindex::accounts::ProposePriceFeed {
+                owner: *signer,
+                config: config_pda(),
+                listing: listing_pda(mint),
+            }
+            .to_account_metas(None),
+        )
+    }
+
+    pub fn execute_feed_ix(&self, mint: &Pubkey) -> Instruction {
+        Instruction::new_with_bytes(
+            xindex::ID,
+            &xindex::instruction::ExecutePriceFeed {}.data(),
+            xindex::accounts::ExecutePriceFeed {
+                listing: listing_pda(mint),
+            }
+            .to_account_metas(None),
+        )
     }
 
     pub fn listing(&self, mint: &Pubkey) -> Listing {
@@ -594,6 +783,20 @@ impl Bench {
         name: &str,
         symbol: &str,
     ) -> Instruction {
+        self.begin_ix_with(creator, terms_hash, leg_count, name, symbol, terms(), false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn begin_ix_with(
+        &self,
+        creator: &Pubkey,
+        terms_hash: [u8; 32],
+        leg_count: u16,
+        name: &str,
+        symbol: &str,
+        terms: IndexTerms,
+        gated: bool,
+    ) -> Instruction {
         let index = index_pda(creator, &terms_hash);
         Instruction::new_with_bytes(
             xindex::ID,
@@ -602,13 +805,17 @@ impl Bench {
                 leg_count,
                 name: name.to_string(),
                 symbol: symbol.to_string(),
+                terms,
+                gated,
             }
             .data(),
             xindex::accounts::BeginIndex {
                 creator: *creator,
                 approval: creator_pda(creator),
+                config: config_pda(),
                 index,
                 share_mint: shares_pda(&index),
+                sheet: sheet_pda(&index),
                 token_program: CLASSIC,
                 system_program: SYSTEM,
             }
@@ -645,22 +852,36 @@ impl Bench {
                 creator: *creator,
                 approval: creator_pda(creator),
                 index: *index,
+                sheet: sheet_pda(index),
             }
             .to_account_metas(None),
         )
     }
 
-    /// Creates an index of `legs` by `creator`, an approved wallet: begun, its legs added ten a transaction, sealed.
+    /// Creates an index of `legs` by `creator`, an approved wallet, at the default terms: begun, its legs added ten a
+    /// transaction, priced on its weights, sealed.
     pub fn create(&mut self, creator: &Keypair, legs: &[LegSpec]) -> Pubkey {
-        let hash = xindex::math::terms_hash(legs.len() as u16, legs);
+        self.create_with(creator, legs, terms(), false)
+    }
+
+    pub fn create_with(
+        &mut self,
+        creator: &Keypair,
+        legs: &[LegSpec],
+        terms: IndexTerms,
+        gated: bool,
+    ) -> Pubkey {
+        let hash = xindex::math::terms_hash(legs.len() as u16, &terms, legs);
         let index = index_pda(&creator.pubkey(), &hash);
         self.send(
-            &[self.begin_ix(
+            &[self.begin_ix_with(
                 &creator.pubkey(),
                 hash,
                 legs.len() as u16,
                 "Test Index",
                 "TIX",
+                terms,
+                gated,
             )],
             &[creator],
         )
@@ -672,9 +893,130 @@ impl Bench {
             )
             .unwrap();
         }
+        self.price_on_weights(creator, &index);
         self.send_big(&[self.seal_ix(&creator.pubkey(), &index)], &[creator])
             .unwrap();
+        self.fund(&creator.pubkey(), &shares_pda(&index), &CLASSIC, 0);
         index
+    }
+
+    // ---- prices ----
+
+    /// The feed a mint's listing names, or proposes, or else the mint's test feed.
+    pub fn feed_for(&self, mint: &Pubkey) -> [u8; 32] {
+        match self.svm.get_account(&listing_pda(mint)) {
+            Some(account) if !account.data.is_empty() => {
+                let listing = self.listing(mint);
+                if listing.feed_kind != 0 {
+                    listing.feed_id
+                } else if listing.feed_eta != 0 {
+                    listing.pending_feed_id
+                } else {
+                    feed_of(mint)
+                }
+            }
+            _ => feed_of(mint),
+        }
+    }
+
+    /// The multiplier a Token-2022 mint's scaled-UI extension holds now, in 1e18, rounded down.
+    pub fn multiplier(&self, mint: &Pubkey) -> u128 {
+        let data = self.svm.get_account(mint).unwrap().data;
+        let state = StateWithExtensions::<t22::state::Mint>::unpack(&data).unwrap();
+        let config = state
+            .get_extension::<t22::extension::scaled_ui_amount::ScaledUiAmountConfig>()
+            .unwrap();
+        xindex::pyth::wad_of(f64::from(config.new_multiplier), false).unwrap()
+    }
+
+    /// Writes Pyth's price of `mint`'s feed: `price` at `expo`, with `conf`, published at `publish_time`.
+    pub fn set_price(
+        &mut self,
+        mint: &Pubkey,
+        price: i64,
+        conf: u64,
+        expo: i32,
+        publish_time: i64,
+    ) {
+        let data = price_update(self.feed_for(mint), price, conf, expo, publish_time);
+        let lamports = self.svm.minimum_balance_for_rent_exemption(data.len());
+        let account = solana_account::Account {
+            lamports,
+            data,
+            owner: RECEIVER,
+            executable: false,
+            rent_epoch: 0,
+        };
+        self.svm.set_account(price_pda(mint), account).unwrap();
+    }
+
+    /// The accounts `pyth::price_leg` reads for `leg`: its listing, its price, and its mint for a `Multiplier` feed.
+    pub fn price_accounts(&self, leg: &Leg) -> Vec<AccountMeta> {
+        let mut metas = vec![
+            AccountMeta::new_readonly(listing_pda(&leg.mint), false),
+            AccountMeta::new_readonly(price_pda(&leg.mint), false),
+        ];
+        if self.listing(&leg.mint).feed_kind == FEED_MULTIPLIER {
+            metas.push(AccountMeta::new_readonly(leg.mint, false));
+        }
+        metas
+    }
+
+    pub fn price_legs_ix(&self, creator: &Pubkey, index: &Pubkey, legs: &[u16]) -> Instruction {
+        let state = self.index(index);
+        let mut accounts = xindex::accounts::PriceLegs {
+            creator: *creator,
+            index: *index,
+            sheet: sheet_pda(index),
+        }
+        .to_account_metas(None);
+        for leg in legs {
+            accounts.extend(self.price_accounts(&state.legs[*leg as usize]));
+        }
+        Instruction::new_with_bytes(
+            xindex::ID,
+            &xindex::instruction::PriceLegs {
+                legs: legs.to_vec(),
+            }
+            .data(),
+            accounts,
+        )
+    }
+
+    /// Prices every leg of an unsealed index so its value lies on its weights, publishes the prices now, and records
+    /// them in the creator's sheet, ten legs a transaction.
+    pub fn price_on_weights(&mut self, creator: &Keypair, index: &Pubkey) {
+        let state = self.index(index);
+        let weights: Vec<u16> = state.legs.iter().map(|leg| leg.weight).collect();
+        self.price_at(index, &weights);
+        let legs: Vec<u16> = (0..state.legs.len() as u16).collect();
+        for chunk in legs.chunks(10) {
+            self.send_big(
+                &[self.price_legs_ix(&creator.pubkey(), index, chunk)],
+                &[creator],
+            )
+            .unwrap();
+        }
+    }
+
+    /// Sets every leg's price so the index's value at its units splits as `shares` do, published now: a whole token of
+    /// leg `i` costs `shares_i · 10^decimals / units_i`, at the finest exponent its price fits.
+    pub fn price_at(&mut self, index: &Pubkey, shares: &[u16]) {
+        let state = self.index(index);
+        let now = self.now();
+        for (leg, share) in state.legs.iter().zip(shares) {
+            let whole = *share as u128 * 10u128.pow(leg.decimals as u32);
+            let (price, expo) = if self.listing(&leg.mint).feed_kind == FEED_MULTIPLIER {
+                // the feed prices a share, and the mint's multiplier says how many shares a token is
+                price_of(
+                    whole * 10u128.pow(12),
+                    leg.units as u128 * self.multiplier(&leg.mint) / 1_000_000,
+                )
+            } else {
+                price_of(whole, leg.units as u128)
+            };
+            self.set_price(&leg.mint, price, 0, expo, now);
+        }
     }
 
     pub fn index(&self, index: &Pubkey) -> IndexView {
@@ -684,6 +1026,7 @@ impl Bench {
             share_mint: header.share_mint,
             sealed: header.sealed == 1,
             rebalance_nonce: header.rebalance_nonce,
+            header: *header,
             legs: legs.to_vec(),
         }
     }
@@ -726,6 +1069,8 @@ impl Bench {
             xindex::accounts::OpenIssue {
                 owner: *owner,
                 index: *index,
+                share_mint: shares_pda(index),
+                config: config_pda(),
                 ticket: issue_pda(index, owner),
                 system_program: SYSTEM,
             }
@@ -749,6 +1094,7 @@ impl Bench {
                 owner: *owner,
                 index: *index,
                 share_mint: shares_pda(index),
+                config: config_pda(),
                 ticket: issue_pda(index, owner),
                 mint: *mint,
                 from: ata(owner, mint, program),
@@ -789,6 +1135,30 @@ impl Bench {
     }
 
     pub fn finalize_ix(&self, owner: &Pubkey, index: &Pubkey, recipient: &Pubkey) -> Instruction {
+        self.finalize_ix_with(owner, index, recipient, None, None, None)
+    }
+
+    /// The fee recipients' share accounts: the creator role's, and the platform recipient's unless the policy names
+    /// nobody.
+    pub fn fee_accounts(&self, index: &Pubkey) -> (Pubkey, Option<Pubkey>) {
+        let state = self.index(index);
+        let creator = ata(&state.header.creator_role, &shares_pda(index), &CLASSIC);
+        let recipient = self.config().platform_recipient;
+        let platform =
+            (recipient != Pubkey::default()).then(|| ata(&recipient, &shares_pda(index), &CLASSIC));
+        (creator, platform)
+    }
+
+    pub fn finalize_ix_with(
+        &self,
+        owner: &Pubkey,
+        index: &Pubkey,
+        recipient: &Pubkey,
+        referrer: Option<Pubkey>,
+        recipient_allowance: Option<Pubkey>,
+        referrer_allowance: Option<Pubkey>,
+    ) -> Instruction {
+        let (creator_shares, platform_shares) = self.fee_accounts(index);
         Instruction::new_with_bytes(
             xindex::ID,
             &xindex::instruction::FinalizeIssue {}.data(),
@@ -798,10 +1168,21 @@ impl Bench {
                 ticket: issue_pda(index, owner),
                 share_mint: shares_pda(index),
                 recipient: *recipient,
+                config: config_pda(),
+                creator_shares,
+                platform_shares,
+                referrer_shares: referrer,
+                recipient_allowance,
+                referrer_allowance,
                 token_program: CLASSIC,
             }
             .to_account_metas(None),
         )
+    }
+
+    pub fn config(&self) -> xindex::state::Config {
+        let data = self.svm.get_account(&config_pda()).unwrap().data;
+        xindex::state::Config::try_deserialize(&mut data.as_slice()).unwrap()
     }
 
     pub fn cancel_issue_ix(&self, owner: &Pubkey, index: &Pubkey) -> Instruction {
@@ -821,7 +1202,7 @@ impl Bench {
     /// owner's share account. Returns the most compute units a deposit transaction spent.
     pub fn issue(&mut self, owner: &Keypair, index: &Pubkey, shares: u64, per_tx: usize) -> u64 {
         let state = self.index(index);
-        self.send(
+        self.send_big(
             &[self.open_issue_ix(&owner.pubkey(), index, shares)],
             &[owner],
         )
@@ -842,7 +1223,7 @@ impl Bench {
             most = most.max(sent.compute_units_consumed);
         }
         let shares_account = self.fund(&owner.pubkey(), &shares_pda(index), &CLASSIC, 0);
-        self.send(
+        self.send_big(
             &[self.finalize_ix(&owner.pubkey(), index, &shares_account)],
             &[owner],
         )
@@ -860,6 +1241,9 @@ impl Bench {
                 share_mint: shares_pda(index),
                 owner_shares: ata(owner, &shares_pda(index), &CLASSIC),
                 ticket: redeem_pda(index, owner),
+                config: config_pda(),
+                creator_shares: self.fee_accounts(index).0,
+                platform_shares: self.fee_accounts(index).1,
                 token_program: CLASSIC,
                 system_program: SYSTEM,
             }
@@ -907,13 +1291,655 @@ impl Bench {
         )
     }
 
+    // ---- fees, roles, the gate and the pause ----
+
+    pub fn fee_policy_ix(
+        &self,
+        platform: u16,
+        streaming: u16,
+        referral: u16,
+        recipient: Pubkey,
+    ) -> Instruction {
+        Instruction::new_with_bytes(
+            xindex::ID,
+            &xindex::instruction::SetFeePolicy {
+                platform_fee_bps: platform,
+                platform_streaming_bps: streaming,
+                referral_share_bps: referral,
+                recipient,
+            }
+            .data(),
+            xindex::accounts::SetFeePolicy {
+                owner: self.owner.pubkey(),
+                config: config_pda(),
+            }
+            .to_account_metas(None),
+        )
+    }
+
+    pub fn accrue_ix(&self, index: &Pubkey) -> Instruction {
+        let (creator_shares, platform_shares) = self.fee_accounts(index);
+        Instruction::new_with_bytes(
+            xindex::ID,
+            &xindex::instruction::AccrueFees {}.data(),
+            xindex::accounts::AccrueFees {
+                index: *index,
+                share_mint: shares_pda(index),
+                config: config_pda(),
+                creator_shares,
+                platform_shares,
+                token_program: CLASSIC,
+            }
+            .to_account_metas(None),
+        )
+    }
+
+    pub fn creator_ix(&self, signer: &Pubkey, index: &Pubkey, data: Vec<u8>) -> Instruction {
+        Instruction::new_with_bytes(
+            xindex::ID,
+            &data,
+            xindex::accounts::CreatorOnly {
+                creator_role: *signer,
+                index: *index,
+            }
+            .to_account_metas(None),
+        )
+    }
+
+    pub fn accept_creator_ix(&self, signer: &Pubkey, index: &Pubkey) -> Instruction {
+        let (creator_shares, platform_shares) = self.fee_accounts(index);
+        let weights = weights_pda(index);
+        let has_weights = self
+            .svm
+            .get_account(&weights)
+            .is_some_and(|a| !a.data.is_empty());
+        Instruction::new_with_bytes(
+            xindex::ID,
+            &xindex::instruction::AcceptCreator {}.data(),
+            xindex::accounts::AcceptCreator {
+                pending_creator: *signer,
+                index: *index,
+                share_mint: shares_pda(index),
+                config: config_pda(),
+                creator_shares,
+                platform_shares,
+                weights: has_weights.then_some(weights),
+                token_program: CLASSIC,
+            }
+            .to_account_metas(None),
+        )
+    }
+
+    pub fn allow_minter_ix(&self, signer: &Pubkey, index: &Pubkey, wallet: &Pubkey) -> Instruction {
+        Instruction::new_with_bytes(
+            xindex::ID,
+            &xindex::instruction::AllowMinter { wallet: *wallet }.data(),
+            xindex::accounts::AllowMinter {
+                creator_role: *signer,
+                index: *index,
+                allowance: minter_pda(index, wallet),
+                system_program: SYSTEM,
+            }
+            .to_account_metas(None),
+        )
+    }
+
+    pub fn disallow_minter_ix(
+        &self,
+        signer: &Pubkey,
+        index: &Pubkey,
+        wallet: &Pubkey,
+    ) -> Instruction {
+        Instruction::new_with_bytes(
+            xindex::ID,
+            &xindex::instruction::DisallowMinter {}.data(),
+            xindex::accounts::DisallowMinter {
+                creator_role: *signer,
+                index: *index,
+                allowance: minter_pda(index, wallet),
+            }
+            .to_account_metas(None),
+        )
+    }
+
+    pub fn pause_ix(&self, signer: &Pubkey, index: Option<&Pubkey>, paused: bool) -> Instruction {
+        match index {
+            Some(index) => Instruction::new_with_bytes(
+                xindex::ID,
+                &xindex::instruction::SetMintPause { paused }.data(),
+                xindex::accounts::PauseIndex {
+                    signer: *signer,
+                    config: config_pda(),
+                    index: *index,
+                }
+                .to_account_metas(None),
+            ),
+            None => Instruction::new_with_bytes(
+                xindex::ID,
+                &xindex::instruction::SetMintPauseAll { paused }.data(),
+                xindex::accounts::PauseAll {
+                    signer: *signer,
+                    config: config_pda(),
+                }
+                .to_account_metas(None),
+            ),
+        }
+    }
+
+    // ---- the rebalance ----
+
+    pub fn start_ix(&self, caller: &Pubkey, index: &Pubkey, keep_mask: [u64; 4]) -> Instruction {
+        Instruction::new_with_bytes(
+            xindex::ID,
+            &xindex::instruction::StartRebalance { keep_mask }.data(),
+            xindex::accounts::StartRebalance {
+                caller: *caller,
+                config: config_pda(),
+                index: *index,
+            }
+            .to_account_metas(None),
+        )
+    }
+
+    pub fn start_quoted_ix(
+        &self,
+        caller: &Pubkey,
+        index: &Pubkey,
+        keep_mask: [u64; 4],
+        tolerance: u64,
+    ) -> Instruction {
+        Instruction::new_with_bytes(
+            xindex::ID,
+            &xindex::instruction::StartQuotedRebalance {
+                keep_mask,
+                tolerance,
+            }
+            .data(),
+            xindex::accounts::StartQuotedRebalance {
+                caller: *caller,
+                config: config_pda(),
+                index: *index,
+                quote: quote_pda(index),
+            }
+            .to_account_metas(None),
+        )
+    }
+
+    pub fn write_quote_ix(
+        &self,
+        caller: &Pubkey,
+        index: &Pubkey,
+        offset: u16,
+        prices: Vec<u128>,
+    ) -> Instruction {
+        Instruction::new_with_bytes(
+            xindex::ID,
+            &xindex::instruction::WriteQuote { offset, prices }.data(),
+            xindex::accounts::WriteQuote {
+                caller: *caller,
+                config: config_pda(),
+                index: *index,
+                quote: quote_pda(index),
+                system_program: SYSTEM,
+            }
+            .to_account_metas(None),
+        )
+    }
+
+    pub fn cancel_ix(
+        &self,
+        caller: &Pubkey,
+        index: &Pubkey,
+        proposal_id: Option<u64>,
+    ) -> Instruction {
+        Instruction::new_with_bytes(
+            xindex::ID,
+            &xindex::instruction::CancelRebalance { proposal_id }.data(),
+            xindex::accounts::CancelRebalance {
+                caller: *caller,
+                config: config_pda(),
+                index: *index,
+            }
+            .to_account_metas(None),
+        )
+    }
+
+    pub fn open_fill_ix(&self, executor: &Pubkey, index: &Pubkey) -> Instruction {
+        Instruction::new_with_bytes(
+            xindex::ID,
+            &xindex::instruction::OpenFill {}.data(),
+            xindex::accounts::OpenFill {
+                executor: *executor,
+                index: *index,
+                ticket: fill_pda(index, executor),
+                system_program: SYSTEM,
+            }
+            .to_account_metas(None),
+        )
+    }
+
+    fn edit_fill_metas(&self, executor: &Pubkey, index: &Pubkey) -> Vec<AccountMeta> {
+        xindex::accounts::EditFill {
+            executor: *executor,
+            index: *index,
+            ticket: fill_pda(index, executor),
+        }
+        .to_account_metas(None)
+    }
+
+    pub fn set_units_ix(
+        &self,
+        executor: &Pubkey,
+        index: &Pubkey,
+        offset: u16,
+        units: Vec<u64>,
+    ) -> Instruction {
+        Instruction::new_with_bytes(
+            xindex::ID,
+            &xindex::instruction::SetFillUnits { offset, units }.data(),
+            self.edit_fill_metas(executor, index),
+        )
+    }
+
+    /// Prices the legs named that move in the executor's ticket.
+    pub fn price_fill_ix(&self, executor: &Pubkey, index: &Pubkey, legs: &[u16]) -> Instruction {
+        let state = self.index(index);
+        let fill = self.fill(index, executor);
+        let mut accounts = self.edit_fill_metas(executor, index);
+        for leg in legs {
+            let i = *leg as usize;
+            if fill[i].new_units != state.legs[i].units {
+                accounts.extend(self.price_accounts(&state.legs[i]));
+            }
+        }
+        Instruction::new_with_bytes(
+            xindex::ID,
+            &xindex::instruction::PriceFill {
+                legs: legs.to_vec(),
+            }
+            .data(),
+            accounts,
+        )
+    }
+
+    pub fn deposit_fill_ix(
+        &self,
+        executor: &Pubkey,
+        index: &Pubkey,
+        leg: u16,
+        amount: u64,
+    ) -> Instruction {
+        let state = self.index(index);
+        let mint = state.legs[leg as usize].mint;
+        let program = self.program_of(index, leg as usize);
+        Instruction::new_with_bytes(
+            xindex::ID,
+            &xindex::instruction::DepositFill { leg, amount }.data(),
+            xindex::accounts::DepositFill {
+                executor: *executor,
+                index: *index,
+                share_mint: shares_pda(index),
+                ticket: fill_pda(index, executor),
+                mint,
+                from: ata(executor, &mint, &program),
+                vault: ata(index, &mint, &program),
+                token_program: program,
+            }
+            .to_account_metas(None),
+        )
+    }
+
+    pub fn withdraw_fill_ix(&self, executor: &Pubkey, index: &Pubkey, leg: u16) -> Instruction {
+        let state = self.index(index);
+        let mint = state.legs[leg as usize].mint;
+        let program = self.program_of(index, leg as usize);
+        Instruction::new_with_bytes(
+            xindex::ID,
+            &xindex::instruction::WithdrawFill { leg }.data(),
+            xindex::accounts::WithdrawFill {
+                executor: *executor,
+                index: *index,
+                ticket: fill_pda(index, executor),
+                mint,
+                vault: ata(index, &mint, &program),
+                to: ata(executor, &mint, &program),
+                token_program: program,
+            }
+            .to_account_metas(None),
+        )
+    }
+
+    pub fn commit_ix(&self, executor: &Pubkey, index: &Pubkey) -> Instruction {
+        let (creator_shares, platform_shares) = self.fee_accounts(index);
+        let quote = quote_pda(index);
+        let has_quote = self
+            .svm
+            .get_account(&quote)
+            .is_some_and(|a| !a.data.is_empty());
+        Instruction::new_with_bytes(
+            xindex::ID,
+            &xindex::instruction::CommitFill {}.data(),
+            xindex::accounts::CommitFill {
+                executor: *executor,
+                index: *index,
+                ticket: fill_pda(index, executor),
+                share_mint: shares_pda(index),
+                config: config_pda(),
+                creator_shares,
+                platform_shares,
+                quote: has_quote.then_some(quote),
+                token_program: CLASSIC,
+            }
+            .to_account_metas(None),
+        )
+    }
+
+    pub fn close_fill_ix(&self, executor: &Pubkey, index: &Pubkey) -> Instruction {
+        Instruction::new_with_bytes(
+            xindex::ID,
+            &xindex::instruction::CloseFill {}.data(),
+            xindex::accounts::CloseFill {
+                executor: *executor,
+                ticket: fill_pda(index, executor),
+            }
+            .to_account_metas(None),
+        )
+    }
+
+    /// The legs of the executor's fill ticket.
+    pub fn fill(&self, index: &Pubkey, executor: &Pubkey) -> Vec<xindex::state::FillLeg> {
+        let mut data = self
+            .svm
+            .get_account(&fill_pda(index, executor))
+            .unwrap()
+            .data;
+        let (_, legs) = xindex::state::split_fill(&mut data).unwrap();
+        legs.to_vec()
+    }
+
+    /// What each leg of `index` gives out and needs in moving to `next` at the supply and scale now.
+    pub fn amounts(&self, index: &Pubkey, next: &[u64]) -> Vec<(u64, u64)> {
+        let state = self.index(index);
+        let supply = self.supply(&state.share_mint);
+        self.amounts_at(index, next, state.header.scale, supply)
+    }
+
+    /// What each leg of `index` gives out and needs in moving to `next` at `supply` and `scale`.
+    pub fn amounts_at(
+        &self,
+        index: &Pubkey,
+        next: &[u64],
+        scale: u64,
+        supply: u64,
+    ) -> Vec<(u64, u64)> {
+        let state = self.index(index);
+        state
+            .legs
+            .iter()
+            .zip(next)
+            .map(|(leg, n)| {
+                let (out, need) = xindex::settlement::leg_amounts(
+                    ethnum::U256::from(supply),
+                    scale as u128,
+                    ethnum::U256::from(leg.units),
+                    ethnum::U256::from(*n),
+                    xindex::SHARE_UNIT,
+                );
+                (out.as_u64(), need.as_u64())
+            })
+            .collect()
+    }
+
+    /// Opens the executor's ticket, names `next`, prices the moving legs at the prices standing, and deposits exactly
+    /// what each growing leg needs, funding the executor with it. Leaves the commit to the caller.
+    pub fn prepare_fill(&mut self, executor: &Keypair, index: &Pubkey, next: &[u64]) {
+        let e = executor.pubkey();
+        let state = self.index(index);
+        self.send(&[self.open_fill_ix(&e, index)], &[executor])
+            .unwrap();
+        let mut most = 0;
+        for (k, chunk) in next.chunks(50).enumerate() {
+            let sent = self
+                .send_big(
+                    &[self.set_units_ix(&e, index, (k * 50) as u16, chunk.to_vec())],
+                    &[executor],
+                )
+                .unwrap();
+            most = most.max(sent.compute_units_consumed);
+        }
+        let legs: Vec<u16> = (0..state.legs.len() as u16).collect();
+        for chunk in legs.chunks(10) {
+            let sent = self
+                .send_big(&[self.price_fill_ix(&e, index, chunk)], &[executor])
+                .unwrap();
+            most = most.max(sent.compute_units_consumed);
+        }
+        self.last_fill_cu = most;
+        let amounts = self.amounts(index, next);
+        for (i, (_, need)) in amounts.iter().enumerate() {
+            if *need == 0 {
+                continue;
+            }
+            let program = self.program_of(index, i);
+            self.fund(&e, &state.legs[i].mint, &program, *need);
+            self.send(
+                &[self.deposit_fill_ix(&e, index, i as u16, *need)],
+                &[executor],
+            )
+            .unwrap();
+        }
+    }
+
+    /// Withdraws everything the executor's ticket holds for it, every leg, its accounts created first.
+    pub fn collect_fill(&mut self, executor: &Keypair, index: &Pubkey) {
+        let e = executor.pubkey();
+        let state = self.index(index);
+        let fill = self.fill(index, &e);
+        for (i, slot) in fill.iter().enumerate() {
+            if slot.deposited == 0 && slot.settled == 0 {
+                continue;
+            }
+            let program = self.program_of(index, i);
+            self.fund(&e, &state.legs[i].mint, &program, 0);
+            self.send(&[self.withdraw_fill_ix(&e, index, i as u16)], &[executor])
+                .unwrap();
+        }
+    }
+
+    pub fn propose_weights_ix(
+        &self,
+        signer: &Pubkey,
+        index: &Pubkey,
+        weights: Vec<u16>,
+    ) -> Instruction {
+        Instruction::new_with_bytes(
+            xindex::ID,
+            &xindex::instruction::ProposeWeights { weights }.data(),
+            xindex::accounts::ProposeWeights {
+                creator_role: *signer,
+                index: *index,
+                weights: weights_pda(index),
+                system_program: SYSTEM,
+            }
+            .to_account_metas(None),
+        )
+    }
+
+    pub fn cancel_weights_ix(&self, signer: &Pubkey, index: &Pubkey) -> Instruction {
+        Instruction::new_with_bytes(
+            xindex::ID,
+            &xindex::instruction::CancelWeights {}.data(),
+            xindex::accounts::CancelWeights {
+                signer: *signer,
+                config: config_pda(),
+                index: *index,
+                weights: weights_pda(index),
+            }
+            .to_account_metas(None),
+        )
+    }
+
+    pub fn execute_weights_ix(&self, index: &Pubkey) -> Instruction {
+        Instruction::new_with_bytes(
+            xindex::ID,
+            &xindex::instruction::ExecuteWeights {}.data(),
+            xindex::accounts::ExecuteWeights {
+                index: *index,
+                weights: weights_pda(index),
+            }
+            .to_account_metas(None),
+        )
+    }
+
+    // ---- limit orders ----
+
+    /// A limit order of `kind` by `requester` paying, for a mint request, `stable` for shares, and for a redeem request
+    /// shares for `stable`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_request_with_ix(
+        &self,
+        requester: &Pubkey,
+        index: &Pubkey,
+        id: u64,
+        kind: u8,
+        stable: &Pubkey,
+        amount: u64,
+        min_out: u64,
+        deadline: i64,
+        expected_nonce: Option<u64>,
+    ) -> Instruction {
+        let shares = shares_pda(index);
+        let (pay, want) = if kind == xindex::instructions::requests::MINT_REQUEST {
+            (*stable, shares)
+        } else {
+            (shares, *stable)
+        };
+        let request = request_pda(requester, id);
+        Instruction::new_with_bytes(
+            xindex::ID,
+            &xindex::instruction::OpenRequest {
+                id,
+                kind,
+                amount,
+                min_out,
+                deadline,
+                expected_nonce,
+            }
+            .data(),
+            xindex::accounts::OpenRequest {
+                requester: *requester,
+                config: config_pda(),
+                index: *index,
+                request,
+                pay_mint: pay,
+                want_mint: want,
+                from: ata(requester, &pay, &CLASSIC),
+                escrow: ata(&request, &pay, &CLASSIC),
+                token_program: CLASSIC,
+                associated_token_program: ATA_PROGRAM,
+                system_program: SYSTEM,
+            }
+            .to_account_metas(None),
+        )
+    }
+
+    /// A limit order in USDC for a mint request and in USDT for a redeem request.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_request_ix(
+        &self,
+        requester: &Pubkey,
+        index: &Pubkey,
+        id: u64,
+        kind: u8,
+        amount: u64,
+        min_out: u64,
+        deadline: i64,
+        expected_nonce: Option<u64>,
+    ) -> Instruction {
+        let stable = if kind == xindex::instructions::requests::MINT_REQUEST {
+            self.usdc
+        } else {
+            self.usdt
+        };
+        self.open_request_with_ix(
+            requester,
+            index,
+            id,
+            kind,
+            &stable,
+            amount,
+            min_out,
+            deadline,
+            expected_nonce,
+        )
+    }
+
+    pub fn request(&self, requester: &Pubkey, id: u64) -> xindex::state::Request {
+        let data = self
+            .svm
+            .get_account(&request_pda(requester, id))
+            .unwrap()
+            .data;
+        xindex::state::Request::try_deserialize(&mut data.as_slice()).unwrap()
+    }
+
+    pub fn fill_request_ix(
+        &self,
+        filler: &Pubkey,
+        requester: &Pubkey,
+        id: u64,
+        amount: u64,
+        expected: Option<[u8; 32]>,
+    ) -> Instruction {
+        let r = self.request(requester, id);
+        let request = request_pda(requester, id);
+        Instruction::new_with_bytes(
+            xindex::ID,
+            &xindex::instruction::FillRequest { amount, expected }.data(),
+            xindex::accounts::FillRequest {
+                filler: *filler,
+                index: r.index,
+                requester: *requester,
+                request,
+                pay_mint: r.pay_mint,
+                want_mint: r.want_mint,
+                escrow: ata(&request, &r.pay_mint, &CLASSIC),
+                requester_account: ata(requester, &r.want_mint, &CLASSIC),
+                filler_from: ata(filler, &r.want_mint, &CLASSIC),
+                filler_to: ata(filler, &r.pay_mint, &CLASSIC),
+                pay_program: CLASSIC,
+                want_program: CLASSIC,
+            }
+            .to_account_metas(None),
+        )
+    }
+
+    pub fn close_request_ix(&self, signer: &Pubkey, requester: &Pubkey, id: u64) -> Instruction {
+        let r = self.request(requester, id);
+        let request = request_pda(requester, id);
+        Instruction::new_with_bytes(
+            xindex::ID,
+            &xindex::instruction::CloseRequest {}.data(),
+            xindex::accounts::CloseRequest {
+                signer: *signer,
+                requester: *requester,
+                request,
+                pay_mint: r.pay_mint,
+                escrow: ata(&request, &r.pay_mint, &CLASSIC),
+                back_to: ata(requester, &r.pay_mint, &CLASSIC),
+                pay_program: CLASSIC,
+            }
+            .to_account_metas(None),
+        )
+    }
+
     /// Requires every vault of `index` to hold at least the backing of the supply plus what tickets hold there.
     pub fn assert_invariant(&self, index: &Pubkey) {
         let state = self.index(index);
         let supply = self.supply(&state.share_mint);
         for (i, leg) in state.legs.iter().enumerate() {
             let held = self.balance(&self.vault(index, i)) as u128;
-            let required = xindex::math::required(supply, leg);
+            let required = xindex::math::required(supply, leg, state.header.scale);
             assert!(
                 held >= required,
                 "leg {i}: the vault holds {held}, under {required}"
